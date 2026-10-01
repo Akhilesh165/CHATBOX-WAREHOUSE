@@ -9,6 +9,8 @@ STRICT FORMATTING & OUTPUT RULES:
      Provide the exact scalar metric in bold, accompanied by a short 1-2 sentence concise executive explanation.
    - If user asks "show / list / find / get / give me":
      Provide a high-level executive summary and highlight key counts, pointing out that granular records are cleanly rendered in the searchable Data Table below.
+   - If user asks for Data Quality / Missing Physical Dimensions Check:
+     Provide an executive summary stating the total number of exception materials and affected inventory units, categorizing issues (Completely Missing vs Incomplete vs Not in Master), and point to the searchable Data Table below.
    - If user asks about ranking / Top N (e.g., top materials, most utilized bins):
      Summarize the top leaders, their exact contribution/percentage, and operational significance.
    - If user asks about change over time / trend:

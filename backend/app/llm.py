@@ -64,7 +64,57 @@ def deterministic_warehouse_sql_generator(question: str) -> dict[str, Any]:
 
     # 2. BUSINESS METRIC & INTENT RESOLUTION
 
-    # A. TOP N & BOTTOM N BIN UTILIZATION RANKINGS
+    # A. DATA QUALITY CHECK & MISSING PHYSICAL DIMENSIONS
+    is_dq_intent = any(k in q_lower for k in [
+        "data quality", "quality check", "missing dimension", "missing physical", "missing volume",
+        "incomplete dimension", "incomplete physical", "missing length", "missing width", "missing height",
+        "no dimension", "no dimensions", "without dimension", "without dimensions",
+        "dimension completeness", "cross-dataset", "cross dataset", "unmatched record", "unmatched material",
+        "unmaintained volume", "missing in material master", "not in material master", "physical dimension"
+    ]) or (
+        ("dimension" in q_lower or "dimensions" in q_lower or "volume" in q_lower or "length" in q_lower or "width" in q_lower or "height" in q_lower) and
+        ("missing" in q_lower or "incomplete" in q_lower or "null" in q_lower or "blank" in q_lower or "quality" in q_lower or "check" in q_lower or "exception" in q_lower or "validate" in q_lower or "validation" in q_lower)
+    )
+    if is_dq_intent:
+        plant_filter = f" WHERE i.Plant = '{plant_cand}'" if plant_cand else ""
+        filters = {"plant": plant_cand} if plant_cand else {}
+        sql_dq = f"""SELECT 
+    i.Material,
+    MAX(COALESCE(i.MaterialDescription, m.MaterialDescription, 'N/A')) AS [Material Description],
+    SUM(i.UnrestrictedQty) AS [Total Stock Qty],
+    COUNT(DISTINCT i.BinNo) AS [Occupied Bins],
+    m.Length,
+    m.Width,
+    m.Height,
+    m.Volume,
+    CASE 
+        WHEN m.MaterialCode IS NULL THEN 'Not in Material Master'
+        WHEN (m.Length IS NULL OR m.Length = 0) AND (m.Width IS NULL OR m.Width = 0) AND (m.Height IS NULL OR m.Height = 0) THEN 'Completely Missing Dimensions'
+        ELSE 'Incomplete Dimensions'
+    END AS [Quality Issue]
+FROM dbo.ZWMS_INVENTORY i
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode{plant_filter}
+WHERE m.MaterialCode IS NULL 
+   OR m.Length IS NULL OR m.Length = 0 
+   OR m.Width IS NULL OR m.Width = 0 
+   OR m.Height IS NULL OR m.Height = 0 
+   OR m.Volume IS NULL OR m.Volume = 0
+GROUP BY i.Material, m.Length, m.Width, m.Height, m.Volume, m.MaterialCode
+ORDER BY [Total Stock Qty] DESC"""
+        return {
+            "sql": sql_dq,
+            "chart_type": "none",
+            "chart_title": "Materials with Missing or Incomplete Physical Dimensions",
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "data_quality_check",
+            "metric": "missing_dimensions",
+            "filters": filters,
+            "time_range": "current",
+            "output_type": "table"
+        }
+
+    # B. TOP N & BOTTOM N BIN UTILIZATION RANKINGS
     has_top = any(k in q_lower for k in ["top", "most utilized", "highest", "fullest", "most capacity"])
     has_bottom = any(k in q_lower for k in ["bottom", "least utilized", "lowest", "emptiest", "unused capacity"])
     is_bin_metric = any(k in q_lower for k in ["bin", "bins", "location", "locations"])
@@ -475,6 +525,28 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     q_lower = question.lower()
     is_single_statement_requested = any(s in q_lower for s in ["single statement", "single line", "one line", "concise", "briefly", "in short", "just the percentage", "just the number", "only the number"])
 
+    # 0. Data Quality / Missing Dimensions Summary
+    if "Quality Issue" in cols or (("Length" in cols or "Width" in cols or "Height" in cols) and "Occupied Bins" in cols):
+        completely_missing = sum(1 for r in rows if "Completely" in str(r.get("Quality Issue", "")))
+        incomplete = sum(1 for r in rows if "Incomplete" in str(r.get("Quality Issue", "")))
+        not_in_master = sum(1 for r in rows if "Not in" in str(r.get("Quality Issue", "")))
+        total_affected_qty = sum(r.get("Total Stock Qty", 0) for r in rows)
+        
+        single_stmt = f"Identified **{count} materials** with missing or incomplete physical dimensions affecting **{total_affected_qty:,.2f} total inventory units**."
+        if is_single_statement_requested:
+            return single_stmt
+            
+        lines = [
+            f"### ⚠️ Data Quality Exception: Missing Material Dimensions\n",
+            single_stmt,
+            f"\n**Data Quality Breakdown:**",
+            f"- **Completely Missing Dimensions:** **{completely_missing}** materials (Length, Width & Height all unmaintained)",
+            f"- **Incomplete Dimensions:** **{incomplete}** materials (one or more dimensions missing or zero)",
+            f"- **Unmapped in Material Master:** **{not_in_master}** materials",
+            f"\n💡 *The complete list of material exceptions is loaded into the **searchable, paginated Data Table** below with exact physical dimensions and total inventory volumes.*"
+        ]
+        return "\n".join(lines)
+
     # 1. Combined Top & Bottom Bins Ranking
     if "Ranking Group" in cols:
         top_rows = [r for r in rows if "Top" in str(r.get("Ranking Group", ""))]
@@ -678,7 +750,17 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
             "time_range": "current"
         }
 
-    # 1. Bins by Capacity & Utilization Threshold or Rankings
+    # 1. Data Quality Check / Missing Dimensions Exception Table
+    if "Quality Issue" in cols or generated.get("intent") in ["data_quality_check", "DATA_QUALITY_CHECK"]:
+        return {
+            "output_type": "table",
+            "chart_type": "none",
+            "metric": "missing_dimensions",
+            "intent": "data_quality_check",
+            "time_range": "current"
+        }
+
+    # 2. Bins by Capacity & Utilization Threshold or Rankings
     if "Bin Capacity" in cols and ("Utilization" in cols or "Utilization %" in cols):
         intent_type = generated.get("intent", "high_utilization_bins")
         return {
