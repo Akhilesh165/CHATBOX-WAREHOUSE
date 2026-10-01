@@ -48,6 +48,7 @@ class ChatResponse(BaseModel):
     metric: Optional[str] = None
     filters: dict[str, Any] = Field(default_factory=dict)
     time_range: Optional[str] = None
+    query_plan: Optional[dict[str, Any]] = None
 
 class FeedbackRequest(BaseModel):
     conversation_id: str

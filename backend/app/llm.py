@@ -69,11 +69,14 @@ def deterministic_warehouse_sql_generator(question: str) -> dict[str, Any]:
         "data quality", "quality check", "missing dimension", "missing physical", "missing volume",
         "incomplete dimension", "incomplete physical", "missing length", "missing width", "missing height",
         "no dimension", "no dimensions", "without dimension", "without dimensions",
+        "don't have dimension", "dont have dimension", "do not have dimension",
+        "don't have dimensions", "dont have dimensions", "do not have dimensions",
+        "lack dimension", "lack dimensions", "unmaintained dimension",
         "dimension completeness", "cross-dataset", "cross dataset", "unmatched record", "unmatched material",
         "unmaintained volume", "missing in material master", "not in material master", "physical dimension"
     ]) or (
-        ("dimension" in q_lower or "dimensions" in q_lower or "volume" in q_lower or "length" in q_lower or "width" in q_lower or "height" in q_lower) and
-        ("missing" in q_lower or "incomplete" in q_lower or "null" in q_lower or "blank" in q_lower or "quality" in q_lower or "check" in q_lower or "exception" in q_lower or "validate" in q_lower or "validation" in q_lower)
+        ("dimension" in q_lower or "dimensions" in q_lower or "volume" in q_lower or "length" in q_lower or "width" in q_lower or "height" in q_lower or "physical" in q_lower or "size" in q_lower) and
+        ("missing" in q_lower or "incomplete" in q_lower or "null" in q_lower or "blank" in q_lower or "quality" in q_lower or "check" in q_lower or "exception" in q_lower or "validate" in q_lower or "validation" in q_lower or "without" in q_lower or "absent" in q_lower or "not defined" in q_lower or "not maintained" in q_lower or "unavailable" in q_lower or "don't" in q_lower or "dont" in q_lower or "do not" in q_lower or "no " in q_lower or "lack" in q_lower)
     )
     if is_dq_intent:
         plant_filter = f" WHERE i.Plant = '{plant_cand}'" if plant_cand else ""
@@ -101,8 +104,33 @@ WHERE m.MaterialCode IS NULL
    OR m.Volume IS NULL OR m.Volume = 0
 GROUP BY i.Material, m.Length, m.Width, m.Height, m.Volume, m.MaterialCode
 ORDER BY [Total Stock Qty] DESC"""
+        query_plan = {
+            "user_intent": "data_quality",
+            "question_type": "missing_data",
+            "entity": "material",
+            "analytical_task": "DATA QUALITY",
+            "filters": [f"Plant = {plant_cand}"] if plant_cand else [],
+            "tables": [
+                "dbo.ZWMS_INVENTORY",
+                "dbo.ZWMS_MATERIAL_MASTER"
+            ],
+            "join": {
+                "left": "dbo.ZWMS_INVENTORY.Material",
+                "right": "dbo.ZWMS_MATERIAL_MASTER.MaterialCode",
+                "type": "LEFT"
+            },
+            "conditions": [
+                "m.MaterialCode IS NULL",
+                "OR m.Length IS NULL OR m.Length = 0",
+                "OR m.Width IS NULL OR m.Width = 0",
+                "OR m.Height IS NULL OR m.Height = 0",
+                "OR m.Volume IS NULL OR m.Volume = 0"
+            ],
+            "result_type": "table"
+        }
         return {
             "sql": sql_dq,
+            "query_plan": query_plan,
             "chart_type": "none",
             "chart_title": "Materials with Missing or Incomplete Physical Dimensions",
             "chart_x": None,

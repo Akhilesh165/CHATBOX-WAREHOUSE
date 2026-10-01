@@ -12,8 +12,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from .config import settings
 from .models import ChatRequest, ChatResponse, Chart, Meta, FeedbackRequest, FeedbackResponse
-from .llm import generate_sql, generate_answer, optimize_response_format
-from .validator import validate_sql
+from .llm import generate_sql, generate_answer, optimize_response_format, deterministic_warehouse_sql_generator
+from .validator import validate_sql, validate_query_result
 from .db import execute_readonly, get_engine
 
 # Configure Logging
@@ -170,10 +170,30 @@ async def chat_endpoint(req: ChatRequest):
             detail=f"Database execution error: {str(db_err)}"
         )
 
+    # 4. Result Validator Layer ("Does this result actually answer the user's question?")
+    is_valid_result, validation_reason = validate_query_result(
+        req.message,
+        generated.get("query_plan") if isinstance(generated, dict) else None,
+        validated_sql,
+        rows
+    )
+    if not is_valid_result:
+        logger.warning(f"Semantic Result Validator FAIL: {validation_reason}. Triggering self-correction regeneration...")
+        try:
+            corrected_gen = deterministic_warehouse_sql_generator(req.message)
+            corrected_sql = validate_sql(corrected_gen.get("sql", ""))
+            corrected_rows, sql_duration_ms = execute_readonly(corrected_sql, max_rows=settings.sql_max_result_rows)
+            generated = corrected_gen
+            validated_sql = corrected_sql
+            rows = corrected_rows
+            logger.info("Self-correction successful: Corrected query executed.")
+        except Exception as retry_err:
+            logger.error(f"Self-correction failed: {retry_err}")
+
     if len(rows) >= settings.sql_max_result_rows:
         warnings.append(f"Result capped at maximum {settings.sql_max_result_rows} rows.")
 
-    # 4. Generate Grounded Answer from SQL Result
+    # 5. Generate Grounded Answer from SQL Result
     answer_start = time.perf_counter()
     try:
         answer = await generate_answer(req.message, validated_sql, rows)
@@ -186,7 +206,7 @@ async def chat_endpoint(req: ChatRequest):
     
     total_llm_ms = llm_duration_ms + int((time.perf_counter() - answer_start) * 1000)
 
-    # 5. Automatically optimize response format and visual presentation
+    # 6. Automatically optimize response format and visual presentation
     opt = optimize_response_format(req.message, rows, generated)
     
     chart_type = opt.get("chart_type") or generated.get("chart_type", "none")
@@ -205,7 +225,7 @@ async def chat_endpoint(req: ChatRequest):
         data=chart_data
     )
 
-    # 6. Update Conversation History
+    # 7. Update Conversation History
     history.append({"role": "user", "content": req.message})
     history.append({"role": "assistant", "content": answer})
     
@@ -235,6 +255,7 @@ async def chat_endpoint(req: ChatRequest):
     intent = opt.get("intent") or generated.get("intent")
     metric = opt.get("metric") or generated.get("metric")
     time_range = opt.get("time_range") or generated.get("time_range", "current")
+    query_plan = generated.get("query_plan") if isinstance(generated, dict) else None
 
     return ChatResponse(
         answer=answer,
@@ -248,7 +269,8 @@ async def chat_endpoint(req: ChatRequest):
         output_type=output_type,
         metric=metric,
         filters=generated.get("filters", {}),
-        time_range=time_range
+        time_range=time_range,
+        query_plan=query_plan
     )
 
 @app.post("/api/feedback", response_model=FeedbackResponse)

@@ -156,3 +156,47 @@ def validate_sql(raw_sql: str, dialect: str = "tsql") -> str:
                 raise ValueError(f"Prohibited SQL command keyword: '{kw.strip()}'")
 
     return cleaned_sql
+
+
+def validate_query_result(question: str, query_plan: dict | None, sql: str, rows: list[dict]) -> tuple[bool, str]:
+    """Semantic Result Validator.
+    
+    Evaluates: Does this SQL result actually answer the user's question and analytical task?
+    Returns (is_valid, failure_reason).
+    """
+    q_lower = question.lower()
+    cols = list(rows[0].keys()) if rows else []
+    
+    # 1. Missing Physical Dimensions / Data Quality
+    is_missing_dim_req = any(k in q_lower for k in [
+        "missing dimension", "missing physical", "incomplete dimension", "without dimension",
+        "no dimension", "no dimensions", "missing length", "missing width", "missing height", "missing volume",
+        "don't have dimension", "dont have dimension", "do not have dimension",
+        "don't have dimensions", "dont have dimensions", "do not have dimensions",
+        "lack dimension", "lack dimensions", "unmaintained dimension"
+    ]) or (
+        ("dimension" in q_lower or "dimensions" in q_lower or "size" in q_lower or "physical" in q_lower or "length" in q_lower or "width" in q_lower or "height" in q_lower) and
+        ("missing" in q_lower or "incomplete" in q_lower or "blank" in q_lower or "null" in q_lower or "without" in q_lower or "absent" in q_lower or "not defined" in q_lower or "not maintained" in q_lower or "not available" in q_lower or "unavailable" in q_lower or "don't" in q_lower or "dont" in q_lower or "do not" in q_lower or "no " in q_lower or "lack" in q_lower)
+    )
+    
+    if is_missing_dim_req:
+        # Check if result is generic inventory summary instead of material-level missing-dimension records
+        if any(c in cols for c in ["TotalUniqueMaterials", "TotalActiveBins", "TotalUnrestrictedQuantity", "PlantCount"]) and "Quality Issue" not in cols and "Length" not in cols:
+            return False, "User requested: Material-level missing-dimension records. Returned: Warehouse-level inventory summary. These do not satisfy the requested analytical task."
+        if rows and "Material" not in cols and "MaterialCode" not in cols:
+            return False, "User requested: Material-level missing-dimension records. Returned: Non-material entity. These do not satisfy the requested analytical task."
+
+    # 2. Top / Bottom Bins Ranking
+    is_ranking_req = ("top" in q_lower or "bottom" in q_lower or "most utilized" in q_lower or "least utilized" in q_lower) and ("bin" in q_lower or "bins" in q_lower)
+    if is_ranking_req:
+        if any(c in cols for c in ["TotalUniqueMaterials", "TotalActiveBins", "TotalUnrestrictedQuantity"]) and "Ranking Group" not in cols and "Utilization %" not in cols and "Utilization" not in cols:
+            return False, "User requested: Bin utilization ranking records. Returned: Aggregated summary. These do not satisfy the requested analytical task."
+
+    # 3. Available / Empty Put-Away Bins
+    is_putaway_req = any(k in q_lower for k in ["empty bin", "empty bins", "putaway", "put-away", "vacant", "unoccupied", "without displacing"])
+    if is_putaway_req:
+        if any(c in cols for c in ["TotalUniqueMaterials", "TotalActiveBins", "TotalUnrestrictedQuantity"]) and "BinLocation" not in cols and "BinNo" not in cols:
+            return False, "User requested: Available empty put-away bin records. Returned: Aggregated summary. These do not satisfy the requested analytical task."
+
+    return True, "Passed semantic result validation."
+
