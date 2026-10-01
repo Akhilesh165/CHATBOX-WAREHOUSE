@@ -1,0 +1,22 @@
+Your previous SQL query failed validation or execution with the following error:
+[VALIDATION ERROR]
+{error_message}
+
+[FAILED SQL]
+{failed_sql}
+
+Please regenerate a corrected, safe SQL Server T-SQL query that adheres strictly to the schema and security rules:
+- Single read-only SELECT or WITH statement
+- Only allowed tables: dbo.ZWMS_INVENTORY, dbo.ZWMS_BIN_MASTER, dbo.ZWMS_MATERIAL_MASTER, dbo.vw_WMS_InventoryEnriched
+- Only valid schema columns
+- No comments, no multiple statements, no DML/DDL
+
+Respond with the corrected JSON:
+{
+  "sql": "SELECT ...",
+  "chart_type": "bar" | "line" | "pie" | "none",
+  "chart_title": "Chart Title",
+  "chart_x": "column_name",
+  "chart_y": "column_name",
+  "intent": "summary"
+}

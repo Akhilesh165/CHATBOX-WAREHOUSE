@@ -1,0 +1,25 @@
+{
+  "inventory_source": {
+    "file": "Bin Invrntory.xlsx",
+    "sheet": "Sheet1",
+    "rows": 35419,
+    "columns": 18
+  },
+  "masters_source": {
+    "file": "WMS Bins Data.xlsx",
+    "ignored_sheet": {
+      "name": "Inventory",
+      "rows": 36529
+    },
+    "bin_master": {
+      "sheet": "Bin Master",
+      "rows": 33129,
+      "columns": 15
+    },
+    "material_master": {
+      "sheet": "Material Master",
+      "rows": 27829,
+      "columns": 23
+    }
+  }
+}

@@ -1,0 +1,28 @@
+API CONTRACT
+
+POST /api/chat
+Request:
+{
+  "message": "Show top 10 materials by quantity",
+  "conversation_id": "optional-id"
+}
+
+Response:
+{
+  "answer": "...",
+  "data": [{"Material":"...","TotalQuantity":123}],
+  "chart": {
+    "type":"bar",
+    "title":"Top 10 Materials by Inventory",
+    "xAxis":"Material",
+    "yAxis":"TotalQuantity",
+    "data":[{"Material":"...","TotalQuantity":123}]
+  },
+  "meta":{"requestId":"...","rowCount":10,"executionMs":123}
+}
+
+GET /api/health
+Returns database/AI service health without exposing credentials.
+
+GET /api/schema (ADMIN ONLY)
+Returns approved table/view names and columns for debugging. Do not return secrets.

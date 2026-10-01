@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-50">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Warehouse Inventory AI Assistant</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Lucide Icons CDN -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Marked Markdown Parser CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            warehouse: {
+              50: '#f0f9ff',
+              100: '#e0f2fe',
+              500: '#0284c7',
+              600: '#0369a1',
+              700: '#075985',
+              800: '#0c4a6e',
+              900: '#082f49'
+            }
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="h-full flex flex-col font-sans text-slate-800 antialiased selection:bg-sky-500 selection:text-white">
+  <!-- Top Navigation Header -->
+  <header class="bg-white border-b border-slate-200 px-6 py-3.5 flex items-center justify-between shadow-sm flex-shrink-0">
+    <div class="flex items-center space-x-3">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-600 to-sky-400 text-white flex items-center justify-center shadow-md shadow-sky-500/20">
+        <i data-lucide="layers" class="w-5 h-5"></i>
+      </div>
+      <div>
+        <div class="flex items-center space-x-2">
+          <h1 class="text-base font-bold text-slate-900">Warehouse Inventory AI</h1>
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-700">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1 animate-pulse"></span>
+            LIVE
+          </span>
+        </div>
+        <p class="text-xs text-slate-500">Authoritative WMS Inventory & Master Data Engine</p>
+      </div>
+    </div>
+
+    <div class="flex items-center space-x-3">
+      <button id="admin-toggle-btn" class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200 transition">
+        <i data-lucide="shield-check" class="w-3.5 h-3.5"></i>
+        <span id="admin-toggle-text">Admin SQL: OFF</span>
+      </button>
+
+      <button id="clear-history-btn" class="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition" title="Clear Conversation">
+        <i data-lucide="trash-2" class="w-4 h-4"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Chat Window Area -->
+  <main class="flex-1 overflow-y-auto p-4 md:p-6 space-y-4 max-w-4xl w-full mx-auto" id="chat-stream">
+    <!-- Welcome message bubble -->
+    <div class="flex items-start space-x-3 max-w-3xl">
+      <div class="w-8 h-8 rounded-xl bg-slate-900 text-sky-400 flex items-center justify-center flex-shrink-0 shadow-sm border border-slate-700">
+        <i data-lucide="bot" class="w-4 h-4"></i>
+      </div>
+      <div class="bg-white border border-slate-200/80 rounded-2xl rounded-tl-none p-4 shadow-sm text-sm text-slate-800 space-y-2">
+        <div class="flex items-center space-x-1.5 text-xs font-semibold text-slate-700 border-b border-slate-100 pb-1.5">
+          <i data-lucide="sparkles" class="w-3.5 h-3.5 text-sky-600"></i>
+          <span>Warehouse AI Assistant</span>
+        </div>
+        <p>👋 Welcome! I am connected to your warehouse database. Ask me anything about current stock, bin occupancy, materials, batches, or plants.</p>
+        <p class="text-xs text-slate-500">Every query is validated with SQLGlot AST and executed on a read-only database connection.</p>
+      </div>
+    </div>
+  </main>
+
+  <!-- Suggested Query Chips -->
+  <div class="bg-white/80 backdrop-blur border-t border-slate-200/60 px-4 py-2 flex-shrink-0">
+    <div class="max-w-4xl mx-auto flex items-center space-x-2 overflow-x-auto scrollbar-none py-1">
+      <span class="text-xs font-semibold text-slate-400 whitespace-nowrap">Suggested:</span>
+      <button onclick="sendQuickQuery('What is the total warehouse inventory?')" class="chip-btn px-3 py-1 bg-slate-100 hover:bg-sky-50 hover:text-sky-700 hover:border-sky-300 text-slate-700 border border-slate-200 rounded-full text-xs font-medium whitespace-nowrap transition">
+        📦 Total inventory
+      </button>
+      <button onclick="sendQuickQuery('Show top 10 materials by quantity')" class="chip-btn px-3 py-1 bg-slate-100 hover:bg-sky-50 hover:text-sky-700 hover:border-sky-300 text-slate-700 border border-slate-200 rounded-full text-xs font-medium whitespace-nowrap transition">
+        📊 Top 10 materials
+      </button>
+      <button onclick="sendQuickQuery('Show inventory breakdown by plant')" class="chip-btn px-3 py-1 bg-slate-100 hover:bg-sky-50 hover:text-sky-700 hover:border-sky-300 text-slate-700 border border-slate-200 rounded-full text-xs font-medium whitespace-nowrap transition">
+        🏭 Breakdown by plant
+      </button>
+      <button onclick="sendQuickQuery('Show inventory by storage location')" class="chip-btn px-3 py-1 bg-slate-100 hover:bg-sky-50 hover:text-sky-700 hover:border-sky-300 text-slate-700 border border-slate-200 rounded-full text-xs font-medium whitespace-nowrap transition">
+        🏷️ Storage locations
+      </button>
+      <button onclick="sendQuickQuery('Show recently updated inventory records')" class="chip-btn px-3 py-1 bg-slate-100 hover:bg-sky-50 hover:text-sky-700 hover:border-sky-300 text-slate-700 border border-slate-200 rounded-full text-xs font-medium whitespace-nowrap transition">
+        🕒 Recently updated
+      </button>
+    </div>
+  </div>
+
+  <!-- Bottom Message Input Form -->
+  <footer class="bg-white border-t border-slate-200 p-4 shadow-lg flex-shrink-0">
+    <form id="chat-form" class="max-w-4xl mx-auto flex items-center space-x-2" onsubmit="handleSubmit(event)">
+      <input
+        type="text"
+        id="user-input"
+        placeholder="Ask about inventory, material stock, bin volume, batches, plants..."
+        class="flex-1 bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-transparent transition shadow-inner"
+        autocomplete="off"
+      />
+      <button
+        type="submit"
+        id="send-btn"
+        class="bg-sky-600 hover:bg-sky-700 text-white font-medium px-5 py-3 rounded-xl transition flex items-center space-x-1.5 shadow-md shadow-sky-600/20 disabled:opacity-50"
+      >
+        <span>Ask</span>
+        <i data-lucide="send" class="w-4 h-4"></i>
+      </button>
+    </form>
+  </footer>
+
+  <!-- Admin SQL Modal -->
+  <div id="sql-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 hidden">
+    <div class="bg-slate-900 text-slate-100 rounded-2xl border border-slate-700 shadow-2xl max-w-2xl w-full overflow-hidden">
+      <div class="flex items-center justify-between px-5 py-3.5 bg-slate-800 border-b border-slate-700">
+        <div class="flex items-center space-x-2 text-sky-400 font-semibold text-sm">
+          <i data-lucide="terminal" class="w-4 h-4"></i>
+          <span>SQL Server Query Inspector</span>
+        </div>
+        <button onclick="closeSqlModal()" class="text-slate-400 hover:text-white p-1 rounded">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+      <div class="p-4 space-y-3">
+        <pre id="modal-sql-code" class="bg-slate-950 p-4 rounded-xl font-mono text-xs text-sky-300 overflow-x-auto border border-slate-800 whitespace-pre-wrap"></pre>
+        <div class="flex justify-end">
+          <button onclick="copyModalSql()" id="modal-copy-btn" class="px-3 py-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-xs font-medium transition">
+            Copy SQL
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    lucide.createIcons();
+    let conversationId = 'conv-' + Date.now();
+    let isAdminMode = false;
+    let chartInstances = {};
+
+    document.getElementById('admin-toggle-btn').addEventListener('click', () => {
+      isAdminMode = !isAdminMode;
+      document.getElementById('admin-toggle-text').innerText = 'Admin SQL: ' + (isAdminMode ? 'ON' : 'OFF');
+      document.getElementById('admin-toggle-btn').className = isAdminMode
+        ? 'flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-50 text-purple-700 border border-purple-300 transition'
+        : 'flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200 transition';
+    });
+
+    document.getElementById('clear-history-btn').addEventListener('click', () => {
+      document.getElementById('chat-stream').innerHTML = `
+        <div class="flex items-start space-x-3 max-w-3xl">
+          <div class="w-8 h-8 rounded-xl bg-slate-900 text-sky-400 flex items-center justify-center flex-shrink-0 shadow-sm border border-slate-700">
+            <i data-lucide="bot" class="w-4 h-4"></i>
+          </div>
+          <div class="bg-white border border-slate-200/80 rounded-2xl rounded-tl-none p-4 shadow-sm text-sm text-slate-800 space-y-2">
+            <div class="flex items-center space-x-1.5 text-xs font-semibold text-slate-700 border-b border-slate-100 pb-1.5">
+              <i data-lucide="sparkles" class="w-3.5 h-3.5 text-sky-600"></i>
+              <span>Warehouse AI Assistant</span>
+            </div>
+            <p>Conversation reset. Ask any warehouse question to get started.</p>
+          </div>
+        </div>
+      `;
+      conversationId = 'conv-' + Date.now();
+      lucide.createIcons();
+    });
+
+    function sendQuickQuery(q) {
+      document.getElementById('user-input').value = q;
+      handleSubmit(new Event('submit'));
+    }
+
+    async function handleSubmit(e) {
+      if (e) e.preventDefault();
+      const input = document.getElementById('user-input');
+      const text = input.value.trim();
+      if (!text) return;
+
+      input.value = '';
+      input.focus();
+
+      // Render User Message
+      appendUserMessage(text);
+      
+      // Render Loading State
+      const loadingId = appendLoadingIndicator();
+
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: text,
+            conversation_id: conversationId,
+            is_admin: isAdminMode
+          })
+        });
+
+        const loadingElem = document.getElementById(loadingId);
+        if (loadingElem) loadingElem.remove();
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || 'Server error ' + res.status);
+        }
+
+        const data = await res.json();
+        appendAssistantResponse(data);
+      } catch (err) {
+        const loadingElem = document.getElementById(loadingId);
+        if (loadingElem) loadingElem.remove();
+        appendErrorMessage(err.message);
+      }
+    }
+
+    function appendUserMessage(text) {
+      const stream = document.getElementById('chat-stream');
+      const div = document.createElement('div');
+      div.className = 'flex justify-end';
+      div.innerHTML = `
+        <div class="flex items-start space-x-3 flex-row-reverse space-x-reverse max-w-2xl">
+          <div class="w-8 h-8 rounded-xl bg-sky-600 text-white flex items-center justify-center flex-shrink-0 shadow-sm">
+            <i data-lucide="user" class="w-4 h-4"></i>
+          </div>
+          <div class="bg-sky-600 text-white p-3.5 rounded-2xl rounded-tr-none shadow-sm text-sm">
+            ${escapeHtml(text)}
+          </div>
+        </div>
+      `;
+      stream.appendChild(div);
+      stream.scrollTop = stream.scrollHeight;
+      lucide.createIcons();
+    }
+
+    function appendLoadingIndicator() {
+      const stream = document.getElementById('chat-stream');
+      const id = 'loading-' + Date.now();
+      const div = document.createElement('div');
+      div.id = id;
+      div.className = 'flex items-start space-x-3 max-w-xl animate-pulse';
+      div.innerHTML = `
+        <div class="w-8 h-8 rounded-xl bg-sky-100 text-sky-600 flex items-center justify-center flex-shrink-0">
+          <i data-lucide="loader" class="w-4 h-4 animate-spin"></i>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-2xl rounded-tl-none p-3.5 shadow-sm text-xs text-slate-500 flex-1 space-y-2">
+          <div class="font-semibold text-slate-700">Querying SQL Server & analyzing inventory...</div>
+          <div class="h-2 bg-slate-200 rounded w-3/4"></div>
+          <div class="h-2 bg-slate-200 rounded w-1/2"></div>
+        </div>
+      `;
+      stream.appendChild(div);
+      stream.scrollTop = stream.scrollHeight;
+      lucide.createIcons();
+      return id;
+    }
+
+    function appendAssistantResponse(res) {
+      const stream = document.getElementById('chat-stream');
+      const div = document.createElement('div');
+      div.className = 'flex items-start space-x-3 max-w-3xl w-full';
+      const rows = res.data || res.rows || [];
+      const rowCount = res.meta ? res.meta.rowCount : (res.row_count ?? rows.length);
+      const executionMs = res.meta ? res.meta.executionMs : res.execution_ms;
+      const chartId = 'chart-' + Date.now();
+
+      const htmlContent = marked.parse(res.answer || '');
+
+      let chartHtml = '';
+      if (res.chart && res.chart.type !== 'none' && res.chart.data && res.chart.data.length > 0) {
+        chartHtml = `
+          <div class="mt-3 bg-slate-50 p-3 rounded-xl border border-slate-200">
+            <div class="text-xs font-semibold text-slate-700 mb-2">${escapeHtml(res.chart.title || 'Chart Analysis')}</div>
+            <div class="h-56 w-full relative">
+              <canvas id="${chartId}"></canvas>
+            </div>
+          </div>
+        `;
+      }
+
+      let tableHtml = '';
+      if (rows && rows.length > 0) {
+        const cols = Object.keys(rows[0]);
+        tableHtml = `
+          <div class="mt-3 bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+            <div class="flex items-center justify-between p-2.5 bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-700">
+              <div class="flex items-center space-x-1.5">
+                <i data-lucide="table" class="w-3.5 h-3.5 text-sky-600"></i>
+                <span>Results (${rows.length} rows)</span>
+              </div>
+              <button onclick='exportTableCsv(${JSON.stringify(rows)})' class="flex items-center space-x-1 px-2 py-0.5 bg-white border border-slate-300 hover:bg-slate-100 rounded text-[11px] text-slate-700 transition">
+                <i data-lucide="download" class="w-3 h-3"></i>
+                <span>CSV</span>
+              </button>
+            </div>
+            <div class="overflow-x-auto max-h-60">
+              <table class="min-w-full divide-y divide-slate-200 text-left text-xs">
+                <thead class="bg-slate-50 text-slate-600">
+                  <tr>
+                    ${cols.map(c => `<th class="px-3 py-2 whitespace-nowrap font-semibold">${escapeHtml(c)}</th>`).join('')}
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100 bg-white">
+                  ${rows.slice(0, 10).map(r => `
+                    <tr class="hover:bg-slate-50">
+                      ${cols.map(c => `<td class="px-3 py-1.5 whitespace-nowrap text-slate-700">${escapeHtml(String(r[c] ?? '-'))}</td>`).join('')}
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+            ${rows.length > 10 ? `<div class="p-2 bg-slate-50 text-center text-[11px] text-slate-400 border-t border-slate-200">Showing first 10 of ${rows.length} rows</div>` : ''}
+          </div>
+        `;
+      }
+
+      div.innerHTML = `
+        <div class="w-8 h-8 rounded-xl bg-slate-900 text-sky-400 flex items-center justify-center flex-shrink-0 shadow-sm border border-slate-700">
+          <i data-lucide="bot" class="w-4 h-4"></i>
+        </div>
+        <div class="bg-white border border-slate-200/80 rounded-2xl rounded-tl-none p-4 shadow-sm text-sm text-slate-800 space-y-2 flex-1 overflow-hidden">
+          <div class="flex items-center justify-between border-b border-slate-100 pb-1.5 text-xs text-slate-400">
+            <div class="flex items-center space-x-1.5 font-semibold text-slate-700">
+              <i data-lucide="sparkles" class="w-3.5 h-3.5 text-sky-600"></i>
+              <span>Warehouse AI Assistant</span>
+            </div>
+            <div class="flex items-center space-x-2 text-[11px]">
+              ${executionMs ? `<span>${executionMs}ms</span>` : ''}
+              ${rowCount ? `<span class="bg-slate-100 px-1.5 py-0.5 rounded text-slate-600 font-medium">${rowCount} rows</span>` : ''}
+            </div>
+          </div>
+
+          <div class="prose prose-sm max-w-none text-slate-700 leading-relaxed">${htmlContent}</div>
+
+          ${chartHtml}
+          ${tableHtml}
+
+          <div class="flex items-center justify-between pt-2 border-t border-slate-100 text-xs text-slate-400">
+            <div class="flex items-center space-x-2">
+              <span class="text-[11px]">Helpful?</span>
+              <button onclick="sendFeedback('up', '${escapeHtml(res.sql || '')}')" class="hover:text-emerald-600 p-0.5"><i data-lucide="thumbs-up" class="w-3.5 h-3.5"></i></button>
+              <button onclick="sendFeedback('down', '${escapeHtml(res.sql || '')}')" class="hover:text-rose-600 p-0.5"><i data-lucide="thumbs-down" class="w-3.5 h-3.5"></i></button>
+            </div>
+            ${res.sql ? `
+              <button onclick='openSqlModal(${JSON.stringify(res.sql)})' class="flex items-center space-x-1 text-slate-500 hover:text-sky-600 font-medium text-[11px]">
+                <i data-lucide="code" class="w-3 h-3"></i>
+                <span>View SQL</span>
+              </button>
+            ` : ''}
+          </div>
+        </div>
+      `;
+
+      stream.appendChild(div);
+      stream.scrollTop = stream.scrollHeight;
+      lucide.createIcons();
+
+      // Render Chart if any
+      if (res.chart && res.chart.type !== 'none' && res.chart.data && res.chart.data.length > 0) {
+        renderChart(chartId, res.chart);
+      }
+    }
+
+    function renderChart(canvasId, chartMeta) {
+      const ctx = document.getElementById(canvasId)?.getContext('2d');
+      if (!ctx) return;
+
+      const data = chartMeta.data || [];
+      const keys = Object.keys(data[0] || {});
+      const xKey = chartMeta.xAxis || chartMeta.x_key || keys[0];
+      const yKey = chartMeta.yAxis || chartMeta.y_key || keys.find(k => typeof data[0][k] === 'number') || keys[1];
+
+      const labels = data.map(d => d[xKey]);
+      const values = data.map(d => Number(d[yKey]) || 0);
+
+      const type = chartMeta.type === 'pie' ? 'pie' : chartMeta.type === 'line' ? 'line' : 'bar';
+
+      new Chart(ctx, {
+        type: type,
+        data: {
+          labels: labels,
+          datasets: [{
+            label: yKey,
+            data: values,
+            backgroundColor: type === 'pie'
+              ? ['#0284c7', '#0ea5e9', '#38bdf8', '#7dd3fc', '#10b981', '#f59e0b', '#6366f1', '#ec4899']
+              : '#0284c7',
+            borderColor: '#0369a1',
+            borderRadius: 4
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: type === 'pie' }
+          }
+        }
+      });
+    }
+
+    function appendErrorMessage(msg) {
+      const stream = document.getElementById('chat-stream');
+      const div = document.createElement('div');
+      div.className = 'p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs';
+      div.innerHTML = `<strong>Error:</strong> ${escapeHtml(msg)}`;
+      stream.appendChild(div);
+      stream.scrollTop = stream.scrollHeight;
+    }
+
+    function escapeHtml(str) {
+      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function openSqlModal(sql) {
+      document.getElementById('modal-sql-code').innerText = sql;
+      document.getElementById('sql-modal').classList.remove('hidden');
+    }
+
+    function closeSqlModal() {
+      document.getElementById('sql-modal').classList.add('hidden');
+    }
+
+    function copyModalSql() {
+      const sql = document.getElementById('modal-sql-code').innerText;
+      navigator.clipboard.writeText(sql);
+      const btn = document.getElementById('modal-copy-btn');
+      btn.innerText = 'Copied!';
+      setTimeout(() => btn.innerText = 'Copy SQL', 2000);
+    }
+
+    function exportTableCsv(rows) {
+      if (!rows || rows.length === 0) return;
+      const cols = Object.keys(rows[0]);
+      const csv = [cols.join(',')].concat(rows.map(r => cols.map(c => `"${String(r[c] ?? '').replace(/"/g, '""')}"`).join(','))).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'warehouse_export_' + Date.now() + '.csv';
+      a.click();
+    }
+
+    async function sendFeedback(rating, sql) {
+      await fetch('/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversation_id: conversationId, rating, sql })
+      });
+      alert('Thank you for your feedback!');
+    }
+  </script>
+</body>
+</html>

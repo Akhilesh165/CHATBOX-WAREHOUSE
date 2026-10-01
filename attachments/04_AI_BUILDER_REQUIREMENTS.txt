@@ -1,0 +1,26 @@
+# Complete Functional & Technical Requirements
+
+1. Goal:
+Build a warehouse inventory AI chatbot that lets an employee/customer ask natural-language questions about inventory, bins, materials, plants, storage locations, batches, quantities, and related master data. The answer must be grounded in SQL data.
+
+2. Data source contract:
+- Authoritative Inventory: `Bin Invrntory.xlsx` -> `Sheet1` (18 columns).
+- Bin Master: `WMS Bins Data.xlsx` -> `Bin Master` (15 columns).
+- Material Master: `WMS Bins Data.xlsx` -> `Material Master` (23 columns).
+- The `Inventory` sheet inside `WMS Bins Data.xlsx` MUST NOT be imported or used.
+
+3. Stack:
+- Frontend: Next.js + React + TypeScript + Recharts + Tailwind CSS
+- Backend: Python + FastAPI + Pydantic + SQLGlot AST validator + SQLAlchemy + pyodbc
+- Database: Microsoft SQL Server (with read-only least-privilege user)
+
+4. Security:
+- Enforce strict SQLGlot AST validation on every query.
+- Only SELECT / WITH statements allowed.
+- Reject comments (-- and /* */), semicolons / multiple statements, and unauthorized tables.
+- Database credentials must never be exposed or sent to the LLM.
+
+5. Reliability:
+- If SQL generation or validation fails, retry once with error reflection.
+- If execution fails, return a friendly error message and log the technical error server-side.
+- Grounded answers must never invent quantities, dates, or material codes.

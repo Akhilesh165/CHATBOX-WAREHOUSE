@@ -1,0 +1,20 @@
+# SETUP AND BUILD ORDER
+
+1. Database Setup:
+   - Run 01_SCHEMA.sql on your SQL Server instance.
+   - Run 02_VIEWS.sql to create analytical views.
+
+2. Data Ingestion:
+   - Execute: python scripts/import_excel.py --inventory "data/Bin Invrntory.xlsx" --masters "data/WMS Bins Data.xlsx"
+
+3. Backend Setup:
+   - Configure .env based on 03_ENV_EXAMPLE.txt.
+   - Install dependencies: pip install -r backend/requirements.txt
+   - Run tests: pytest
+   - Start server: uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
+
+4. Frontend Setup:
+   - cd frontend
+   - npm install
+   - npm run dev
+   - Access UI at http://localhost:3000

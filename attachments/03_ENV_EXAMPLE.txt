@@ -1,0 +1,25 @@
+# ============================================================================
+# 03_ENV_EXAMPLE.txt
+# COPY THIS FILE TO .env ON THE BACKEND SERVER.
+# DO NOT UPLOAD REAL PASSWORDS OR API KEYS TO AN AI BUILDER.
+# ============================================================================
+
+DB_SERVER=YOUR_SQL_SERVER_HOST_OR_IP
+DB_PORT=1433
+DB_NAME=WarehouseDB
+DB_USER=wms_chatbot_readonly
+DB_PASSWORD=YOUR_DATABASE_PASSWORD
+DB_DRIVER=ODBC Driver 18 for SQL Server
+
+# Choose your LLM provider in the backend.
+AI_API_KEY=YOUR_AI_API_KEY
+AI_MODEL=gemini-1.5-pro
+
+# Application Settings
+APP_ENV=development
+API_PORT=8000
+SQL_QUERY_TIMEOUT_SECONDS=30
+MAX_RESULT_ROWS=500
+
+# Optional CORS
+FRONTEND_ORIGIN=http://localhost:3000
