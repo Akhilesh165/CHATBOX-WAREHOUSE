@@ -6,7 +6,8 @@ import {
   XAxis,
   YAxis,
   Tooltip,
-  CartesianGrid
+  CartesianGrid,
+  Legend
 } from 'recharts';
 
 interface InventoryLineChartProps {
@@ -16,29 +17,72 @@ interface InventoryLineChartProps {
   yKey?: string;
 }
 
+function parseNumber(val: any): number | null {
+  if (val === null || val === undefined || val === '') return null;
+  if (typeof val === 'number') return isNaN(val) ? null : val;
+  if (typeof val === 'string') {
+    const clean = val.replace(/%/g, '').replace(/,/g, '').replace(/[a-zA-Z]+/g, '').trim();
+    const num = parseFloat(clean);
+    return isNaN(num) ? null : num;
+  }
+  return null;
+}
+
 export const InventoryLineChart: React.FC<InventoryLineChartProps> = ({
   title,
   data,
   xKey,
   yKey
 }) => {
-  if (!data || data.length === 0) return null;
+  if (!data || !Array.isArray(data) || data.length === 0) return null;
 
-  const keys = Object.keys(data[0] || {});
-  const effectiveXKey = xKey || keys[0] || 'x';
-  const effectiveYKey = yKey || keys.find(k => typeof data[0][k] === 'number') || keys[1] || 'y';
+  const rawKeys = Object.keys(data[0] || {});
+  if (rawKeys.length === 0) return null;
+
+  const preferredXKeys = ['Date', 'Month', 'Year', 'ChangedAt', 'INSERT_TIMESTAMP', 'CreatedDate', 'Plant', 'Material'];
+  let effectiveXKey = xKey;
+  if (!effectiveXKey || !rawKeys.includes(effectiveXKey)) {
+    effectiveXKey = preferredXKeys.find(k => rawKeys.includes(k)) || rawKeys[0];
+  }
+
+  let effectiveYKey = yKey;
+  if (!effectiveYKey || !rawKeys.includes(effectiveYKey)) {
+    effectiveYKey = rawKeys.find(k => k !== effectiveXKey && parseNumber(data[0][k]) !== null) || rawKeys[1] || 'value';
+  }
+
+  const chartData = data.map(item => {
+    const row: Record<string, any> = { ...item };
+    for (const k of Object.keys(item)) {
+      const parsed = parseNumber(item[k]);
+      if (parsed !== null) {
+        row[`__num_${k}`] = parsed;
+        if (k === effectiveYKey) {
+          row[k] = parsed;
+        }
+      }
+    }
+    return row;
+  });
+
+  const isPercentage = String(effectiveYKey).includes('%') || String(effectiveYKey).toLowerCase().includes('pct');
 
   return (
-    <div className="w-full bg-white p-4 rounded-xl border border-slate-200 shadow-sm my-3">
+    <div className="w-full bg-white p-4 md:p-5 rounded-2xl border border-slate-200 shadow-xs my-3">
       {title && (
-        <h4 className="text-sm font-semibold text-slate-800 mb-3 border-b border-slate-100 pb-2">
-          {title}
-        </h4>
+        <div className="flex items-center justify-between border-b border-slate-100 pb-2.5 mb-3.5">
+          <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
+            <span className="w-2 h-2 rounded-full bg-sky-500 inline-block"></span>
+            <span>{title}</span>
+          </h4>
+          <span className="text-[11px] font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+            {chartData.length} data points
+          </span>
+        </div>
       )}
       <div className="h-64 w-full">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={data} margin={{ top: 10, right: 20, left: 10, bottom: 25 }}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+          <LineChart data={chartData} margin={{ top: 10, right: 24, left: 10, bottom: 25 }}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
             <XAxis
               dataKey={effectiveXKey}
               tick={{ fontSize: 11, fill: '#64748b' }}
@@ -48,23 +92,33 @@ export const InventoryLineChart: React.FC<InventoryLineChartProps> = ({
             />
             <YAxis
               tick={{ fontSize: 11, fill: '#64748b' }}
-              tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v)}
+              tickFormatter={(v) => {
+                if (isPercentage) return `${Number(v).toFixed(0)}%`;
+                if (v >= 1000000) return `${(v / 1000000).toFixed(1)}M`;
+                if (v >= 1000) return `${(v / 1000).toFixed(1)}k`;
+                return `${v}`;
+              }}
             />
             <Tooltip
               contentStyle={{
                 backgroundColor: '#0f172a',
-                borderRadius: '8px',
+                borderRadius: '10px',
                 border: 'none',
                 color: '#fff',
                 fontSize: '12px'
               }}
-              formatter={(value: any) => [Number(value).toLocaleString(), effectiveYKey]}
+              formatter={(value: any) => {
+                const num = parseNumber(value) ?? 0;
+                return [isPercentage ? `${num.toFixed(2)}%` : num.toLocaleString(), effectiveYKey];
+              }}
             />
+            <Legend verticalAlign="top" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px', color: '#64748b' }} />
             <Line
               type="monotone"
               dataKey={effectiveYKey}
+              name={String(effectiveYKey)}
               stroke="#0284c7"
-              strokeWidth={2.5}
+              strokeWidth={3}
               dot={{ r: 4, fill: '#0284c7' }}
               activeDot={{ r: 6 }}
             />
