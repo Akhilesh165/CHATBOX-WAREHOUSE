@@ -22,6 +22,7 @@ def test_data_quality_missing_dimensions_intent():
         assert "ZWMS_INVENTORY" in gen["sql"]
         assert "ZWMS_MATERIAL_MASTER" in gen["sql"]
         assert "Quality Issue" in gen["sql"]
+        assert "Missing Volume Master Record" in gen["sql"]
         assert "Length" in gen["sql"]
         assert "Width" in gen["sql"]
         assert "Height" in gen["sql"]

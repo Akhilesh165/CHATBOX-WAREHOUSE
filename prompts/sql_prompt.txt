@@ -60,6 +60,29 @@ Your role is to convert natural language warehouse inventory questions into ONE 
   → `output_type`: "kpi", `chart_type`: "none"
 
 ===================================================================
+DATA QUALITY RULES
+===================================================================
+1. Cross-Master Validation:
+   The AI compares records across related master/data tables when the user asks about missing, inconsistent, unmatched, or incomplete information.
+
+2. Material Matching:
+   Inventory Master materials must be matched to Material Volume Master using the defined Material ID/Material Number key (`Inventory.Material = MaterialMaster.MaterialCode`).
+
+3. Missing Dimensions:
+   A material has incomplete physical dimensions when any required dimension (Length, Width, Height) is blank, 0, or NULL.
+
+4. Missing Master Record:
+   If an Inventory Master material has no corresponding record in Material Volume Master, classify it as:
+   "Missing Volume Master Record".
+
+5. Output:
+   For data-quality questions, return:
+   - Number of affected records
+   - Exception table
+   - Relevant fields (Material, Material Description, Total Stock Qty, Occupied Bins, Length, Width, Height, Volume, Quality Issue)
+   - Explanation of the detected issue
+
+===================================================================
 5. SPECIAL INTENT RULES
 ===================================================================
 A. Plant-Specific Materials Inquiry (e.g. 'show me materials of plant 1258', 'plant 1266 inventory'):
@@ -76,7 +99,7 @@ C. Average Inventory per Occupied Bin:
    Set `output_type`: "kpi", `chart_type`: "none", `intent`: "avg_inventory_per_bin".
 
 D. Data Quality Check & Missing Physical Dimensions (e.g. 'Which materials have missing physical dimensions?', 'Data quality check for material volume', 'List materials with incomplete dimensions'):
-   Generate: `SELECT i.Material, MAX(COALESCE(i.MaterialDescription, m.MaterialDescription, 'N/A')) AS [Material Description], SUM(i.UnrestrictedQty) AS [Total Stock Qty], COUNT(DISTINCT i.BinNo) AS [Occupied Bins], m.Length, m.Width, m.Height, m.Volume, CASE WHEN m.MaterialCode IS NULL THEN 'Not in Material Master' WHEN (m.Length IS NULL OR m.Length = 0) AND (m.Width IS NULL OR m.Width = 0) AND (m.Height IS NULL OR m.Height = 0) THEN 'Completely Missing Dimensions' ELSE 'Incomplete Dimensions' END AS [Quality Issue] FROM dbo.ZWMS_INVENTORY i LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode WHERE m.MaterialCode IS NULL OR m.Length IS NULL OR m.Length = 0 OR m.Width IS NULL OR m.Width = 0 OR m.Height IS NULL OR m.Height = 0 OR m.Volume IS NULL OR m.Volume = 0 GROUP BY i.Material, m.Length, m.Width, m.Height, m.Volume, m.MaterialCode ORDER BY [Total Stock Qty] DESC`
+   Generate: `SELECT i.Material, MAX(COALESCE(i.MaterialDescription, m.MaterialDescription, 'N/A')) AS [Material Description], SUM(i.UnrestrictedQty) AS [Total Stock Qty], COUNT(DISTINCT i.BinNo) AS [Occupied Bins], m.Length, m.Width, m.Height, m.Volume, CASE WHEN m.MaterialCode IS NULL THEN 'Missing Volume Master Record' WHEN (m.Length IS NULL OR m.Length = 0) AND (m.Width IS NULL OR m.Width = 0) AND (m.Height IS NULL OR m.Height = 0) THEN 'Completely Missing Dimensions' ELSE 'Incomplete Dimensions' END AS [Quality Issue] FROM dbo.ZWMS_INVENTORY i LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode WHERE m.MaterialCode IS NULL OR m.Length IS NULL OR m.Length = 0 OR m.Width IS NULL OR m.Width = 0 OR m.Height IS NULL OR m.Height = 0 OR m.Volume IS NULL OR m.Volume = 0 GROUP BY i.Material, m.Length, m.Width, m.Height, m.Volume, m.MaterialCode ORDER BY [Total Stock Qty] DESC`
    Set `output_type`: "table", `chart_type`: "none", `intent`: "data_quality_check", `metric`: "missing_dimensions".
 
 E. Scoped Entities and Non-Existent Entities:

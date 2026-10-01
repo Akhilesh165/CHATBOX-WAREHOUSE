@@ -88,7 +88,7 @@ def deterministic_warehouse_sql_generator(question: str) -> dict[str, Any]:
     m.Height,
     m.Volume,
     CASE 
-        WHEN m.MaterialCode IS NULL THEN 'Not in Material Master'
+        WHEN m.MaterialCode IS NULL THEN 'Missing Volume Master Record'
         WHEN (m.Length IS NULL OR m.Length = 0) AND (m.Width IS NULL OR m.Width = 0) AND (m.Height IS NULL OR m.Height = 0) THEN 'Completely Missing Dimensions'
         ELSE 'Incomplete Dimensions'
     END AS [Quality Issue]
@@ -529,21 +529,21 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     if "Quality Issue" in cols or (("Length" in cols or "Width" in cols or "Height" in cols) and "Occupied Bins" in cols):
         completely_missing = sum(1 for r in rows if "Completely" in str(r.get("Quality Issue", "")))
         incomplete = sum(1 for r in rows if "Incomplete" in str(r.get("Quality Issue", "")))
-        not_in_master = sum(1 for r in rows if "Not in" in str(r.get("Quality Issue", "")))
+        missing_master = sum(1 for r in rows if "Missing Volume Master" in str(r.get("Quality Issue", "")) or "Not in" in str(r.get("Quality Issue", "")))
         total_affected_qty = sum(r.get("Total Stock Qty", 0) for r in rows)
         
-        single_stmt = f"Identified **{count} materials** with missing or incomplete physical dimensions affecting **{total_affected_qty:,.2f} total inventory units**."
+        single_stmt = f"Detected **{count} material records** with data quality exceptions (missing or incomplete physical dimensions / volume metadata) affecting **{total_affected_qty:,.2f} total inventory units**."
         if is_single_statement_requested:
             return single_stmt
             
         lines = [
-            f"### ⚠️ Data Quality Exception: Missing Material Dimensions\n",
+            f"### ⚠️ Data Quality Exception: Missing Material Dimensions & Volume Records\n",
             single_stmt,
-            f"\n**Data Quality Breakdown:**",
-            f"- **Completely Missing Dimensions:** **{completely_missing}** materials (Length, Width & Height all unmaintained)",
-            f"- **Incomplete Dimensions:** **{incomplete}** materials (one or more dimensions missing or zero)",
-            f"- **Unmapped in Material Master:** **{not_in_master}** materials",
-            f"\n💡 *The complete list of material exceptions is loaded into the **searchable, paginated Data Table** below with exact physical dimensions and total inventory volumes.*"
+            f"\n**Data Quality Breakdown & Detected Issues:**",
+            f"- **Missing Volume Master Record:** **{missing_master}** materials exist in Inventory Master but have no entry in Material Volume Master.",
+            f"- **Completely Missing Dimensions:** **{completely_missing}** materials have entries in Material Volume Master but Length, Width, and Height are all blank or NULL.",
+            f"- **Incomplete Dimensions:** **{incomplete}** materials have partial dimension data missing (Length, Width, Height, or Volume is NULL or zero).",
+            f"\n💡 *The complete **Exception Table** with all relevant fields (`Material`, `Description`, `Total Stock Qty`, `Occupied Bins`, `Length`, `Width`, `Height`, `Volume`, `Quality Issue`) is displayed in the **searchable Data Table** below.*"
         ]
         return "\n".join(lines)
 
