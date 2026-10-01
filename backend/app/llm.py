@@ -71,12 +71,12 @@ def deterministic_warehouse_sql_generator(question: str) -> dict[str, Any]:
         "no dimension", "no dimensions", "without dimension", "without dimensions",
         "don't have dimension", "dont have dimension", "do not have dimension",
         "don't have dimensions", "dont have dimensions", "do not have dimensions",
-        "lack dimension", "lack dimensions", "unmaintained dimension",
+        "lack dimension", "lack dimensions", "unmaintained dimension", "physical measurements", "measurements",
         "dimension completeness", "cross-dataset", "cross dataset", "unmatched record", "unmatched material",
         "unmaintained volume", "missing in material master", "not in material master", "physical dimension"
     ]) or (
-        ("dimension" in q_lower or "dimensions" in q_lower or "volume" in q_lower or "length" in q_lower or "width" in q_lower or "height" in q_lower or "physical" in q_lower or "size" in q_lower) and
-        ("missing" in q_lower or "incomplete" in q_lower or "null" in q_lower or "blank" in q_lower or "quality" in q_lower or "check" in q_lower or "exception" in q_lower or "validate" in q_lower or "validation" in q_lower or "without" in q_lower or "absent" in q_lower or "not defined" in q_lower or "not maintained" in q_lower or "unavailable" in q_lower or "don't" in q_lower or "dont" in q_lower or "do not" in q_lower or "no " in q_lower or "lack" in q_lower)
+        ("dimension" in q_lower or "dimensions" in q_lower or "volume" in q_lower or "length" in q_lower or "width" in q_lower or "height" in q_lower or "physical" in q_lower or "size" in q_lower or "measurement" in q_lower or "measurements" in q_lower or "attribute" in q_lower or "attributes" in q_lower) and
+        ("missing" in q_lower or "incomplete" in q_lower or "null" in q_lower or "blank" in q_lower or "quality" in q_lower or "check" in q_lower or "exception" in q_lower or "validate" in q_lower or "validation" in q_lower or "without" in q_lower or "absent" in q_lower or "not defined" in q_lower or "not maintained" in q_lower or "unavailable" in q_lower or "don't" in q_lower or "dont" in q_lower or "do not" in q_lower or "no " in q_lower or "lack" in q_lower or "lacking" in q_lower or "not populated" in q_lower or "without length" in q_lower or "without width" in q_lower)
     )
     if is_dq_intent:
         plant_filter = f" WHERE i.Plant = '{plant_cand}'" if plant_cand else ""
@@ -142,13 +142,71 @@ ORDER BY [Total Stock Qty] DESC"""
             "output_type": "table"
         }
 
-    # B. TOP N & BOTTOM N BIN UTILIZATION RANKINGS
-    has_top = any(k in q_lower for k in ["top", "most utilized", "highest", "fullest", "most capacity"])
-    has_bottom = any(k in q_lower for k in ["bottom", "least utilized", "lowest", "emptiest", "unused capacity"])
-    is_bin_metric = any(k in q_lower for k in ["bin", "bins", "location", "locations"])
-    is_util_metric = any(k in q_lower for k in ["utiliz", "full", "capacit", "occup", "empty", "unused"])
+    # B. MATERIAL BIN VOLUME CONSUMPTION & SHARE OF TOTAL BIN VOLUME
+    is_mat_entity = any(m in q_lower for m in ["material", "materials", "sku", "skus", "item", "items", "product", "products", "goods", "stock item", "stock items"])
+    is_mat_vol_intent = is_mat_entity and any(k in q_lower for k in [
+        "volume", "space consuming", "consuming most", "volume consumption", "highest space", "occupying highest volume",
+        "share of total", "percentage of our total", "percentage of total", "highest percentage", "footprint",
+        "cubic capacity", "take up", "occupy", "occupying", "room in the warehouse", "proportion of bin", "storage space",
+        "largest volume footprint", "highest proportion", "biggest share", "most room"
+    ])
+    if is_mat_vol_intent:
+        plant_filter = f" AND i.Plant = '{plant_cand}'" if plant_cand else ""
+        filters = {"plant": plant_cand} if plant_cand else {}
+        sql_mat_vol = f"""SELECT TOP 10 
+    ROW_NUMBER() OVER (ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC) AS [Rank],
+    i.Material,
+    MAX(COALESCE(i.MaterialDescription, m.MaterialDescription, 'N/A')) AS [Material Description],
+    SUM(i.UnrestrictedQty) AS [Total Quantity],
+    ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 2) AS [Total Material Volume],
+    CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF((SELECT SUM(Volume) FROM dbo.ZWMS_BIN_MASTER WHERE Volume > 0), 0), 3), '%') AS [% of Total Bin Volume]
+FROM dbo.ZWMS_INVENTORY i
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+WHERE i.UnrestrictedQty > 0{plant_filter}
+GROUP BY i.Material
+ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC"""
+        query_plan = {
+            "user_intent": "material_volume_share",
+            "question_type": "ranking",
+            "entity": "material",
+            "analytical_task": "RANKING / AGGREGATION",
+            "filters": [f"Plant = {plant_cand}"] if plant_cand else [],
+            "tables": [
+                "dbo.ZWMS_INVENTORY",
+                "dbo.ZWMS_MATERIAL_MASTER",
+                "dbo.ZWMS_BIN_MASTER"
+            ],
+            "join": {
+                "left": "dbo.ZWMS_INVENTORY.Material",
+                "right": "dbo.ZWMS_MATERIAL_MASTER.MaterialCode",
+                "type": "LEFT"
+            },
+            "conditions": [
+                "i.UnrestrictedQty > 0"
+            ],
+            "result_type": "bar_chart"
+        }
+        return {
+            "sql": sql_mat_vol,
+            "query_plan": query_plan,
+            "chart_type": "bar",
+            "chart_title": "Top 10 Materials by Share of Total Bin Volume (%)",
+            "chart_x": "Material",
+            "chart_y": "% of Total Bin Volume",
+            "intent": "material_volume_share",
+            "metric": "bin_volume_consumption",
+            "filters": filters,
+            "time_range": "current",
+            "output_type": "bar_chart"
+        }
 
-    if is_bin_metric and is_util_metric and (has_top or has_bottom):
+    # C. TOP N & BOTTOM N BIN UTILIZATION RANKINGS
+    has_top = any(k in q_lower for k in ["top", "most utilized", "highest", "fullest", "most capacity", "capacity usage", "fullest bins"])
+    has_bottom = any(k in q_lower for k in ["bottom", "least utilized", "lowest", "emptiest", "unused capacity", "emptiest bins"])
+    is_bin_metric = any(k in q_lower for k in ["bin", "bins", "location", "locations", "racks", "rack", "slot", "slots", "storage position"])
+    is_util_metric = any(k in q_lower for k in ["utiliz", "full", "capacit", "occup", "empty", "unused", "space"])
+
+    if is_bin_metric and is_util_metric and (has_top or has_bottom) and not is_mat_entity:
         n_match = re.search(r"\b(?:top|bottom|highest|lowest|first|last)?\s*(\d{1,3})\b", q_lower)
         n_val = int(n_match.group(1)) if (n_match and n_match.group(1) not in ["100", "2024", "2025", "2026"]) else 10
         plant_filter = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
@@ -226,12 +284,12 @@ FROM BottomBins"""
                 "output_type": "table"
             }
 
-    # B. BIN CAPACITY & UTILIZATION THRESHOLD FILTERING
+    # D. BIN CAPACITY & UTILIZATION THRESHOLD FILTERING
     threshold_match = re.search(r"(?:more\s+than|greater\s+than|over|above|>|>=|at\s+least|exceeding|less\s+than|below|<|<=|under)\s*(\d{1,3})(?:\s*%)?", q_lower)
     if not threshold_match:
         threshold_match = re.search(r"(\d{1,3})\s*%\s*(?:full|utiliz|capacit|occup)", q_lower)
 
-    if threshold_match and is_bin_metric and is_util_metric:
+    if threshold_match and is_bin_metric and is_util_metric and not is_mat_entity:
         thresh_val = float(threshold_match.group(1))
         is_less = any(k in q_lower for k in ["less than", "below", "under", "<"])
         op = "<=" if is_less else ">="
@@ -251,21 +309,21 @@ FROM BottomBins"""
             "output_type": "table"
         }
 
-    # C. EMPTY BINS / AVAILABLE FOR PUT-AWAY
+    # E. EMPTY BINS / AVAILABLE FOR PUT-AWAY
     # Semantic Definition: Bin inventory quantity = 0 (UnrestrictedQty = 0 or BinNo IS NULL)
     is_empty_intent = (
         any(k in q_lower for k in [
             "empty", "putaway", "put-away", "put away", "vacant", "unoccupied",
             "unused", "free bin", "free space", "free location", "free storage", "completely free",
-            "available bin", "available storage", "available space", "free right now",
+            "available bin", "available storage", "available space", "free right now", "freight",
             "zero inventory", "no inventory", "zero stock", "no stock", "no current stock",
             "zero occupied", "balance is zero", "quantity equals zero", "quantity is zero",
             "stock level is zero", "nothing is stored", "nothing is currently stored",
             "nothing stored", "without displacing", "incoming stock", "incoming shipment",
-            "not being used", "aren't being used", "accept new"
+            "not being used", "aren't being used", "accept new", "store new", "without moving"
         ]) or (
             ("free" in q_lower or "vacant" in q_lower or "zero" in q_lower or "empty" in q_lower) and
-            ("bin" in q_lower or "location" in q_lower or "storage" in q_lower or "space" in q_lower or "position" in q_lower)
+            ("bin" in q_lower or "location" in q_lower or "storage" in q_lower or "space" in q_lower or "position" in q_lower or "slot" in q_lower)
         )
     )
     if is_empty_intent:
@@ -284,9 +342,9 @@ FROM BottomBins"""
             "output_type": "table"
         }
 
-    # D. AVERAGE INVENTORY PER OCCUPIED BIN
+    # F. AVERAGE INVENTORY PER OCCUPIED BIN
     # Semantic Definition: Total inventory quantity / number of occupied bins
-    if any(k in q_lower for k in ["average inventory", "avg inventory", "average stock", "avg stock", "average quantity", "average units", "inventory per bin", "stock per bin", "units per bin", "quantity per bin", "inventory per occupied bin"]):
+    if any(k in q_lower for k in ["average inventory", "avg inventory", "average stock", "avg stock", "average quantity", "average units", "inventory per bin", "stock per bin", "units per bin", "quantity per bin", "inventory per occupied bin", "mean quantity", "mean stock", "mean units", "mean inventory", "inside each occupied"]):
         plant_filter = f" WHERE Plant = '{plant_cand}' AND UnrestrictedQty > 0" if plant_cand else " WHERE UnrestrictedQty > 0"
         filters = {"plant": plant_cand} if plant_cand else {}
         return {
@@ -302,7 +360,7 @@ FROM BottomBins"""
             "output_type": "kpi"
         }
 
-    # E. WAREHOUSE & PLANT BIN UTILIZATION PERCENTAGE
+    # F. WAREHOUSE & PLANT BIN UTILIZATION PERCENTAGE
     # Semantic Definition: Occupied volume / Total capacity volume * 100
     is_utilization_intent = (
         any(k in q_lower for k in ["utiliz", "occupan", "capacity", "how full", "warehouse fullness", "facility fill", "fill rate", "space utilization", "bin fill", "fill percentage"]) or
@@ -319,57 +377,6 @@ FROM BottomBins"""
             "chart_y": "BinUtilizationPct",
             "intent": "bin_utilization",
             "metric": "warehouse_utilization",
-            "filters": filters,
-            "time_range": "current",
-            "output_type": "bar_chart"
-        }
-
-    # F. MATERIAL BIN VOLUME CONSUMPTION & SHARE OF TOTAL BIN VOLUME
-    if any(k in q_lower for k in ["volume", "space consuming", "consuming most", "volume consumption", "highest space", "occupying highest volume", "share of total", "percentage of our total", "percentage of total", "highest percentage"]):
-        plant_filter = f" AND i.Plant = '{plant_cand}'" if plant_cand else ""
-        filters = {"plant": plant_cand} if plant_cand else {}
-        sql_mat_vol = f"""SELECT TOP 10 
-    ROW_NUMBER() OVER (ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC) AS [Rank],
-    i.Material,
-    MAX(COALESCE(i.MaterialDescription, m.MaterialDescription, 'N/A')) AS [Material Description],
-    SUM(i.UnrestrictedQty) AS [Total Quantity],
-    ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 2) AS [Total Material Volume],
-    CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF((SELECT SUM(Volume) FROM dbo.ZWMS_BIN_MASTER WHERE Volume > 0), 0), 3), '%') AS [% of Total Bin Volume]
-FROM dbo.ZWMS_INVENTORY i
-LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
-WHERE i.UnrestrictedQty > 0{plant_filter}
-GROUP BY i.Material
-ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC"""
-        query_plan = {
-            "user_intent": "material_volume_share",
-            "question_type": "ranking",
-            "entity": "material",
-            "analytical_task": "RANKING / AGGREGATION",
-            "filters": [f"Plant = {plant_cand}"] if plant_cand else [],
-            "tables": [
-                "dbo.ZWMS_INVENTORY",
-                "dbo.ZWMS_MATERIAL_MASTER",
-                "dbo.ZWMS_BIN_MASTER"
-            ],
-            "join": {
-                "left": "dbo.ZWMS_INVENTORY.Material",
-                "right": "dbo.ZWMS_MATERIAL_MASTER.MaterialCode",
-                "type": "LEFT"
-            },
-            "conditions": [
-                "i.UnrestrictedQty > 0"
-            ],
-            "result_type": "bar_chart"
-        }
-        return {
-            "sql": sql_mat_vol,
-            "query_plan": query_plan,
-            "chart_type": "bar",
-            "chart_title": "Top 10 Materials by Share of Total Bin Volume (%)",
-            "chart_x": "Material",
-            "chart_y": "% of Total Bin Volume",
-            "intent": "material_volume_share",
-            "metric": "bin_volume_consumption",
             "filters": filters,
             "time_range": "current",
             "output_type": "bar_chart"
