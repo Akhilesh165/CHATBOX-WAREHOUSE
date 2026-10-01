@@ -44,9 +44,9 @@ def test_warehouse_utilization_semantic_rule():
 def test_top_materials_volume_consumption_semantic_rule():
     q = "Which materials are consuming the highest percentage of total bin volume?"
     gen = deterministic_warehouse_sql_generator(q)
-    assert gen["intent"] == "material_volume"
-    assert "PctOfTotalWarehouseBinVolume" in gen["sql"]
-    assert "ConsumedMaterialVolume" in gen["sql"]
+    assert gen["intent"] in ["material_volume", "material_volume_share"]
+    assert "% of Total Bin Volume" in gen["sql"] or "PctOfTotalWarehouseBinVolume" in gen["sql"]
+    assert "Total Material Volume" in gen["sql"] or "ConsumedMaterialVolume" in gen["sql"]
 
 def test_output_selection_rules():
     # 1. KPI

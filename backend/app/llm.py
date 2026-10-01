@@ -308,7 +308,7 @@ FROM BottomBins"""
         any(k in q_lower for k in ["utiliz", "occupan", "capacity", "how full", "warehouse fullness", "facility fill", "fill rate", "space utilization", "bin fill", "fill percentage"]) or
         (("volume" in q_lower or "space" in q_lower) and ("occup" in q_lower or "capacit" in q_lower or "fill" in q_lower or "versus" in q_lower or "compared" in q_lower))
     )
-    if is_utilization_intent:
+    if is_utilization_intent and not any(m in q_lower for m in ["material", "sku", "item", "product", "consuming", "share of total"]):
         plant_filter = f" WHERE b.Plant = '{plant_cand}'" if plant_cand and not any(w in q_lower for w in ["all", "compare", "network", "plants"]) else ""
         filters = {"plant": plant_cand} if plant_filter else {}
         return {
@@ -324,17 +324,51 @@ FROM BottomBins"""
             "output_type": "bar_chart"
         }
 
-    # F. MATERIAL BIN VOLUME CONSUMPTION
-    if any(k in q_lower for k in ["volume", "space consuming", "consuming most", "volume consumption", "highest space", "occupying highest volume"]):
-        plant_filter = f" WHERE i.Plant = '{plant_cand}'" if plant_cand else ""
+    # F. MATERIAL BIN VOLUME CONSUMPTION & SHARE OF TOTAL BIN VOLUME
+    if any(k in q_lower for k in ["volume", "space consuming", "consuming most", "volume consumption", "highest space", "occupying highest volume", "share of total", "percentage of our total", "percentage of total", "highest percentage"]):
+        plant_filter = f" AND i.Plant = '{plant_cand}'" if plant_cand else ""
         filters = {"plant": plant_cand} if plant_cand else {}
+        sql_mat_vol = f"""SELECT TOP 10 
+    ROW_NUMBER() OVER (ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC) AS [Rank],
+    i.Material,
+    MAX(COALESCE(i.MaterialDescription, m.MaterialDescription, 'N/A')) AS [Material Description],
+    SUM(i.UnrestrictedQty) AS [Total Quantity],
+    ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 2) AS [Total Material Volume],
+    CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF((SELECT SUM(Volume) FROM dbo.ZWMS_BIN_MASTER WHERE Volume > 0), 0), 3), '%') AS [% of Total Bin Volume]
+FROM dbo.ZWMS_INVENTORY i
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+WHERE i.UnrestrictedQty > 0{plant_filter}
+GROUP BY i.Material
+ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC"""
+        query_plan = {
+            "user_intent": "material_volume_share",
+            "question_type": "ranking",
+            "entity": "material",
+            "analytical_task": "RANKING / AGGREGATION",
+            "filters": [f"Plant = {plant_cand}"] if plant_cand else [],
+            "tables": [
+                "dbo.ZWMS_INVENTORY",
+                "dbo.ZWMS_MATERIAL_MASTER",
+                "dbo.ZWMS_BIN_MASTER"
+            ],
+            "join": {
+                "left": "dbo.ZWMS_INVENTORY.Material",
+                "right": "dbo.ZWMS_MATERIAL_MASTER.MaterialCode",
+                "type": "LEFT"
+            },
+            "conditions": [
+                "i.UnrestrictedQty > 0"
+            ],
+            "result_type": "bar_chart"
+        }
         return {
-            "sql": f"SELECT TOP 10 i.Material, MAX(COALESCE(i.MaterialDescription, m.MaterialDescription)) AS MaterialDescription, MAX(COALESCE(m.MaterialGroup, 'N/A')) AS MaterialGroup, SUM(i.UnrestrictedQty) AS TotalQuantity, MAX(m.Volume) AS UnitVolume, ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 2) AS ConsumedMaterialVolume, ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF((SELECT SUM(Volume) FROM dbo.ZWMS_BIN_MASTER), 0), 4) AS PctOfTotalWarehouseBinVolume, COUNT(DISTINCT i.BinNo) AS BinsOccupied FROM dbo.ZWMS_INVENTORY i LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode{plant_filter} GROUP BY i.Material ORDER BY ConsumedMaterialVolume DESC",
+            "sql": sql_mat_vol,
+            "query_plan": query_plan,
             "chart_type": "bar",
-            "chart_title": "Top Materials Consuming Warehouse Bin Volume (%)",
+            "chart_title": "Top 10 Materials by Share of Total Bin Volume (%)",
             "chart_x": "Material",
-            "chart_y": "PctOfTotalWarehouseBinVolume",
-            "intent": "material_volume",
+            "chart_y": "% of Total Bin Volume",
+            "intent": "material_volume_share",
             "metric": "bin_volume_consumption",
             "filters": filters,
             "time_range": "current",
@@ -575,7 +609,27 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         ]
         return "\n".join(lines)
 
-    # 1. Combined Top & Bottom Bins Ranking
+    # 1. Top Materials by Share of Total Bin Volume (Matching Recommended Chatbot Response)
+    if "Total Material Volume" in cols or "% of Total Bin Volume" in cols:
+        leader_mat = rows[0].get("Material", "N/A") if rows else "N/A"
+        leader_desc = rows[0].get("Material Description", rows[0].get("MaterialDescription", "")) if rows else ""
+        leader_vol = rows[0].get("Total Material Volume", 0.0) if rows else 0.0
+        leader_pct = rows[0].get("% of Total Bin Volume", "0%") if rows else "0%"
+        
+        single_stmt = f"Top 10 Materials by Share of Total Bin Volume: The following materials consume the highest percentage of the warehouse's total bin volume, ranked from highest to lowest (leader: **`{leader_mat}`** at **{leader_vol:,.2f} FT³** / {leader_pct})."
+        if is_single_statement_requested:
+            return single_stmt
+            
+        lines = [
+            "### 📊 Top 10 Materials by Share of Total Bin Volume\n",
+            "The following materials consume the highest percentage of the warehouse's total bin volume, ranked from highest to lowest.\n",
+            f"- **Top Consumer:** Material **`{leader_mat}`** (**{leader_desc}**) accounts for **{leader_vol:,.2f} FT³** (**{leader_pct}** of total warehouse bin capacity).",
+            f"- **Ranking Summary:** Ranked by total occupied volume share across active warehouse bins.",
+            "\n💡 *The interactive **Bar Chart** and itemized **Results Table** below display all top materials with quantities, total volumes, and exact percentage shares:*"
+        ]
+        return "\n".join(lines)
+
+    # 2. Combined Top & Bottom Bins Ranking
     if "Ranking Group" in cols:
         top_rows = [r for r in rows if "Top" in str(r.get("Ranking Group", ""))]
         bottom_rows = [r for r in rows if "Bottom" in str(r.get("Ranking Group", ""))]
@@ -824,16 +878,16 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
             "time_range": "current"
         }
 
-    # 4. Material Volume Consumption
-    if "ConsumedMaterialVolume" in cols or "PctOfTotalWarehouseBinVolume" in cols:
+    # 4. Material Volume Consumption & Share of Total Bin Volume
+    if "% of Total Bin Volume" in cols or "Total Material Volume" in cols or "ConsumedMaterialVolume" in cols or "PctOfTotalWarehouseBinVolume" in cols:
         return {
             "output_type": "bar_chart",
             "chart_type": "bar",
-            "chart_title": "Top Materials Consuming Warehouse Bin Volume (%)",
+            "chart_title": "Top 10 Materials by Share of Total Bin Volume (%)",
             "chart_x": "Material",
-            "chart_y": "PctOfTotalWarehouseBinVolume",
+            "chart_y": "% of Total Bin Volume" if "% of Total Bin Volume" in cols else "Total Material Volume",
             "metric": "bin_volume_consumption",
-            "intent": "material_volume",
+            "intent": "material_volume_share",
             "time_range": "current"
         }
 

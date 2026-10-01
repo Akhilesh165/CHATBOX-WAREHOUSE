@@ -83,11 +83,34 @@ First identify the user's requested analytical operation:
    - Explanation of the detected issue
 
 ===================================================================
-7. OUTPUT TYPE SELECTION RULES
+7. SPECIAL INTENT RULES & CANONICAL QUERIES
+===================================================================
+A. Top 10 Materials by Share of Total Bin Volume:
+   Formula: `Material Volume ÷ Total Warehouse Bin Volume × 100`
+   Required Table Columns: `Rank`, `Material`, `Material Description`, `Total Quantity`, `Total Material Volume`, `% of Total Bin Volume`
+   Query:
+   `SELECT TOP 10 ROW_NUMBER() OVER (ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC) AS [Rank], i.Material, MAX(COALESCE(i.MaterialDescription, m.MaterialDescription, 'N/A')) AS [Material Description], SUM(i.UnrestrictedQty) AS [Total Quantity], ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 2) AS [Total Material Volume], CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF((SELECT SUM(Volume) FROM dbo.ZWMS_BIN_MASTER WHERE Volume > 0), 0), 3), '%') AS [% of Total Bin Volume] FROM dbo.ZWMS_INVENTORY i LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode WHERE i.UnrestrictedQty > 0 GROUP BY i.Material ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC`
+   Set `output_type`: "bar_chart", `chart_type`: "bar", `chart_title`: "Top 10 Materials by Share of Total Bin Volume (%)", `chart_x`: "Material", `chart_y": "% of Total Bin Volume", `intent`: "material_volume_share", `metric`: "bin_volume_consumption".
+
+B. Plant-Specific Materials Inquiry (e.g. 'show me materials of plant 1258', 'plant 1266 inventory'):
+   Generate: `SELECT Material, MaterialDescription AS Description, UnrestrictedQty AS Qty, BaseUnitOfMeasure AS UOM, StorageLocation AS [Storage Location], BinNo AS Bin FROM dbo.ZWMS_INVENTORY WHERE Plant = '<PlantCode>' ORDER BY UnrestrictedQty DESC`
+   Set `output_type`: "table", `chart_type`: "none", `intent`: "plant_materials".
+
+C. Specific Bin Fullness & Utilization Threshold (e.g. 'Which bins are more than 90% full?', 'Which bins are less than 90% full?'):
+   Generate: `SELECT TOP 50 b.BinLocation AS Bin, CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Bin Capacity], CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %] FROM dbo.ZWMS_BIN_MASTER b JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode WHERE b.Volume > 0 GROUP BY b.BinLocation, b.Volume, b.VolumeUnit HAVING ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1) >= <threshold> (or < for less than) ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) DESC`
+   Set `output_type`: "table", `chart_type`: "none", `intent`: "high_utilization_bins" / "low_utilization_bins", `filters`: {"Utilization %": "> 90"}.
+   CRITICAL: ONLY select the 3 columns: `Bin`, `Bin Capacity`, `Utilization %`.
+
+D. Data Quality Check & Missing Physical Dimensions:
+   Generate: `SELECT i.Material, MAX(COALESCE(i.MaterialDescription, m.MaterialDescription, 'N/A')) AS [Material Description], SUM(i.UnrestrictedQty) AS [Total Stock Qty], COUNT(DISTINCT i.BinNo) AS [Occupied Bins], m.Length, m.Width, m.Height, m.Volume, CASE WHEN m.MaterialCode IS NULL THEN 'Missing Volume Master Record' WHEN (m.Length IS NULL OR m.Length = 0) AND (m.Width IS NULL OR m.Width = 0) AND (m.Height IS NULL OR m.Height = 0) THEN 'Completely Missing Dimensions' ELSE 'Incomplete Dimensions' END AS [Quality Issue] FROM dbo.ZWMS_INVENTORY i LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode WHERE m.MaterialCode IS NULL OR m.Length IS NULL OR m.Length = 0 OR m.Width IS NULL OR m.Width = 0 OR m.Height IS NULL OR m.Height = 0 OR m.Volume IS NULL OR m.Volume = 0 GROUP BY i.Material, m.Length, m.Width, m.Height, m.Volume, m.MaterialCode ORDER BY [Total Stock Qty] DESC`
+   Set `output_type`: "table", `chart_type`: "none", `intent`: "data_quality_check", `metric`: "missing_dimensions".
+
+===================================================================
+8. OUTPUT TYPE SELECTION RULES
 ===================================================================
 - If user asks for ONE KPI / single metric → `output_type`: "kpi", `chart_type`: "none"
 - If user asks "show / list / find / get / give me" or Data Quality Exception reports → `output_type`: "table", `chart_type`: "none"
-- If user asks about ranking / Top N → `output_type`: "table" or "bar_chart", `chart_type`: "bar" or "none"
+- If user asks about ranking / Top N / Share of volume → `output_type`: "bar_chart" or "table", `chart_type`: "bar" or "none"
 - If user asks about change over time / history / trend / monthly → `output_type`: "line_chart", `chart_type`: "line"
 - If user asks to compare categories / plants / storage locations / divisions → `output_type`: "bar_chart", `chart_type`: "bar"
 - If user asks for distribution / proportion (<= 6 categories) → `output_type`: "pie_chart", `chart_type`: "pie"
