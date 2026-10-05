@@ -55,16 +55,16 @@ export const ResultTable: React.FC<ResultTableProps> = ({ rows, pageSize = 8 }) 
   };
 
   return (
-    <div className="w-full bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden my-3">
+    <div className="w-full bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden my-3 transition-colors">
       {/* Table Header Controls */}
-      <div className="flex flex-wrap items-center justify-between p-3 bg-slate-50 border-b border-slate-200 gap-2">
-        <div className="flex items-center space-x-2 text-xs font-semibold text-slate-700">
-          <TableIcon className="w-4 h-4 text-sky-600" />
+      <div className="flex flex-wrap items-center justify-between p-3 bg-slate-50 dark:bg-slate-850 border-b border-slate-200 dark:border-slate-800 gap-2">
+        <div className="flex items-center space-x-2 text-xs font-semibold text-slate-700 dark:text-slate-200">
+          <TableIcon className="w-4 h-4 text-sky-600 dark:text-sky-400" />
           <span>Results Data ({rows.length} {rows.length === 1 ? 'row' : 'rows'})</span>
         </div>
         <div className="flex items-center space-x-2">
           <div className="relative">
-            <Search className="w-3.5 h-3.5 absolute left-2.5 top-2 text-slate-400" />
+            <Search className="w-3.5 h-3.5 absolute left-2.5 top-2 text-slate-400 dark:text-slate-500" />
             <input
               type="text"
               placeholder="Search in table..."
@@ -73,15 +73,15 @@ export const ResultTable: React.FC<ResultTableProps> = ({ rows, pageSize = 8 }) 
                 setSearchTerm(e.target.value);
                 setCurrentPage(1);
               }}
-              className="pl-8 pr-2.5 py-1 text-xs border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-sky-500"
+              className="pl-8 pr-2.5 py-1 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
             />
           </div>
           <button
             onClick={exportToCSV}
-            className="flex items-center space-x-1 px-2.5 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 transition"
+            className="flex items-center space-x-1 px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-750 transition"
             title="Download as CSV"
           >
-            <Download className="w-3.5 h-3.5 text-slate-500" />
+            <Download className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
             <span>Export CSV</span>
           </button>
         </div>
@@ -89,8 +89,8 @@ export const ResultTable: React.FC<ResultTableProps> = ({ rows, pageSize = 8 }) 
 
       {/* Table Scroll Area */}
       <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-slate-200 text-left text-xs">
-          <thead className="bg-slate-50 font-semibold text-slate-600">
+        <table className="min-w-full divide-y divide-slate-200 dark:divide-slate-800 text-left text-xs">
+          <thead className="bg-slate-50 dark:bg-slate-850 font-semibold text-slate-600 dark:text-slate-300">
             <tr>
               {columns.map((col) => (
                 <th key={col} className="px-3.5 py-2.5 whitespace-nowrap">
@@ -99,17 +99,17 @@ export const ResultTable: React.FC<ResultTableProps> = ({ rows, pageSize = 8 }) 
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100 bg-white">
+          <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 bg-white dark:bg-slate-900">
             {paginatedRows.length > 0 ? (
               paginatedRows.map((row, rowIdx) => (
-                <tr key={rowIdx} className="hover:bg-slate-50/80 transition">
+                <tr key={rowIdx} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 transition">
                   {columns.map((col) => {
                     const cellVal = row[col];
                     const isNumeric = typeof cellVal === 'number';
                     return (
                       <td
                         key={col}
-                        className={`px-3.5 py-2 text-slate-700 whitespace-nowrap ${
+                        className={`px-3.5 py-2 text-slate-700 dark:text-slate-200 whitespace-nowrap ${
                           isNumeric ? 'font-mono' : ''
                         }`}
                       >
@@ -125,7 +125,7 @@ export const ResultTable: React.FC<ResultTableProps> = ({ rows, pageSize = 8 }) 
               ))
             ) : (
               <tr>
-                <td colSpan={columns.length} className="px-4 py-4 text-center text-slate-400">
+                <td colSpan={columns.length} className="px-4 py-4 text-center text-slate-400 dark:text-slate-500">
                   No matching records found in filtered results.
                 </td>
               </tr>
@@ -136,7 +136,7 @@ export const ResultTable: React.FC<ResultTableProps> = ({ rows, pageSize = 8 }) 
 
       {/* Pagination Footer */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-between px-3.5 py-2 bg-slate-50 border-t border-slate-200 text-xs text-slate-600">
+        <div className="flex items-center justify-between px-3.5 py-2 bg-slate-50 dark:bg-slate-850 border-t border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300">
           <div>
             Showing <span className="font-semibold">{startIndex + 1}</span> to{' '}
             <span className="font-semibold">
@@ -148,7 +148,7 @@ export const ResultTable: React.FC<ResultTableProps> = ({ rows, pageSize = 8 }) 
             <button
               disabled={currentPage === 1}
               onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-              className="p-1 border border-slate-300 rounded hover:bg-slate-200 disabled:opacity-40 transition"
+              className="p-1 border border-slate-300 dark:border-slate-700 rounded hover:bg-slate-200 dark:hover:bg-slate-800 disabled:opacity-40 transition"
             >
               <ChevronLeft className="w-3.5 h-3.5" />
             </button>
@@ -158,7 +158,7 @@ export const ResultTable: React.FC<ResultTableProps> = ({ rows, pageSize = 8 }) 
             <button
               disabled={currentPage >= totalPages}
               onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-              className="p-1 border border-slate-300 rounded hover:bg-slate-200 disabled:opacity-40 transition"
+              className="p-1 border border-slate-300 dark:border-slate-700 rounded hover:bg-slate-200 dark:hover:bg-slate-800 disabled:opacity-40 transition"
             >
               <ChevronRight className="w-3.5 h-3.5" />
             </button>

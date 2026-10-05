@@ -8,11 +8,10 @@ import {
   Database,
   ShieldCheck,
   TableProperties,
-  ExternalLink,
   ChevronLeft,
-  ChevronRight,
   Boxes,
-  Cpu
+  Sun,
+  Moon
 } from 'lucide-react';
 
 export interface Session {
@@ -33,6 +32,8 @@ interface SidebarProps {
   isAdmin: boolean;
   onToggleAdmin: () => void;
   onOpenSchema: () => void;
+  isDarkMode: boolean;
+  onToggleTheme: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -46,6 +47,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isAdmin,
   onToggleAdmin,
   onOpenSchema,
+  isDarkMode,
+  onToggleTheme
 }) => {
   return (
     <>
@@ -59,7 +62,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Sidebar container */}
       <aside
-        className={`fixed md:static inset-y-0 left-0 z-40 flex flex-col bg-slate-900 text-slate-200 border-r border-slate-800 transition-all duration-250 ease-in-out ${
+        className={`fixed md:static inset-y-0 left-0 z-40 flex flex-col bg-slate-900 dark:bg-slate-950 text-slate-200 border-r border-slate-800 dark:border-slate-800/80 transition-all duration-250 ease-in-out ${
           isOpen ? 'w-72 translate-x-0' : 'w-0 -translate-x-full md:w-0 md:translate-x-0'
         } overflow-hidden flex-shrink-0 select-none`}
       >
@@ -93,13 +96,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="p-3">
           <button
             onClick={onNewChat}
-            className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-slate-800/90 hover:bg-slate-800 text-white text-xs font-medium border border-slate-700/60 hover:border-slate-600 transition shadow-xs group"
+            className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-slate-800/90 dark:bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium border border-slate-700/60 dark:border-slate-800 hover:border-slate-600 transition shadow-xs group"
           >
             <div className="flex items-center space-x-2">
               <Plus className="w-4 h-4 text-sky-400 group-hover:rotate-90 transition-transform duration-200" />
               <span>New Warehouse Query</span>
             </div>
-            <span className="text-[10px] bg-slate-900/60 text-slate-400 px-1.5 py-0.5 rounded border border-slate-750 font-mono">
+            <span className="text-[10px] bg-slate-900/60 dark:bg-slate-950 text-slate-400 px-1.5 py-0.5 rounded border border-slate-750 font-mono">
               Ctrl+K
             </span>
           </button>
@@ -124,7 +127,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   onClick={() => onSelectSession(sess.id)}
                   className={`group flex items-center justify-between px-3 py-2 rounded-lg text-xs cursor-pointer transition ${
                     isActive
-                      ? 'bg-slate-800 text-white font-medium border border-slate-700/70 shadow-xs'
+                      ? 'bg-slate-800 dark:bg-slate-850 text-white font-medium border border-slate-700/70 dark:border-slate-750 shadow-xs'
                       : 'text-slate-300 hover:bg-slate-800/50 hover:text-white'
                   }`}
                 >
@@ -154,7 +157,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
 
         {/* Operational Controls & Footer */}
-        <div className="p-3 border-t border-slate-800/80 space-y-1 bg-slate-950/40">
+        <div className="p-3 border-t border-slate-800/80 space-y-1 bg-slate-950/40 dark:bg-slate-950/80">
+          {/* Theme Toggle in Sidebar */}
+          <button
+            onClick={onToggleTheme}
+            className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs text-slate-300 hover:bg-slate-800/70 hover:text-white transition"
+          >
+            <div className="flex items-center space-x-2.5">
+              {isDarkMode ? (
+                <Sun className="w-4 h-4 text-amber-400" />
+              ) : (
+                <Moon className="w-4 h-4 text-sky-400" />
+              )}
+              <span>{isDarkMode ? 'Light Contrast Mode' : 'Dark Contrast Mode'}</span>
+            </div>
+            <span className="text-[10px] bg-slate-800 dark:bg-slate-900 px-1.5 py-0.5 rounded text-slate-400">
+              {isDarkMode ? 'Dark' : 'Light'}
+            </span>
+          </button>
+
           {/* Schema Explorer */}
           <button
             onClick={onOpenSchema}

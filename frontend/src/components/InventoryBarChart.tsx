@@ -89,7 +89,6 @@ export const InventoryBarChart: React.FC<InventoryBarChartProps> = ({
       const parsed = parseNumber(item[k]);
       if (parsed !== null) {
         row[`__num_${k}`] = parsed;
-        // If it's the Y key and was a string with % or units, overwrite with numeric
         if (k === effectiveYKey) {
           row[k] = parsed;
         }
@@ -119,14 +118,14 @@ export const InventoryBarChart: React.FC<InventoryBarChartProps> = ({
     : 'Warehouse Inventory & Utilization Distribution';
 
   return (
-    <div className="w-full bg-white p-4 md:p-5 rounded-2xl border border-slate-200 shadow-xs my-3 transition-all duration-200">
+    <div className="w-full bg-white dark:bg-slate-900 p-4 md:p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs my-3 transition-colors">
       {displayTitle && (
-        <div className="flex items-center justify-between border-b border-slate-100 pb-2.5 mb-3.5">
-          <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
+        <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5 mb-3.5">
+          <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wider flex items-center space-x-1.5">
             <span className="w-2 h-2 rounded-full bg-sky-500 inline-block"></span>
             <span>{displayTitle}</span>
           </h4>
-          <span className="text-[11px] font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+          <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
             {chartData.length} records
           </span>
         </div>
@@ -135,7 +134,7 @@ export const InventoryBarChart: React.FC<InventoryBarChartProps> = ({
       <div className="h-72 w-full">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={chartData} margin={{ top: 12, right: 24, left: 10, bottom: 28 }}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#94a3b8" strokeOpacity={0.2} />
             <XAxis
               dataKey={effectiveXKey}
               tick={{ fontSize: 11, fill: '#64748b' }}
@@ -158,14 +157,14 @@ export const InventoryBarChart: React.FC<InventoryBarChartProps> = ({
               }}
             />
             <Tooltip
-              cursor={{ fill: '#f8fafc' }}
+              cursor={{ fill: 'currentColor', fillOpacity: 0.05 }}
               contentStyle={{
                 backgroundColor: '#0f172a',
                 borderRadius: '10px',
-                border: 'none',
+                border: '1px solid #334155',
                 color: '#fff',
                 fontSize: '12px',
-                boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)'
+                boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.3)'
               }}
               formatter={(value: any, name: any) => {
                 const num = parseNumber(value) ?? 0;

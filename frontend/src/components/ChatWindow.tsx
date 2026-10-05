@@ -12,6 +12,50 @@ import { PromptComposer } from './PromptComposer';
 import { SchemaModal } from './SchemaModal';
 
 export const ChatWindow: React.FC = () => {
+  // Theme state: dark / light contrast
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
+
+  // Initialize theme from localStorage or system preference
+  useEffect(() => {
+    try {
+      const savedTheme = localStorage.getItem('wms_theme');
+      if (savedTheme) {
+        const isDark = savedTheme === 'dark';
+        setIsDarkMode(isDark);
+        if (isDark) {
+          document.documentElement.classList.add('dark');
+        } else {
+          document.documentElement.classList.remove('dark');
+        }
+      } else {
+        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        setIsDarkMode(prefersDark);
+        if (prefersDark) {
+          document.documentElement.classList.add('dark');
+        } else {
+          document.documentElement.classList.remove('dark');
+        }
+      }
+    } catch (e) {
+      console.warn('Unable to access localStorage for theme', e);
+    }
+  }, []);
+
+  const handleToggleTheme = () => {
+    setIsDarkMode((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('wms_theme', next ? 'dark' : 'light');
+      } catch (e) {}
+      if (next) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+      return next;
+    });
+  };
+
   // Session management state
   const [sessions, setSessions] = useState<Session[]>([
     {
@@ -181,7 +225,7 @@ export const ChatWindow: React.FC = () => {
   const activeTitle = sessions.find((s) => s.id === activeSessionId)?.title;
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-slate-100">
+    <div className="flex h-screen w-screen overflow-hidden bg-slate-100 dark:bg-slate-950 transition-colors">
       {/* ChatGPT-style Left Sidebar */}
       <Sidebar
         isOpen={isSidebarOpen}
@@ -197,10 +241,12 @@ export const ChatWindow: React.FC = () => {
         isAdmin={isAdminMode}
         onToggleAdmin={() => setIsAdminMode(!isAdminMode)}
         onOpenSchema={() => setIsSchemaModalOpen(true)}
+        isDarkMode={isDarkMode}
+        onToggleTheme={handleToggleTheme}
       />
 
       {/* Main Chat Workspace */}
-      <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden bg-slate-50/80">
+      <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden bg-slate-50/80 dark:bg-slate-950/80 transition-colors">
         {/* Minimal Top Header */}
         <ChatHeader
           isSidebarOpen={isSidebarOpen}
@@ -213,6 +259,8 @@ export const ChatWindow: React.FC = () => {
             setErrorMessage(null);
           }}
           onOpenSchema={() => setIsSchemaModalOpen(true)}
+          isDarkMode={isDarkMode}
+          onToggleTheme={handleToggleTheme}
         />
 
         {/* Message Stream Area */}

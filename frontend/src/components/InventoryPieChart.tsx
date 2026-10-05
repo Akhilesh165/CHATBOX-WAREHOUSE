@@ -59,14 +59,14 @@ export const InventoryPieChart: React.FC<InventoryPieChartProps> = ({
   if (chartData.length === 0) return null;
 
   return (
-    <div className="w-full bg-white p-4 md:p-5 rounded-2xl border border-slate-200 shadow-xs my-3">
+    <div className="w-full bg-white dark:bg-slate-900 p-4 md:p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs my-3 transition-colors">
       {title && (
-        <div className="flex items-center justify-between border-b border-slate-100 pb-2.5 mb-3.5">
-          <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
+        <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5 mb-3.5">
+          <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wider flex items-center space-x-1.5">
             <span className="w-2 h-2 rounded-full bg-sky-500 inline-block"></span>
             <span>{title}</span>
           </h4>
-          <span className="text-[11px] font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+          <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
             {chartData.length} slices
           </span>
         </div>
@@ -94,9 +94,10 @@ export const InventoryPieChart: React.FC<InventoryPieChartProps> = ({
               contentStyle={{
                 backgroundColor: '#0f172a',
                 borderRadius: '10px',
-                border: 'none',
+                border: '1px solid #334155',
                 color: '#fff',
-                fontSize: '12px'
+                fontSize: '12px',
+                boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.3)'
               }}
               formatter={(value: any) => [Number(value).toLocaleString(), valKey]}
             />
