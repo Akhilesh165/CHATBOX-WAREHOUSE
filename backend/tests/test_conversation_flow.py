@@ -52,3 +52,28 @@ def test_conversation_flow_empty_bins_plant_filter():
     res = deterministic_warehouse_sql_generator("What about plant 7228?", history=history)
     assert res["intent"] == "putaway_bins"
     assert "7228" in res["sql"]
+
+def test_conversation_flow_multi_turn_filter_and_limit_inheritance():
+    # Turn 1: Top 10 Bins
+    # Turn 2: What about the least utilized ones?
+    # Turn 3: Only for Plant 1258.
+    # Turn 4: Top 5 instead
+    history_turn_2 = [
+        {"role": "user", "content": "Show me the top 10 most utilized bins."},
+        {"role": "assistant", "content": "Found top 10 most utilized bins."},
+        {"role": "user", "content": "What about the least utilized ones?"},
+        {"role": "assistant", "content": "Found bottom 10 least utilized bins."}
+    ]
+    res_turn_3 = deterministic_warehouse_sql_generator("Only for Plant 1258.", history=history_turn_2)
+    assert res_turn_3["intent"] == "least_utilized_bins"
+    assert "1258" in res_turn_3["sql"]
+    assert "ASC" in res_turn_3["sql"]
+
+    history_turn_3 = history_turn_2 + [
+        {"role": "user", "content": "Only for Plant 1258."},
+        {"role": "assistant", "content": "Found bottom 10 least utilized bins in Plant 1258."}
+    ]
+    res_turn_4 = deterministic_warehouse_sql_generator("Top 5 instead", history=history_turn_3)
+    assert res_turn_4["intent"] == "least_utilized_bins"
+    assert "TOP 5" in res_turn_4["sql"]
+

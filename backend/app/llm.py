@@ -43,55 +43,119 @@ def clean_llm_json(raw_text: str) -> dict[str, Any]:
     return json.loads(text)
 
 def resolve_conversation_context(question: str, history: list[dict] | None = None) -> str:
-    """Resolves follow-up pronouns, anaphora ('ones', 'these', 'those'), elliptical queries, and implicit entities from conversation history."""
+    """Intelligently resolves follow-up questions, anaphora, elliptical queries, filter refinements, and entity inheritance from conversation history."""
     q_lower = question.lower().strip()
     if not history:
         return question
 
-    # Find the most recent user turn
-    last_user_msg = ""
-    for msg in reversed(history):
-        if msg.get("role") == "user" and msg.get("content", "").strip():
-            last_user_msg = msg.get("content", "").strip()
-            break
+    # Scan history to extract all previous user queries
+    user_queries = [
+        msg.get("content", "").strip()
+        for msg in history
+        if msg.get("role") == "user" and msg.get("content", "").strip()
+    ]
 
-    if not last_user_msg:
+    if not user_queries:
         return question
 
-    last_q_lower = last_user_msg.lower()
+    last_user_query = user_queries[-1]
+    last_q_lower = last_user_query.lower()
 
-    # If current question has explicit reference or is a follow-up
-    has_pronoun = any(w in q_lower for w in ["ones", "one", "these", "those", "they", "them", "it", "the rest", "other ones", "same for"])
-    is_follow_up_prefix = any(q_lower.startswith(p) for p in ["what about", "how about", "and ", "show ", "tell me about", "what are", "which ones", "filter by", "for ", "only ", "what of"])
-    is_short_fragment = len(q_lower.split()) <= 7
+    # Identify if the current question is a modifier / follow-up / elliptical query
+    is_modifier_or_followup = (
+        any(q_lower.startswith(p) for p in [
+            "what about", "how about", "and ", "only ", "just ", "filter by", "filter for",
+            "for ", "in ", "show ", "tell me about", "what are", "which ones", "instead",
+            "what if", "can you show", "how many", "where are", "give me"
+        ]) or
+        any(w in q_lower for w in [
+            "ones", "one", "these", "those", "they", "them", "it", "the rest", "other ones",
+            "same for", "instead", "too", "also", "only", "just", "filter"
+        ]) or
+        len(q_lower.split()) <= 6 or
+        bool(re.match(r"^(?:only\s+|just\s+|for\s+|in\s+)?(?:plant\s*)?(?:1258|1266|1268|7228|\d{4})[.\s]*$", q_lower)) or
+        bool(re.match(r"^(?:top|bottom|first|last)?\s*\d{1,3}(?:\s*instead|\s*rows)?$", q_lower))
+    )
 
-    if has_pronoun or is_follow_up_prefix or is_short_fragment:
-        # Case 1: Previous question was about Bin Utilization Rankings / Fullness
-        prev_was_util = any(k in last_q_lower for k in ["utilized", "utilization", "fullest", "emptiest", "most capacity", "least capacity", "rank"])
-        if prev_was_util:
-            if any(k in q_lower for k in ["least", "lowest", "bottom", "emptiest", "unused", "least utilized", "least full", "lowest occupancy"]) and "material" not in q_lower and "sku" not in q_lower:
-                question = f"{question} least utilized bins"
-            elif any(k in q_lower for k in ["most", "highest", "top", "fullest", "most utilized", "highest occupancy"]) and "material" not in q_lower and "sku" not in q_lower:
-                question = f"{question} most utilized bins"
-            elif any(k in q_lower for k in ["empty", "putaway", "put-away", "vacant", "free"]):
-                question = f"{question} empty bins available for put-away"
+    if not is_modifier_or_followup:
+        return question
 
-        # Case 2: Previous question was Empty / Put-away Bins
-        prev_was_putaway = any(k in last_q_lower for k in ["empty", "putaway", "put-away", "vacant", "unoccupied", "free"])
-        if prev_was_putaway and not prev_was_util and not any(k in q_lower for k in ["dimension", "utiliz", "trend", "share", "material"]):
-            question = f"{question} empty bins available for put-away"
+    # Extract any plant filter specified in current question, or inherit from history if within same conversation
+    new_plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
+    if new_plant_match and new_plant_match.group(1) not in ["2024", "2025", "2026"]:
+        new_plant = f" in plant {new_plant_match.group(1)}"
+    else:
+        history_plant = None
+        for uq in reversed(user_queries):
+            pm = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", uq.lower())
+            if pm and pm.group(1) not in ["2024", "2025", "2026"]:
+                history_plant = f" in plant {pm.group(1)}"
+                break
+        new_plant = history_plant or ""
 
-        # Case 3: Previous question was Data Quality / Missing dimensions
-        prev_was_dq = any(k in last_q_lower for k in ["dimension", "dimensions", "missing", "quality", "incomplete", "unmaintained"])
-        if prev_was_dq and not any(k in q_lower for k in ["bin", "utiliz", "trend", "share", "consolidation"]):
-            if any(k in q_lower for k in ["plant", "1258", "1266", "1268", "7228"]):
-                question = f"{question} materials with missing dimensions"
+    # Extract any limit specified in current question (e.g. "top 20", "5 rows", "top 5")
+    new_limit_match = re.search(r"\b(?:top|bottom|highest|lowest|first|last|least)?\s*(\d{1,3})\b", q_lower)
+    new_limit = f" {new_limit_match.group(1)}" if (new_limit_match and new_limit_match.group(1) not in ["100", "2024", "2025", "2026", "1258", "1266", "1268", "7228"]) else ""
 
-        # Case 4: Previous question was Material Volume Share
-        prev_was_vol_share = any(k in last_q_lower for k in ["share of total", "volume consumption", "percentage of total", "footprint"])
-        if prev_was_vol_share and not any(k in q_lower for k in ["empty", "missing", "plant breakdown"]):
-            if any(k in q_lower for k in ["top", "bottom", "least", "most", "ones"]):
-                question = f"{question} materials by share of total bin volume"
+    # Detect the active topic anchor by searching history backwards
+    history_topic = None
+    for uq in reversed(user_queries):
+        uq_lower = uq.lower()
+        if any(k in uq_lower for k in ["least utilized", "lowest utilized", "emptiest bins", "bottom", "least 10", "bottom 10", "least"]):
+            history_topic = "least_utilized_bins"
+            break
+        elif any(k in uq_lower for k in ["most utilized", "highest utilized", "top utilized", "fullest bins", "most capacity", "top 10 most", "most"]):
+            history_topic = "top_utilized_bins"
+            break
+        elif any(k in uq_lower for k in ["dimension", "dimensions", "missing physical", "quality check", "incomplete dimension", "unmaintained"]):
+            history_topic = "data_quality"
+            break
+        elif any(k in uq_lower for k in ["empty bin", "empty bins", "putaway", "put-away", "vacant", "free bin"]):
+            history_topic = "putaway_bins"
+            break
+        elif any(k in uq_lower for k in ["share of total", "volume consumption", "percentage of total", "footprint"]):
+            history_topic = "material_volume_share"
+            break
+        elif any(k in uq_lower for k in ["materials in plant", "materials of plant", "plant inventory records", "show materials", "list materials", "materials in", "skus in plant"]):
+            history_topic = "plant_materials"
+            break
+        elif any(k in uq_lower for k in ["more than", "greater than", "less than", "% full"]) and "bin" in uq_lower:
+            history_topic = "bin_threshold"
+            break
+        elif any(k in uq_lower for k in ["bin utilization", "occupancy percentage", "warehouse utilization"]):
+            history_topic = "warehouse_utilization"
+            break
+
+    # Resolve based on history_topic and current query modifiers
+    if history_topic == "least_utilized_bins":
+        # Polarity flip only if user explicitly asks for most utilized / highest / fullest
+        if any(k in q_lower for k in ["most", "highest", "fullest", "top utilized", "most utilized"]) or ("top" in q_lower and not new_limit_match):
+            return f"top {new_limit.strip() or '10'} most utilized bins{new_plant}"
+        else:
+            return f"bottom {new_limit.strip() or '10'} least utilized bins{new_plant}"
+
+    elif history_topic == "top_utilized_bins":
+        if any(k in q_lower for k in ["least", "lowest", "bottom", "emptiest", "unused", "least utilized"]):
+            return f"bottom {new_limit.strip() or '10'} least utilized bins{new_plant}"
+        else:
+            return f"top {new_limit.strip() or '10'} most utilized bins{new_plant}"
+
+    elif history_topic == "data_quality":
+        if not any(k in q_lower for k in ["bin", "utiliz", "trend", "share"]):
+            return f"materials with missing dimensions{new_plant}"
+
+    elif history_topic == "putaway_bins":
+        if not any(k in q_lower for k in ["dimension", "utiliz", "trend", "share", "material"]):
+            return f"empty bins available for put-away{new_plant}"
+
+    elif history_topic == "material_volume_share":
+        if not any(k in q_lower for k in ["empty", "missing", "plant breakdown"]):
+            return f"top {new_limit.strip() or '10'} materials by share of total bin volume{new_plant}"
+
+    elif history_topic == "plant_materials":
+        if new_plant_match:
+            return f"show materials in plant {new_plant_match.group(1)}"
+        return f"show materials{new_plant}"
 
     return question
 
@@ -255,13 +319,13 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC"""
         }
 
     # C. TOP N & BOTTOM N BIN UTILIZATION RANKINGS
-    has_top = any(k in q_lower for k in ["top", "most utilized", "highest", "fullest", "most capacity", "capacity usage", "fullest bins", "most full", "most occupied", "highest utilization"])
-    has_bottom = any(k in q_lower for k in ["bottom", "least utilized", "lowest", "emptiest", "unused capacity", "emptiest bins", "least full", "least occupied", "lowest utilization", "least empty", "least utiliz"])
+    has_top = any(k in q_lower for k in ["top", "most", "highest", "fullest", "most capacity", "capacity usage", "fullest bins", "most full", "most occupied", "highest utilization"])
+    has_bottom = any(k in q_lower for k in ["bottom", "least", "lowest", "emptiest", "unused capacity", "emptiest bins", "least full", "least occupied", "lowest utilization", "least empty", "least utiliz"])
     is_bin_metric = any(k in q_lower for k in ["bin", "bins", "location", "locations", "racks", "rack", "slot", "slots", "storage position", "ones", "one", "these", "those", "they", "them", "it"]) or (has_top or has_bottom)
     is_util_metric = any(k in q_lower for k in ["utiliz", "full", "capacit", "occup", "empty", "unused", "space", "occupan"])
 
     if is_bin_metric and is_util_metric and (has_top or has_bottom) and not is_mat_entity:
-        n_match = re.search(r"\b(?:top|bottom|highest|lowest|first|last)?\s*(\d{1,3})\b", q_lower)
+        n_match = re.search(r"\b(?:top|bottom|highest|lowest|first|last|least|most)?\s*(\d{1,3})\b", q_lower)
         n_val = int(n_match.group(1)) if (n_match and n_match.group(1) not in ["100", "2024", "2025", "2026"]) else 10
         plant_filter = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
         filters = {"ranking_limit": n_val}

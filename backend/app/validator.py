@@ -187,15 +187,19 @@ def validate_query_result(question: str, query_plan: dict | None, sql: str, rows
             return False, "User requested: Material-level missing-dimension records. Returned: Non-material entity. These do not satisfy the requested analytical task."
 
     # 2. Top / Bottom Bins Ranking
-    is_ranking_req = ("top" in q_lower or "bottom" in q_lower or "most utilized" in q_lower or "least utilized" in q_lower) and ("bin" in q_lower or "bins" in q_lower)
+    is_ranking_req = any(k in q_lower for k in ["top", "bottom", "most utilized", "least utilized", "lowest utilized", "highest utilized", "lowest ones", "least ones", "emptiest bins"]) or (
+        ("most" in q_lower or "least" in q_lower or "top" in q_lower or "bottom" in q_lower or "highest" in q_lower or "lowest" in q_lower) and
+        ("utiliz" in q_lower or "capacit" in q_lower or "occup" in q_lower or "full" in q_lower or "bin" in q_lower or "bins" in q_lower or "ones" in q_lower) and
+        not any(m in q_lower for m in ["material", "sku", "product", "goods"])
+    )
     if is_ranking_req:
-        if any(c in cols for c in ["TotalUniqueMaterials", "TotalActiveBins", "TotalUnrestrictedQuantity"]) and "Ranking Group" not in cols and "Utilization %" not in cols and "Utilization" not in cols:
-            return False, "User requested: Bin utilization ranking records. Returned: Aggregated summary. These do not satisfy the requested analytical task."
+        if any(c in cols for c in ["TotalUniqueMaterials", "TotalActiveBins", "TotalUnrestrictedQuantity", "TotalBins"]) and "Ranking Group" not in cols and "Bin" not in cols and "BinLocation" not in cols and "BinNo" not in cols:
+            return False, "User requested: Bin utilization ranking records. Returned: Plant-level aggregated summary. These do not satisfy the requested ranking task."
 
     # 3. Available / Empty Put-Away Bins
-    is_putaway_req = any(k in q_lower for k in ["empty bin", "empty bins", "putaway", "put-away", "vacant", "unoccupied", "without displacing"])
+    is_putaway_req = any(k in q_lower for k in ["empty bin", "empty bins", "putaway", "put-away", "vacant", "unoccupied", "without displacing", "free bin", "free storage"])
     if is_putaway_req:
-        if any(c in cols for c in ["TotalUniqueMaterials", "TotalActiveBins", "TotalUnrestrictedQuantity"]) and "BinLocation" not in cols and "BinNo" not in cols:
+        if any(c in cols for c in ["TotalUniqueMaterials", "TotalActiveBins", "TotalUnrestrictedQuantity", "TotalBins"]) and "BinLocation" not in cols and "BinNo" not in cols and "Bin" not in cols:
             return False, "User requested: Available empty put-away bin records. Returned: Aggregated summary. These do not satisfy the requested analytical task."
 
     return True, "Passed semantic result validation."
