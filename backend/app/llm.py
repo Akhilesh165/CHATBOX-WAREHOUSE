@@ -42,13 +42,67 @@ def clean_llm_json(raw_text: str) -> dict[str, Any]:
     
     return json.loads(text)
 
-def deterministic_warehouse_sql_generator(question: str) -> dict[str, Any]:
+def resolve_conversation_context(question: str, history: list[dict] | None = None) -> str:
+    """Resolves follow-up pronouns, anaphora ('ones', 'these', 'those'), elliptical queries, and implicit entities from conversation history."""
+    q_lower = question.lower().strip()
+    if not history:
+        return question
+
+    # Find the most recent user turn
+    last_user_msg = ""
+    for msg in reversed(history):
+        if msg.get("role") == "user" and msg.get("content", "").strip():
+            last_user_msg = msg.get("content", "").strip()
+            break
+
+    if not last_user_msg:
+        return question
+
+    last_q_lower = last_user_msg.lower()
+
+    # If current question has explicit reference or is a follow-up
+    has_pronoun = any(w in q_lower for w in ["ones", "one", "these", "those", "they", "them", "it", "the rest", "other ones", "same for"])
+    is_follow_up_prefix = any(q_lower.startswith(p) for p in ["what about", "how about", "and ", "show ", "tell me about", "what are", "which ones", "filter by", "for ", "only ", "what of"])
+    is_short_fragment = len(q_lower.split()) <= 7
+
+    if has_pronoun or is_follow_up_prefix or is_short_fragment:
+        # Case 1: Previous question was about Bin Utilization Rankings / Fullness
+        prev_was_util = any(k in last_q_lower for k in ["utilized", "utilization", "fullest", "emptiest", "most capacity", "least capacity", "rank"])
+        if prev_was_util:
+            if any(k in q_lower for k in ["least", "lowest", "bottom", "emptiest", "unused", "least utilized", "least full", "lowest occupancy"]) and "material" not in q_lower and "sku" not in q_lower:
+                question = f"{question} least utilized bins"
+            elif any(k in q_lower for k in ["most", "highest", "top", "fullest", "most utilized", "highest occupancy"]) and "material" not in q_lower and "sku" not in q_lower:
+                question = f"{question} most utilized bins"
+            elif any(k in q_lower for k in ["empty", "putaway", "put-away", "vacant", "free"]):
+                question = f"{question} empty bins available for put-away"
+
+        # Case 2: Previous question was Empty / Put-away Bins
+        prev_was_putaway = any(k in last_q_lower for k in ["empty", "putaway", "put-away", "vacant", "unoccupied", "free"])
+        if prev_was_putaway and not prev_was_util and not any(k in q_lower for k in ["dimension", "utiliz", "trend", "share", "material"]):
+            question = f"{question} empty bins available for put-away"
+
+        # Case 3: Previous question was Data Quality / Missing dimensions
+        prev_was_dq = any(k in last_q_lower for k in ["dimension", "dimensions", "missing", "quality", "incomplete", "unmaintained"])
+        if prev_was_dq and not any(k in q_lower for k in ["bin", "utiliz", "trend", "share", "consolidation"]):
+            if any(k in q_lower for k in ["plant", "1258", "1266", "1268", "7228"]):
+                question = f"{question} materials with missing dimensions"
+
+        # Case 4: Previous question was Material Volume Share
+        prev_was_vol_share = any(k in last_q_lower for k in ["share of total", "volume consumption", "percentage of total", "footprint"])
+        if prev_was_vol_share and not any(k in q_lower for k in ["empty", "missing", "plant breakdown"]):
+            if any(k in q_lower for k in ["top", "bottom", "least", "most", "ones"]):
+                question = f"{question} materials by share of total bin volume"
+
+    return question
+
+def deterministic_warehouse_sql_generator(question: str, history: list[dict] | None = None) -> dict[str, Any]:
     """Context-Driven Semantic Query Resolver.
     
     Dynamically maps warehouse business concepts (Entities, Metrics, Dimensions, Calculations, Rankings)
     to safe SQL Server queries according to the Warehouse BI Semantic Layer without hardcoded question lists.
     """
-    q_lower = question.lower()
+    resolved_q = resolve_conversation_context(question, history)
+    q_lower = resolved_q.lower()
 
     # 1. ENTITY & SCOPE EXTRACTION (Context-driven)
     plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{4,5})\b", q_lower)
@@ -201,10 +255,10 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC"""
         }
 
     # C. TOP N & BOTTOM N BIN UTILIZATION RANKINGS
-    has_top = any(k in q_lower for k in ["top", "most utilized", "highest", "fullest", "most capacity", "capacity usage", "fullest bins"])
-    has_bottom = any(k in q_lower for k in ["bottom", "least utilized", "lowest", "emptiest", "unused capacity", "emptiest bins"])
-    is_bin_metric = any(k in q_lower for k in ["bin", "bins", "location", "locations", "racks", "rack", "slot", "slots", "storage position"])
-    is_util_metric = any(k in q_lower for k in ["utiliz", "full", "capacit", "occup", "empty", "unused", "space"])
+    has_top = any(k in q_lower for k in ["top", "most utilized", "highest", "fullest", "most capacity", "capacity usage", "fullest bins", "most full", "most occupied", "highest utilization"])
+    has_bottom = any(k in q_lower for k in ["bottom", "least utilized", "lowest", "emptiest", "unused capacity", "emptiest bins", "least full", "least occupied", "lowest utilization", "least empty", "least utiliz"])
+    is_bin_metric = any(k in q_lower for k in ["bin", "bins", "location", "locations", "racks", "rack", "slot", "slots", "storage position", "ones", "one", "these", "those", "they", "them", "it"]) or (has_top or has_bottom)
+    is_util_metric = any(k in q_lower for k in ["utiliz", "full", "capacit", "occup", "empty", "unused", "space", "occupan"])
 
     if is_bin_metric and is_util_metric and (has_top or has_bottom) and not is_mat_entity:
         n_match = re.search(r"\b(?:top|bottom|highest|lowest|first|last)?\s*(\d{1,3})\b", q_lower)
@@ -582,7 +636,7 @@ async def generate_sql(question: str, history: list[dict], retry_context: dict |
             "output_type": parsed.get("output_type", default_out)
         }
     except Exception:
-        return deterministic_warehouse_sql_generator(question)
+        return deterministic_warehouse_sql_generator(question, history=history)
 
 def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     """Creates clear, grounded summary from database rows."""

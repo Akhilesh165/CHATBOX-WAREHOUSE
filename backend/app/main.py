@@ -180,7 +180,7 @@ async def chat_endpoint(req: ChatRequest):
     if not is_valid_result:
         logger.warning(f"Semantic Result Validator FAIL: {validation_reason}. Triggering self-correction regeneration...")
         try:
-            corrected_gen = deterministic_warehouse_sql_generator(req.message)
+            corrected_gen = deterministic_warehouse_sql_generator(req.message, history=history)
             corrected_sql = validate_sql(corrected_gen.get("sql", ""))
             corrected_rows, sql_duration_ms = execute_readonly(corrected_sql, max_rows=settings.sql_max_result_rows)
             generated = corrected_gen
