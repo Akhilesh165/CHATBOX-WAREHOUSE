@@ -1070,8 +1070,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
             
         return (
             f"### 📦 Empty Bins Count\n\n"
-            f"{single_stmt}\n\n"
-            f"📌 **Filters:** `Plant: {plant_val or 'All Plants'}` · `Condition: Empty bins` · `Count: {count_val:,}`"
+            f"{single_stmt}"
         )
 
     # 2. Empty Bins List (Table Output)
@@ -1087,7 +1086,6 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         return (
             f"### 📦 Empty Bins{plant_str}\n\n"
             f"{single_stmt}\n\n"
-            f"📌 **Filters:** `Plant {plant_val or 'All Plants'}` · `Empty bins` · `Available: {count}`\n\n"
             f"💡 *The list of available empty bins with storage locations is loaded in the **searchable Data Table** below.*"
         )
 
@@ -1109,7 +1107,6 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         return (
             f"### 📊 Top {count} {label} Utilized Bins{plant_str}\n\n"
             f"{single_stmt}\n\n"
-            f"📌 **Filters:** `Plant {plant_val or 'All Plants'}` · `{label} utilized` · `Top {count}`\n\n"
             f"💡 *The complete list of bins is loaded into the **searchable, paginated Data Table** below with capacities and exact utilization percentages.*"
         )
 
