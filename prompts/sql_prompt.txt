@@ -65,22 +65,29 @@ First identify the user's requested analytical operation:
 - "Inventory trend over time." → TIME-SERIES ANALYSIS
 
 ===================================================================
-6. DATA QUALITY RULES
+6. DATA QUALITY & CROSS-MASTER VALIDATION RULES
 ===================================================================
-1. Cross-Master Validation:
-   The AI compares records across related master/data tables when the user asks about missing, inconsistent, unmatched, or incomplete information.
-2. Material Matching:
-   Inventory Master materials must be matched to Material Volume Master using the defined Material ID/Material Number key (`Inventory.Material = MaterialMaster.MaterialCode`).
-3. Missing Dimensions:
-   A material has incomplete physical dimensions when any required dimension (Length, Width, Height) is blank, 0, or NULL.
-4. Missing Master Record:
-   If an Inventory Master material has no corresponding record in Material Volume Master, classify it as: "Missing Volume Master Record".
-5. Output:
-   For data-quality questions, return:
-   - Number of affected records
-   - Exception table
-   - Relevant fields (Material, Material Description, Total Stock Qty, Occupied Bins, Length, Width, Height, Volume, Quality Issue)
-   - Explanation of the detected issue
+1. RULE DQ-001: Materials Missing From Volume Master
+   - Intent: `MATERIALS_MISSING_FROM_VOLUME_MASTER`
+   - Task: Cross-table validation / Data quality exception
+   - Entity: Material
+   - Source: Inventory Master (`dbo.ZWMS_INVENTORY`)
+   - Reference: Material Volume Master (`dbo.ZWMS_MATERIAL_MASTER`)
+   - Business Key: `Inventory.Material = MaterialVolumeMaster.MaterialCode`
+   - Condition: `v.MaterialCode IS NULL` (Material exists in inventory but has no matching volume master record)
+   - Canonical Query:
+     `SELECT DISTINCT i.Material, MAX(COALESCE(i.MaterialDescription, 'N/A')) AS [Material Description], i.Plant, i.StorageLocation AS [Storage Location], SUM(i.UnrestrictedQty) AS [Inventory Qty] FROM dbo.ZWMS_INVENTORY i LEFT JOIN dbo.ZWMS_MATERIAL_MASTER v ON i.Material = v.MaterialCode WHERE v.MaterialCode IS NULL GROUP BY i.Material, i.Plant, i.StorageLocation ORDER BY [Inventory Qty] DESC`
+   - Output: Exception Table (`Material`, `Material Description`, `Plant`, `Storage Location`, `Inventory Qty`)
+
+2. RULE DQ-002: Missing Physical Dimensions Check
+   - Intent: `MISSING_DIMENSIONS` / `DATA_QUALITY_CHECK`
+   - Condition: `v.MaterialCode IS NULL OR v.Length IS NULL OR v.Length = 0 OR v.Width IS NULL OR v.Width = 0 OR v.Height IS NULL OR v.Height = 0 OR v.Volume IS NULL OR v.Volume = 0`
+   - Classifies: "Missing Volume Master Record", "Completely Missing Dimensions", "Incomplete Dimensions"
+   - Output: Exception Table with dimensional attributes and Quality Issue breakdown.
+
+3. DISTINCTION BETWEEN INTENT A AND INTENT B:
+   - Intent A (`MATERIALS_MISSING_FROM_VOLUME_MASTER`): Specifically asks for materials *missing from the volume master* / *not in material master*. (Returns only non-matching records, `v.MaterialCode IS NULL`).
+   - Intent B (`MISSING_DIMENSIONS`): Asks for materials *without physical size / dimensions* (Returns both non-matching records and records with partial/NULL dimensions).
 
 ===================================================================
 7. SPECIAL INTENT RULES & CANONICAL QUERIES

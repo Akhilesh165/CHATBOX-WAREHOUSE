@@ -132,11 +132,11 @@ def test_q13_find_products_without_physical_size_information():
     assert res["intent"] == "data_quality_check"
 
 def test_q14_materials_in_inventory_not_in_material_volume_master():
-    """Q14: 'Which materials exist in Inventory Master but not Material Volume Master?'"""
+    """Q14: 'Which materials exist in Inventory Master but not Material Volume Master?' -> Rule DQ-001"""
     res = deterministic_warehouse_sql_generator("Which materials exist in Inventory Master but not Material Volume Master?")
     assert "dbo.ZWMS_INVENTORY" in res["sql"]
     assert "dbo.ZWMS_MATERIAL_MASTER" in res["sql"]
-    assert res["intent"] == "data_quality_check"
+    assert res["intent"] in ["materials_missing_from_volume_master", "data_quality_check"]
 
 def test_q15_which_inventory_materials_have_incomplete_dimensions():
     """Q15: 'Which inventory materials have incomplete dimensions?'"""

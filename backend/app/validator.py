@@ -167,6 +167,24 @@ def validate_query_result(question: str, query_plan: dict | None, sql: str, rows
     q_lower = question.lower()
     cols = list(rows[0].keys()) if rows else []
     
+    # 0. Materials Missing from Volume Master (Rule DQ-001 - Cross-Table Validation)
+    is_missing_master_req = any(k in q_lower for k in [
+        "missing from the volume master", "missing from volume master", "not in the volume master",
+        "not in volume master", "missing in volume master", "exist in inventory master but not",
+        "exists in inventory master but not", "exist in inventory but missing from", "exists in inventory but missing from",
+        "in inventory but missing from", "missing from material master", "not in material master",
+        "no matching volume master", "unmatched volume master", "missing volume master record"
+    ]) or (
+        ("inventory" in q_lower or "material" in q_lower or "sku" in q_lower or "item" in q_lower) and
+        ("volume master" in q_lower or "material master" in q_lower) and
+        ("missing" in q_lower or "absent" in q_lower or "not present" in q_lower or "doesn't exist" in q_lower or "does not exist" in q_lower or "no record" in q_lower or "not maintained" in q_lower or "not in" in q_lower)
+    )
+    if is_missing_master_req:
+        if any(c in cols for c in ["TotalUniqueMaterials", "TotalActiveBins", "TotalUnrestrictedQuantity", "PlantCount"]) and "Inventory Qty" not in cols and "Material" not in cols:
+            return False, "User requested: Material-level exception list for missing volume master records. Returned: Warehouse-level inventory summary. These do not satisfy the requested cross-table validation task."
+        if rows and "Material" not in cols and "MaterialCode" not in cols:
+            return False, "User requested: Material-level exception records for missing volume master. Returned: Non-material entity. These do not satisfy the requested cross-table validation task."
+
     # 1. Missing Physical Dimensions / Data Quality
     is_missing_dim_req = any(k in q_lower for k in [
         "missing dimension", "missing physical", "incomplete dimension", "without dimension",
