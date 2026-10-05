@@ -53,27 +53,83 @@ def test_conversation_flow_empty_bins_plant_filter():
     assert res["intent"] == "putaway_bins"
     assert "7228" in res["sql"]
 
-def test_conversation_flow_multi_turn_filter_and_limit_inheritance():
-    # Turn 1: Top 10 Bins
-    # Turn 2: What about the least utilized ones?
-    # Turn 3: Only for Plant 1258.
-    # Turn 4: Top 5 instead
-    history_turn_2 = [
-        {"role": "user", "content": "Show me the top 10 most utilized bins."},
-        {"role": "assistant", "content": "Found top 10 most utilized bins."},
-        {"role": "user", "content": "What about the least utilized ones?"},
-        {"role": "assistant", "content": "Found bottom 10 least utilized bins."}
-    ]
-    res_turn_3 = deterministic_warehouse_sql_generator("Only for Plant 1258.", history=history_turn_2)
-    assert res_turn_3["intent"] == "least_utilized_bins"
-    assert "1258" in res_turn_3["sql"]
-    assert "ASC" in res_turn_3["sql"]
+def test_conversation_1_full_flow():
+    # Turn 1: Show me the top 10 most utilized bins.
+    turn1_q = "Show me the top 10 most utilized bins."
+    res1 = deterministic_warehouse_sql_generator(turn1_q)
+    assert res1["intent"] == "top_utilized_bins"
+    assert "DESC" in res1["sql"]
+    assert "TOP 10" in res1["sql"]
+    assert "Occupied Volume" in res1["sql"]
+    assert "Capacity" in res1["sql"]
+    assert "Utilization" in res1["sql"]
 
-    history_turn_3 = history_turn_2 + [
-        {"role": "user", "content": "Only for Plant 1258."},
-        {"role": "assistant", "content": "Found bottom 10 least utilized bins in Plant 1258."}
+    # Turn 2: What about the least utilized ones?
+    history1 = [
+        {"role": "user", "content": turn1_q},
+        {"role": "assistant", "content": "Top 10 Most Utilized Bins"}
     ]
-    res_turn_4 = deterministic_warehouse_sql_generator("Top 5 instead", history=history_turn_3)
-    assert res_turn_4["intent"] == "least_utilized_bins"
-    assert "TOP 5" in res_turn_4["sql"]
+    turn2_q = "What about the least utilized ones?"
+    res2 = deterministic_warehouse_sql_generator(turn2_q, history=history1)
+    assert res2["intent"] == "least_utilized_bins"
+    assert "ASC" in res2["sql"]
+    assert "TOP 10" in res2["sql"]
+
+    # Turn 3: Only for Plant 1258.
+    history2 = history1 + [
+        {"role": "user", "content": turn2_q},
+        {"role": "assistant", "content": "10 Least Utilized Bins"}
+    ]
+    turn3_q = "Only for Plant 1258."
+    res3 = deterministic_warehouse_sql_generator(turn3_q, history=history2)
+    assert res3["intent"] == "least_utilized_bins"
+    assert "ASC" in res3["sql"]
+    assert "1258" in res3["sql"]
+    assert res3["filters"].get("plant") == "1258"
+
+    # Turn 4: Show me the top 5 instead.
+    history3 = history2 + [
+        {"role": "user", "content": turn3_q},
+        {"role": "assistant", "content": "10 Least Utilized Bins — Plant 1258"}
+    ]
+    turn4_q = "Show me the top 5 instead."
+    res4 = deterministic_warehouse_sql_generator(turn4_q, history=history3)
+    assert res4["intent"] == "top_utilized_bins"
+    assert "DESC" in res4["sql"]
+    assert "TOP 5" in res4["sql"]
+    assert "1258" in res4["sql"]
+    assert res4["filters"].get("plant") == "1258"
+
+def test_conversation_2_empty_bins_flow():
+    # Turn 1: Show me empty bins.
+    turn1_q = "Show me empty bins."
+    res1 = deterministic_warehouse_sql_generator(turn1_q)
+    assert res1["intent"] == "putaway_bins"
+    assert res1["output_type"] == "table"
+    assert "Storage Location" in res1["sql"]
+    assert "Status" in res1["sql"]
+
+    # Turn 2: Only in Plant 1258.
+    history1 = [
+        {"role": "user", "content": turn1_q},
+        {"role": "assistant", "content": "Empty Bins Available for Put-away"}
+    ]
+    turn2_q = "Only in Plant 1258."
+    res2 = deterministic_warehouse_sql_generator(turn2_q, history=history1)
+    assert res2["intent"] == "putaway_bins"
+    assert res2["output_type"] == "table"
+    assert "1258" in res2["sql"]
+
+    # Turn 3: How many are there?
+    history2 = history1 + [
+        {"role": "user", "content": turn2_q},
+        {"role": "assistant", "content": "Empty Bins — Plant 1258"}
+    ]
+    turn3_q = "How many are there?"
+    res3 = deterministic_warehouse_sql_generator(turn3_q, history=history2)
+    assert res3["intent"] == "empty_bins_count"
+    assert res3["output_type"] == "kpi"
+    assert "COUNT(DISTINCT" in res3["sql"]
+    assert "1258" in res3["sql"]
+
 

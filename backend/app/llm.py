@@ -42,122 +42,246 @@ def clean_llm_json(raw_text: str) -> dict[str, Any]:
     
     return json.loads(text)
 
+def extract_and_update_conversation_state(question: str, history: list[dict] | None = None) -> dict[str, Any]:
+    """Maintains a structured conversation state machine across multi-turn interactions.
+    
+    Extracts, preserves, and modifies:
+    - entity ("bin" | "material" | "plant")
+    - metric ("utilization" | "unrestricted_qty" | "volume" | "missing_dimensions")
+    - ranking ("highest" | "lowest" | None)
+    - limit (int, default 10)
+    - condition ("empty" | "missing_dimensions" | "high_utilization" | "low_utilization" | None)
+    - aggregation ("list" | "count" | "sum" | "avg")
+    - filters ({"plant": "1258", ...})
+    - topic (active analytical intent)
+    - resolved_query (semantic query string)
+    """
+    q_lower = question.lower().strip()
+    
+    # Extract any explicit plant filter in the current question
+    new_plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
+    new_plant = new_plant_match.group(1) if new_plant_match and new_plant_match.group(1) not in ["2024", "2025", "2026"] else None
+
+    # Extract any explicit limit in the current question
+    new_limit_match = re.search(r"\b(?:top|bottom|highest|lowest|first|last|least)?\s*(\d{1,3})\b", q_lower)
+    new_limit = int(new_limit_match.group(1)) if (new_limit_match and new_limit_match.group(1) not in ["100", "2024", "2025", "2026", "1258", "1266", "1268", "7228"]) else None
+
+    # Default initial state
+    state = {
+        "entity": "inventory",
+        "metric": "total_inventory",
+        "ranking": None,
+        "limit": 10,
+        "condition": None,
+        "aggregation": "list",
+        "filters": {},
+        "topic": "inventory_summary"
+    }
+
+    if not history:
+        user_queries = []
+    else:
+        user_queries = [
+            msg.get("content", "").strip()
+            for msg in history
+            if msg.get("role") == "user" and msg.get("content", "").strip()
+        ]
+
+    # Reconstruct prior state by traversing user history in order
+    for uq in user_queries:
+        uq_lower = uq.lower()
+        
+        # Plant filter in history
+        pm = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", uq_lower)
+        if pm and pm.group(1) not in ["2024", "2025", "2026"]:
+            state["filters"]["plant"] = pm.group(1)
+
+        # Limit in history
+        lm = re.search(r"\b(?:top|bottom|highest|lowest|first|last|least)?\s*(\d{1,3})\b", uq_lower)
+        if lm and lm.group(1) not in ["100", "2024", "2025", "2026", "1258", "1266", "1268", "7228"]:
+            state["limit"] = int(lm.group(1))
+
+        # Check topic signatures
+        if any(k in uq_lower for k in ["least utilized", "lowest utilized", "emptiest bins", "bottom bins", "least full"]):
+            state["entity"] = "bin"
+            state["metric"] = "utilization"
+            state["ranking"] = "lowest"
+            state["topic"] = "least_utilized_bins"
+            state["condition"] = None
+            state["aggregation"] = "list"
+        elif any(k in uq_lower for k in ["most utilized", "highest utilized", "top utilized", "fullest bins", "top 10 most", "top 5 most", "most capacity"]):
+            state["entity"] = "bin"
+            state["metric"] = "utilization"
+            state["ranking"] = "highest"
+            state["topic"] = "top_utilized_bins"
+            state["condition"] = None
+            state["aggregation"] = "list"
+        elif any(k in uq_lower for k in ["empty bin", "empty bins", "putaway", "put-away", "vacant", "free bin", "available for put-away", "available bin"]):
+            state["entity"] = "bin"
+            state["condition"] = "empty"
+            state["topic"] = "putaway_bins"
+            state["ranking"] = None
+            state["aggregation"] = "list"
+        elif any(k in uq_lower for k in ["dimension", "dimensions", "missing physical", "quality check", "incomplete dimension", "unmaintained"]):
+            state["entity"] = "material"
+            state["condition"] = "missing_dimensions"
+            state["topic"] = "data_quality"
+            state["aggregation"] = "list"
+        elif any(k in uq_lower for k in ["share of total", "volume consumption", "percentage of total", "footprint"]):
+            state["entity"] = "material"
+            state["metric"] = "volume_share"
+            state["ranking"] = "highest"
+            state["topic"] = "material_volume_share"
+            state["aggregation"] = "list"
+        elif any(k in uq_lower for k in ["materials in plant", "materials of plant", "plant inventory records", "show materials", "list materials"]):
+            state["entity"] = "material"
+            state["topic"] = "plant_materials"
+            state["aggregation"] = "list"
+
+    # Now apply the current query modifiers on top of previous state
+    # 1. Check if current query is a new independent top-level topic
+    is_mat_entity = any(m in q_lower for m in ["material", "materials", "sku", "skus", "item", "items", "product", "products", "goods", "stock item", "stock items"])
+    is_fresh_both = ("top" in q_lower or "most" in q_lower or "fullest" in q_lower or "highest" in q_lower) and ("bottom" in q_lower or "least" in q_lower or "emptiest" in q_lower or "lowest" in q_lower) and any(b in q_lower for b in ["bin", "bins", "location", "locations", "racks"])
+    is_fresh_mat_vol = is_mat_entity and any(k in q_lower for k in [
+        "volume", "space consuming", "consuming most", "volume consumption", "highest space", "occupying highest volume",
+        "share of total", "percentage of our total", "percentage of total", "highest percentage", "footprint",
+        "cubic capacity", "take up", "occupy", "occupying", "room in the warehouse", "proportion of bin", "storage space",
+        "largest volume footprint", "highest proportion", "biggest share", "most room"
+    ])
+    is_fresh_dq = any(k in q_lower for k in [
+        "data quality", "quality check", "missing dimension", "incomplete dimension", "without dimension",
+        "don't have dimension", "dont have dimension", "cross-dataset", "cross dataset", "unmaintained dimension",
+        "missing physical", "incomplete physical", "validation for material volume", "missing length", "missing width",
+        "missing height", "no dimension", "no physical dimension", "physical measurements", "material size and cubic volume",
+        "check data quality"
+    ])
+    is_fresh_empty = any(k in q_lower for k in ["empty bin", "empty bins", "show me empty", "list empty", "putaway", "put-away", "vacant bin", "free bin", "available for immediate put-away"]) and not any(k in q_lower for k in ["how many", "count"])
+    is_fresh_top_bins = ("top" in q_lower or "most" in q_lower) and any(k in q_lower for k in ["utilized bin", "utilised bin", "fullest bin", "capacity bin"]) and not is_mat_entity
+    is_fresh_least_bins = ("bottom" in q_lower or "least" in q_lower or "emptiest" in q_lower or "lowest" in q_lower) and any(k in q_lower for k in ["utilized bin", "utilised bin", "bins", "locations", "capacity"]) and not is_mat_entity
+    is_fresh_consolidation = any(k in q_lower for k in ["consolidat", "free up", "same material", "duplicate bin", "multiple bin"])
+    is_fresh_diff = any(k in q_lower for k in ["difference", "zws", "unrestrictedqty2"])
+    is_fresh_div = any(k in q_lower for k in ["division", "material group"])
+    is_fresh_trend = any(k in q_lower for k in ["trend", "history", "timeline", "over time", "monthly"])
+    is_fresh_util = any(k in q_lower for k in ["overall warehouse bin utilization", "facility fill", "fill rate", "overall bin fill", "space utilization rate", "overall bin utilization", "total bin volume is currently occupied", "warehouse space utilization rate"])
+
+    if is_fresh_dq:
+        state["entity"] = "material"
+        state["condition"] = "missing_dimensions"
+        state["topic"] = "data_quality"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+    elif is_fresh_both:
+        state["entity"] = "bin"
+        state["metric"] = "utilization"
+        state["ranking"] = "both"
+        state["topic"] = "top_and_bottom_bins"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["limit"] = new_limit or 10
+    elif is_fresh_mat_vol:
+        state["entity"] = "material"
+        state["metric"] = "volume_share"
+        state["ranking"] = "highest"
+        state["topic"] = "material_volume_share"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["limit"] = new_limit or 10
+    elif is_fresh_empty:
+        state["entity"] = "bin"
+        state["condition"] = "empty"
+        state["topic"] = "putaway_bins"
+        state["ranking"] = None
+        state["aggregation"] = "list"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["limit"] = new_limit or 50
+    elif is_fresh_top_bins:
+        state["entity"] = "bin"
+        state["metric"] = "utilization"
+        state["ranking"] = "highest"
+        state["topic"] = "top_utilized_bins"
+        state["condition"] = None
+        state["aggregation"] = "list"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["limit"] = new_limit or 10
+    elif is_fresh_least_bins:
+        state["entity"] = "bin"
+        state["metric"] = "utilization"
+        state["ranking"] = "lowest"
+        state["topic"] = "least_utilized_bins"
+        state["condition"] = None
+        state["aggregation"] = "list"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["limit"] = new_limit or 10
+    elif is_fresh_consolidation:
+        state["topic"] = "consolidation"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+    elif is_fresh_diff:
+        state["topic"] = "stock_difference"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+    elif is_fresh_div:
+        state["topic"] = "division_breakdown"
+        state["filters"] = {}
+    elif is_fresh_trend:
+        state["topic"] = "trend_analysis"
+        state["filters"] = {}
+    elif is_fresh_util:
+        state["topic"] = "warehouse_utilization"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+    else:
+        # It's a modifier / follow-up
+        if new_plant:
+            state["filters"]["plant"] = new_plant
+        if new_limit:
+            state["limit"] = new_limit
+
+        # Handle "How many are there?" / "What is the count?"
+        is_count_query = any(k in q_lower for k in ["how many", "count", "number of", "total count", "what is the count", "how many are there"])
+        if is_count_query:
+            state["aggregation"] = "count"
+            if state["condition"] == "empty" or state["topic"] in ["putaway_bins", "empty_bins_count"]:
+                state["topic"] = "empty_bins_count"
+            elif state["topic"] == "data_quality":
+                state["topic"] = "data_quality_count"
+
+        # Handle Polarity shifts & Ranking modifications:
+        # "What about the least utilized ones?" -> lowest ranking
+        elif any(k in q_lower for k in ["least utilized", "lowest utilized", "least ones", "lowest ones", "least", "bottom", "emptiest"]):
+            state["ranking"] = "lowest"
+            state["topic"] = "least_utilized_bins"
+            state["aggregation"] = "list"
+
+        # "Show me the top 5 instead" / "top 5" -> Reverses "least" to highest ranking
+        elif any(k in q_lower for k in ["top", "most", "highest", "fullest"]) and ("instead" in q_lower or "most" in q_lower or "top" in q_lower):
+            state["ranking"] = "highest"
+            state["topic"] = "top_utilized_bins"
+            state["aggregation"] = "list"
+
+    # Construct clean resolved query from state
+    plant_clause = f" in plant {state['filters']['plant']}" if state['filters'].get('plant') else ""
+    limit_clause = f" {state['limit']}" if state.get('limit') else " 10"
+
+    if state["topic"] == "top_and_bottom_bins":
+        state["resolved_query"] = f"top{limit_clause} most and bottom{limit_clause} least utilized bins{plant_clause}"
+    elif state["topic"] == "empty_bins_count":
+        state["resolved_query"] = f"how many empty bins{plant_clause}"
+    elif state["topic"] == "putaway_bins":
+        state["resolved_query"] = f"empty bins available for put-away{plant_clause}"
+    elif state["topic"] == "least_utilized_bins":
+        state["resolved_query"] = f"bottom{limit_clause} least utilized bins{plant_clause}"
+    elif state["topic"] == "top_utilized_bins":
+        state["resolved_query"] = f"top{limit_clause} most utilized bins{plant_clause}"
+    elif state["topic"] == "data_quality":
+        state["resolved_query"] = f"materials with missing dimensions{plant_clause}"
+    elif state["topic"] == "material_volume_share":
+        state["resolved_query"] = f"top{limit_clause} materials by share of total bin volume{plant_clause}"
+    elif state["topic"] == "plant_materials":
+        state["resolved_query"] = f"show materials{plant_clause}"
+    else:
+        state["resolved_query"] = question
+
+    return state
+
 def resolve_conversation_context(question: str, history: list[dict] | None = None) -> str:
     """Intelligently resolves follow-up questions, anaphora, elliptical queries, filter refinements, and entity inheritance from conversation history."""
-    q_lower = question.lower().strip()
-    if not history:
-        return question
-
-    # Scan history to extract all previous user queries
-    user_queries = [
-        msg.get("content", "").strip()
-        for msg in history
-        if msg.get("role") == "user" and msg.get("content", "").strip()
-    ]
-
-    if not user_queries:
-        return question
-
-    last_user_query = user_queries[-1]
-    last_q_lower = last_user_query.lower()
-
-    # Identify if the current question is a modifier / follow-up / elliptical query
-    is_modifier_or_followup = (
-        any(q_lower.startswith(p) for p in [
-            "what about", "how about", "and ", "only ", "just ", "filter by", "filter for",
-            "for ", "in ", "show ", "tell me about", "what are", "which ones", "instead",
-            "what if", "can you show", "how many", "where are", "give me"
-        ]) or
-        any(w in q_lower for w in [
-            "ones", "one", "these", "those", "they", "them", "it", "the rest", "other ones",
-            "same for", "instead", "too", "also", "only", "just", "filter"
-        ]) or
-        len(q_lower.split()) <= 6 or
-        bool(re.match(r"^(?:only\s+|just\s+|for\s+|in\s+)?(?:plant\s*)?(?:1258|1266|1268|7228|\d{4})[.\s]*$", q_lower)) or
-        bool(re.match(r"^(?:top|bottom|first|last)?\s*\d{1,3}(?:\s*instead|\s*rows)?$", q_lower))
-    )
-
-    if not is_modifier_or_followup:
-        return question
-
-    # Extract any plant filter specified in current question, or inherit from history if within same conversation
-    new_plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-    if new_plant_match and new_plant_match.group(1) not in ["2024", "2025", "2026"]:
-        new_plant = f" in plant {new_plant_match.group(1)}"
-    else:
-        history_plant = None
-        for uq in reversed(user_queries):
-            pm = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", uq.lower())
-            if pm and pm.group(1) not in ["2024", "2025", "2026"]:
-                history_plant = f" in plant {pm.group(1)}"
-                break
-        new_plant = history_plant or ""
-
-    # Extract any limit specified in current question (e.g. "top 20", "5 rows", "top 5")
-    new_limit_match = re.search(r"\b(?:top|bottom|highest|lowest|first|last|least)?\s*(\d{1,3})\b", q_lower)
-    new_limit = f" {new_limit_match.group(1)}" if (new_limit_match and new_limit_match.group(1) not in ["100", "2024", "2025", "2026", "1258", "1266", "1268", "7228"]) else ""
-
-    # Detect the active topic anchor by searching history backwards
-    history_topic = None
-    for uq in reversed(user_queries):
-        uq_lower = uq.lower()
-        if any(k in uq_lower for k in ["least utilized", "lowest utilized", "emptiest bins", "bottom", "least 10", "bottom 10", "least"]):
-            history_topic = "least_utilized_bins"
-            break
-        elif any(k in uq_lower for k in ["most utilized", "highest utilized", "top utilized", "fullest bins", "most capacity", "top 10 most", "most"]):
-            history_topic = "top_utilized_bins"
-            break
-        elif any(k in uq_lower for k in ["dimension", "dimensions", "missing physical", "quality check", "incomplete dimension", "unmaintained"]):
-            history_topic = "data_quality"
-            break
-        elif any(k in uq_lower for k in ["empty bin", "empty bins", "putaway", "put-away", "vacant", "free bin"]):
-            history_topic = "putaway_bins"
-            break
-        elif any(k in uq_lower for k in ["share of total", "volume consumption", "percentage of total", "footprint"]):
-            history_topic = "material_volume_share"
-            break
-        elif any(k in uq_lower for k in ["materials in plant", "materials of plant", "plant inventory records", "show materials", "list materials", "materials in", "skus in plant"]):
-            history_topic = "plant_materials"
-            break
-        elif any(k in uq_lower for k in ["more than", "greater than", "less than", "% full"]) and "bin" in uq_lower:
-            history_topic = "bin_threshold"
-            break
-        elif any(k in uq_lower for k in ["bin utilization", "occupancy percentage", "warehouse utilization"]):
-            history_topic = "warehouse_utilization"
-            break
-
-    # Resolve based on history_topic and current query modifiers
-    if history_topic == "least_utilized_bins":
-        # Polarity flip only if user explicitly asks for most utilized / highest / fullest
-        if any(k in q_lower for k in ["most", "highest", "fullest", "top utilized", "most utilized"]) or ("top" in q_lower and not new_limit_match):
-            return f"top {new_limit.strip() or '10'} most utilized bins{new_plant}"
-        else:
-            return f"bottom {new_limit.strip() or '10'} least utilized bins{new_plant}"
-
-    elif history_topic == "top_utilized_bins":
-        if any(k in q_lower for k in ["least", "lowest", "bottom", "emptiest", "unused", "least utilized"]):
-            return f"bottom {new_limit.strip() or '10'} least utilized bins{new_plant}"
-        else:
-            return f"top {new_limit.strip() or '10'} most utilized bins{new_plant}"
-
-    elif history_topic == "data_quality":
-        if not any(k in q_lower for k in ["bin", "utiliz", "trend", "share"]):
-            return f"materials with missing dimensions{new_plant}"
-
-    elif history_topic == "putaway_bins":
-        if not any(k in q_lower for k in ["dimension", "utiliz", "trend", "share", "material"]):
-            return f"empty bins available for put-away{new_plant}"
-
-    elif history_topic == "material_volume_share":
-        if not any(k in q_lower for k in ["empty", "missing", "plant breakdown"]):
-            return f"top {new_limit.strip() or '10'} materials by share of total bin volume{new_plant}"
-
-    elif history_topic == "plant_materials":
-        if new_plant_match:
-            return f"show materials in plant {new_plant_match.group(1)}"
-        return f"show materials{new_plant}"
-
-    return question
+    state = extract_and_update_conversation_state(question, history)
+    return state.get("resolved_query", question)
 
 def deterministic_warehouse_sql_generator(question: str, history: list[dict] | None = None) -> dict[str, Any]:
     """Context-Driven Semantic Query Resolver.
@@ -165,12 +289,15 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
     Dynamically maps warehouse business concepts (Entities, Metrics, Dimensions, Calculations, Rankings)
     to safe SQL Server queries according to the Warehouse BI Semantic Layer without hardcoded question lists.
     """
-    resolved_q = resolve_conversation_context(question, history)
+    state = extract_and_update_conversation_state(question, history)
+    resolved_q = state.get("resolved_query", question)
     q_lower = resolved_q.lower()
 
     # 1. ENTITY & SCOPE EXTRACTION (Context-driven)
-    plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{4,5})\b", q_lower)
-    plant_cand = plant_match.group(1) if plant_match and plant_match.group(1) not in ["2024", "2025", "2026"] else None
+    plant_cand = state["filters"].get("plant")
+    if not plant_cand:
+        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{4,5})\b", q_lower)
+        plant_cand = plant_match.group(1) if plant_match and plant_match.group(1) not in ["2024", "2025", "2026"] else None
     
     bin_match = re.search(r"\bbin\s*[:#-]?\s*([a-z0-9_-]{3,25})\b", q_lower, re.IGNORECASE)
     if bin_match and bin_match.group(1).lower() in ["capacity", "utilization", "master", "table", "space", "volume", "location", "locations", "occupancy", "fullness"]:
@@ -183,7 +310,7 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
     # 2. BUSINESS METRIC & INTENT RESOLUTION
 
     # A. DATA QUALITY CHECK & MISSING PHYSICAL DIMENSIONS
-    is_dq_intent = any(k in q_lower for k in [
+    is_dq_intent = state.get("topic") == "data_quality" or any(k in q_lower for k in [
         "data quality", "quality check", "missing dimension", "missing physical", "missing volume",
         "incomplete dimension", "incomplete physical", "missing length", "missing width", "missing height",
         "no dimension", "no dimensions", "without dimension", "without dimensions",
@@ -257,21 +384,23 @@ ORDER BY [Total Stock Qty] DESC"""
             "metric": "missing_dimensions",
             "filters": filters,
             "time_range": "current",
-            "output_type": "table"
+            "output_type": "table",
+            "conversation_state": state
         }
 
     # B. MATERIAL BIN VOLUME CONSUMPTION & SHARE OF TOTAL BIN VOLUME
     is_mat_entity = any(m in q_lower for m in ["material", "materials", "sku", "skus", "item", "items", "product", "products", "goods", "stock item", "stock items"])
-    is_mat_vol_intent = is_mat_entity and any(k in q_lower for k in [
+    is_mat_vol_intent = state.get("topic") == "material_volume_share" or (is_mat_entity and any(k in q_lower for k in [
         "volume", "space consuming", "consuming most", "volume consumption", "highest space", "occupying highest volume",
         "share of total", "percentage of our total", "percentage of total", "highest percentage", "footprint",
         "cubic capacity", "take up", "occupy", "occupying", "room in the warehouse", "proportion of bin", "storage space",
         "largest volume footprint", "highest proportion", "biggest share", "most room"
-    ])
+    ]))
     if is_mat_vol_intent:
+        n_val = state.get("limit", 10)
         plant_filter = f" AND i.Plant = '{plant_cand}'" if plant_cand else ""
         filters = {"plant": plant_cand} if plant_cand else {}
-        sql_mat_vol = f"""SELECT TOP 10 
+        sql_mat_vol = f"""SELECT TOP {n_val} 
     ROW_NUMBER() OVER (ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC) AS [Rank],
     i.Material,
     MAX(COALESCE(i.MaterialDescription, m.MaterialDescription, 'N/A')) AS [Material Description],
@@ -308,31 +437,41 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC"""
             "sql": sql_mat_vol,
             "query_plan": query_plan,
             "chart_type": "bar",
-            "chart_title": "Top 10 Materials by Share of Total Bin Volume (%)",
+            "chart_title": f"Top {n_val} Materials by Share of Total Bin Volume (%)",
             "chart_x": "Material",
             "chart_y": "% of Total Bin Volume",
             "intent": "material_volume_share",
             "metric": "bin_volume_consumption",
             "filters": filters,
             "time_range": "current",
-            "output_type": "bar_chart"
+            "output_type": "bar_chart",
+            "conversation_state": state
         }
 
     # C. TOP N & BOTTOM N BIN UTILIZATION RANKINGS
-    has_top = any(k in q_lower for k in ["top", "most", "highest", "fullest", "most capacity", "capacity usage", "fullest bins", "most full", "most occupied", "highest utilization"])
-    has_bottom = any(k in q_lower for k in ["bottom", "least", "lowest", "emptiest", "unused capacity", "emptiest bins", "least full", "least occupied", "lowest utilization", "least empty", "least utiliz"])
-    is_bin_metric = any(k in q_lower for k in ["bin", "bins", "location", "locations", "racks", "rack", "slot", "slots", "storage position", "ones", "one", "these", "those", "they", "them", "it"]) or (has_top or has_bottom)
-    is_util_metric = any(k in q_lower for k in ["utiliz", "full", "capacit", "occup", "empty", "unused", "space", "occupan"])
+    has_both = state.get("topic") == "top_and_bottom_bins" or (
+        ("top" in q_lower or "most" in q_lower or "fullest" in q_lower) and
+        ("bottom" in q_lower or "least" in q_lower or "emptiest" in q_lower)
+    )
+    has_top = state.get("ranking") == "highest" or state.get("topic") == "top_utilized_bins" or any(k in q_lower for k in ["top", "most", "highest", "fullest", "most capacity", "capacity usage", "fullest bins", "most full", "most occupied", "highest utilization"])
+    has_bottom = state.get("ranking") == "lowest" or state.get("topic") == "least_utilized_bins" or any(k in q_lower for k in ["bottom", "least", "lowest", "emptiest", "unused capacity", "emptiest bins", "least full", "least occupied", "lowest utilization", "least empty", "least utiliz"])
+    is_bin_metric = any(k in q_lower for k in ["bin", "bins", "location", "locations", "racks", "rack", "slot", "slots", "storage position", "ones", "one", "these", "those", "they", "them", "it"]) or (has_top or has_bottom or has_both)
+    is_util_metric = any(k in q_lower for k in ["utiliz", "full", "capacit", "occup", "empty", "unused", "space", "occupan"]) or has_both
 
-    if is_bin_metric and is_util_metric and (has_top or has_bottom) and not is_mat_entity:
-        n_match = re.search(r"\b(?:top|bottom|highest|lowest|first|last|least|most)?\s*(\d{1,3})\b", q_lower)
-        n_val = int(n_match.group(1)) if (n_match and n_match.group(1) not in ["100", "2024", "2025", "2026"]) else 10
+    if is_bin_metric and (is_util_metric or has_both) and (has_top or has_bottom or has_both) and not is_mat_entity:
+        n_val = state.get("limit") or 10
+        if not state.get("limit"):
+            n_match = re.search(r"\b(?:top|bottom|highest|lowest|first|last|least|most)?\s*(\d{1,3})\b", q_lower)
+            n_val = int(n_match.group(1)) if (n_match and n_match.group(1) not in ["100", "2024", "2025", "2026"]) else 10
+        
         plant_filter = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
         filters = {"ranking_limit": n_val}
         if plant_cand:
             filters["plant"] = plant_cand
 
-        if has_top and has_bottom:
+        plant_title_suffix = f" — Plant {plant_cand}" if plant_cand else ""
+
+        if has_both:
             sql_both = f"""WITH RankedBins AS (
     SELECT 
         b.BinLocation AS Bin,
@@ -364,42 +503,75 @@ FROM BottomBins"""
             return {
                 "sql": sql_both,
                 "chart_type": "none",
-                "chart_title": f"Top {n_val} Most & Bottom {n_val} Least Utilized Bins",
+                "chart_title": f"Top {n_val} Most & Bottom {n_val} Least Utilized Bins{plant_title_suffix}",
                 "chart_x": None,
                 "chart_y": None,
                 "intent": "top_and_bottom_bins",
                 "metric": "bin_utilization_ranking",
                 "filters": filters,
                 "time_range": "current",
-                "output_type": "table"
+                "output_type": "table",
+                "conversation_state": state
             }
 
-        if has_top:
+        if state.get("ranking") == "lowest" or (has_bottom and not (has_top and state.get("ranking") == "highest")):
+            sql_bottom = f"""SELECT TOP {n_val} 
+    ROW_NUMBER() OVER (ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) ASC) AS [Rank],
+    b.BinLocation AS [Bin],
+    b.Plant AS [Plant],
+    ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 2) AS [Occupied Volume],
+    CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Bin Capacity],
+    CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Capacity],
+    CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %],
+    CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization]
+FROM dbo.ZWMS_BIN_MASTER b 
+JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant 
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode 
+WHERE b.Volume > 0{plant_filter} 
+GROUP BY b.BinLocation, b.Plant, b.Volume, b.VolumeUnit 
+ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) ASC"""
             return {
-                "sql": f"SELECT TOP {n_val} b.BinLocation AS Bin, b.Plant, CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Bin Capacity], CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %] FROM dbo.ZWMS_BIN_MASTER b JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode WHERE b.Volume > 0{plant_filter} GROUP BY b.BinLocation, b.Plant, b.Volume, b.VolumeUnit ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) DESC",
+                "sql": sql_bottom,
                 "chart_type": "none",
-                "chart_title": f"Top {n_val} Most Utilized Bins",
-                "chart_x": None,
-                "chart_y": None,
-                "intent": "top_utilized_bins",
-                "metric": "bin_utilization_ranking",
-                "filters": filters,
-                "time_range": "current",
-                "output_type": "table"
-            }
-
-        if has_bottom:
-            return {
-                "sql": f"SELECT TOP {n_val} b.BinLocation AS Bin, b.Plant, CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Bin Capacity], CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %] FROM dbo.ZWMS_BIN_MASTER b JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode WHERE b.Volume > 0{plant_filter} GROUP BY b.BinLocation, b.Plant, b.Volume, b.VolumeUnit ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) ASC",
-                "chart_type": "none",
-                "chart_title": f"Bottom {n_val} Least Utilized Bins",
+                "chart_title": f"{n_val} Least Utilized Bins{plant_title_suffix}",
                 "chart_x": None,
                 "chart_y": None,
                 "intent": "least_utilized_bins",
                 "metric": "bin_utilization_ranking",
                 "filters": filters,
                 "time_range": "current",
-                "output_type": "table"
+                "output_type": "table",
+                "conversation_state": state
+            }
+
+        if state.get("ranking") == "highest" or has_top:
+            sql_top = f"""SELECT TOP {n_val} 
+    ROW_NUMBER() OVER (ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) DESC) AS [Rank],
+    b.BinLocation AS [Bin],
+    b.Plant AS [Plant],
+    ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 2) AS [Occupied Volume],
+    CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Bin Capacity],
+    CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Capacity],
+    CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %],
+    CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization]
+FROM dbo.ZWMS_BIN_MASTER b 
+JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant 
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode 
+WHERE b.Volume > 0{plant_filter} 
+GROUP BY b.BinLocation, b.Plant, b.Volume, b.VolumeUnit 
+ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) DESC"""
+            return {
+                "sql": sql_top,
+                "chart_type": "none",
+                "chart_title": f"Top {n_val} Most Utilized Bins{plant_title_suffix}",
+                "chart_x": None,
+                "chart_y": None,
+                "intent": "top_utilized_bins",
+                "metric": "bin_utilization_ranking",
+                "filters": filters,
+                "time_range": "current",
+                "output_type": "table",
+                "conversation_state": state
             }
 
     # D. BIN CAPACITY & UTILIZATION THRESHOLD FILTERING
@@ -424,12 +596,13 @@ FROM BottomBins"""
             "metric": "bin_fullness",
             "filters": {"Utilization %": f"{op_symbol} {thresh_val}%"},
             "time_range": "current",
-            "output_type": "table"
+            "output_type": "table",
+            "conversation_state": state
         }
 
-    # E. EMPTY BINS / AVAILABLE FOR PUT-AWAY
+    # E. EMPTY BINS / AVAILABLE FOR PUT-AWAY & COUNT SCALARS
     # Semantic Definition: Bin inventory quantity = 0 (UnrestrictedQty = 0 or BinNo IS NULL)
-    is_empty_intent = (
+    is_empty_intent = state.get("topic") in ["putaway_bins", "empty_bins_count"] or (
         any(k in q_lower for k in [
             "empty", "putaway", "put-away", "put away", "vacant", "unoccupied",
             "unused", "free bin", "free space", "free location", "free storage", "completely free",
@@ -447,17 +620,53 @@ FROM BottomBins"""
     if is_empty_intent:
         plant_filter = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
         filters = {"plant": plant_cand} if plant_cand else {}
+
+        # If user asked "how many are there?" -> return scalar count query
+        if state.get("aggregation") == "count" or state.get("topic") == "empty_bins_count" or any(k in q_lower for k in ["how many", "count", "what is the count", "total count"]):
+            plant_suffix = f" in Plant {plant_cand}" if plant_cand else ""
+            sql_count = f"""SELECT COUNT(DISTINCT b.BinLocation) AS [Empty Bins Count], COUNT(DISTINCT b.Plant) AS [Plant Count]
+FROM dbo.ZWMS_BIN_MASTER b 
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant 
+WHERE (i.BinNo IS NULL OR i.UnrestrictedQty = 0){plant_filter}"""
+            return {
+                "sql": sql_count,
+                "chart_type": "none",
+                "chart_title": f"Total Empty Bins{plant_suffix}",
+                "chart_x": None,
+                "chart_y": None,
+                "intent": "empty_bins_count",
+                "metric": "empty_bins_count",
+                "filters": filters,
+                "time_range": "current",
+                "output_type": "kpi",
+                "conversation_state": state
+            }
+
+        plant_suffix = f" — Plant {plant_cand}" if plant_cand else ""
+        sql_empty_list = f"""SELECT TOP 50 
+    b.BinLocation AS [BinLocation],
+    b.BinLocation AS [Bin], 
+    b.Plant AS [Plant], 
+    b.StorageLocation AS [Storage Location], 
+    0 AS [Inventory Qty], 
+    'Available' AS [Status] 
+FROM dbo.ZWMS_BIN_MASTER b 
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant AND b.StorageLocation = i.StorageLocation 
+WHERE (i.BinNo IS NULL OR i.UnrestrictedQty = 0){plant_filter} 
+GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit 
+ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
         return {
-            "sql": f"SELECT TOP 50 b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit, b.PalletType, b.Box, b.Length, b.Width, b.Height FROM dbo.ZWMS_BIN_MASTER b LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant AND b.StorageLocation = i.StorageLocation WHERE (i.BinNo IS NULL OR i.UnrestrictedQty = 0){plant_filter} ORDER BY b.Plant, b.StorageLocation, b.BinLocation",
+            "sql": sql_empty_list,
             "chart_type": "none",
-            "chart_title": "Empty Bins Available for Immediate Put-away",
+            "chart_title": f"Empty Bins{plant_suffix}",
             "chart_x": None,
             "chart_y": None,
             "intent": "putaway_bins",
             "metric": "unoccupied_bins",
             "filters": filters,
             "time_range": "current",
-            "output_type": "table"
+            "output_type": "table",
+            "conversation_state": state
         }
 
     # F. AVERAGE INVENTORY PER OCCUPIED BIN
@@ -774,18 +983,59 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         ]
         return "\n".join(lines)
 
-    # 2. Single Direction Top N or Bottom N Utilized Bins Ranking
-    if "Bin Capacity" in cols and ("Utilization" in cols or "Utilization %" in cols) and any(k in q_lower for k in ["top", "most utilized", "highest", "bottom", "least utilized", "lowest", "emptiest"]) and not any(k in q_lower for k in ["more than", "greater than", "less than", "above", "below", ">", "<"]):
+    # 1. Empty Bins Count (Scalar KPI)
+    if "Empty Bins Count" in cols:
+        count_val = rows[0].get("Empty Bins Count", 0)
+        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
+        plant_val = plant_match.group(1) if plant_match else None
+        plant_str = f" in Plant {plant_val}" if plant_val else " across the warehouse network"
+        
+        single_stmt = f"There are **{count_val:,}** completely empty bins{plant_str}."
+        if is_single_statement_requested:
+            return single_stmt
+            
+        return (
+            f"### 📦 Empty Bins Count\n\n"
+            f"{single_stmt}\n\n"
+            f"📌 **Filters:** `Plant: {plant_val or 'All Plants'}` · `Condition: Empty bins` · `Count: {count_val:,}`"
+        )
+
+    # 2. Empty Bins List (Table Output)
+    if ("Storage Location" in cols or "StorageLocation" in cols) and ("Status" in cols or "Inventory Qty" in cols) and ("Bin" in cols or "BinLocation" in cols):
+        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
+        plant_val = plant_match.group(1) if plant_match else None
+        plant_str = f" — Plant {plant_val}" if plant_val else ""
+        
+        single_stmt = f"Found **{count} empty bins**{plant_str} currently available for put-away (Inventory Qty = 0)."
+        if is_single_statement_requested:
+            return single_stmt
+            
+        return (
+            f"### 📦 Empty Bins{plant_str}\n\n"
+            f"{single_stmt}\n\n"
+            f"📌 **Filters:** `Plant {plant_val or 'All Plants'}` · `Empty bins` · `Available: {count}`\n\n"
+            f"💡 *The list of available empty bins with storage locations is loaded in the **searchable Data Table** below.*"
+        )
+
+    # 3. Top N or Bottom N Utilized Bins Ranking
+    if ("Bin Capacity" in cols or "Capacity" in cols) and ("Utilization" in cols or "Utilization %" in cols) and any(k in q_lower for k in ["top", "most", "highest", "bottom", "least", "lowest", "emptiest"]) and not any(k in q_lower for k in ["more than", "greater than", "less than", "above", "below", ">", "<"]):
         is_least = any(k in q_lower for k in ["bottom", "least", "lowest", "emptiest"])
         label = "Least" if is_least else "Most"
         leader = rows[0].get("Bin", "N/A") if rows else "N/A"
-        l_util = rows[0].get("Utilization %", rows[0].get("Utilization", "0%")) if rows else "0%"
-        single_stmt = f"Found the **{label} {count} Utilized Bins** (leader: **`{leader}`** at **{l_util}**)."
+        l_util = rows[0].get("Utilization", rows[0].get("Utilization %", "0%")) if rows else "0%"
+        
+        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
+        plant_val = plant_match.group(1) if plant_match else None
+        plant_str = f" — Plant {plant_val}" if plant_val else ""
+        
+        single_stmt = f"Top {count} {label} Utilized Bins{plant_str} (leader: **`{leader}`** at **{l_util}**)."
         if is_single_statement_requested:
             return single_stmt
+            
         return (
-            f"### 📊 {label} Utilized Bins Ranking\n\n"
+            f"### 📊 Top {count} {label} Utilized Bins{plant_str}\n\n"
             f"{single_stmt}\n\n"
+            f"📌 **Filters:** `Plant {plant_val or 'All Plants'}` · `{label} utilized` · `Top {count}`\n\n"
             f"💡 *The complete list of bins is loaded into the **searchable, paginated Data Table** below with capacities and exact utilization percentages.*"
         )
 

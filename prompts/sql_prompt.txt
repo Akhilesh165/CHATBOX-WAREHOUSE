@@ -106,27 +106,73 @@ D. Data Quality Check & Missing Physical Dimensions:
    Set `output_type`: "table", `chart_type`: "none", `intent`: "data_quality_check", `metric`: "missing_dimensions".
 
 ===================================================================
-8. MULTI-TURN CONVERSATION CONTEXT & FOLLOW-UP RESOLUTION RULES
+8. MULTI-TURN CONVERSATION CONTEXT & STRUCTURED STATE MACHINE RULES
 ===================================================================
-When the user asks a follow-up question or uses pronouns/anaphora:
-1. Always resolve elliptical references from CONVERSATION HISTORY:
-   - "ones", "these", "those", "them", "it", "the rest" → Resolve to the entity in the previous turn (e.g. Bins, Materials, Plants).
-2. Polarity Shifts (Most vs Least / Top vs Bottom):
-   - If previous turn asked: "Show me the top 10 most utilized bins."
-   - And current turn asks: "What about the least utilized ones?" or "and least utilized?" or "what about the lowest?" or "show least utilized"
-   - TARGET ENTITY: Still individual Bins (dbo.ZWMS_BIN_MASTER joined with dbo.ZWMS_INVENTORY).
-   - SQL: `SELECT TOP 10 b.BinLocation AS Bin, b.Plant, CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Bin Capacity], CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %] FROM dbo.ZWMS_BIN_MASTER b JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode WHERE b.Volume > 0 GROUP BY b.BinLocation, b.Plant, b.Volume, b.VolumeUnit ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) ASC`
-   - Set `output_type`: "table", `chart_type`: "none", `intent`: "least_utilized_bins", `metric`: "bin_utilization_ranking".
-   - NEVER return a plant summary when the user asks for least/most utilized ones!
-3. Parameter & Filter Inheritance:
-   - If previous turn was "Which materials don't have dimensions?" and current is "What about plant 1258?" → Filter missing dimensions for Plant = '1258'.
-   - If previous turn was "Show empty bins" and current is "In plant 7228" → Filter empty bins for Plant = '7228'.
-   - If previous turn was "Top 10 materials by volume share" and current is "Show top 5" → Apply TOP 5.
+Never generate SQL from solely the latest user message in isolation.
+Always generate SQL from:
+`Latest user message + conversation state + semantic/business context + database schema`
+
+CONVERSATION STATE STRUCTURE:
+- entity: "bin" | "material" | "plant"
+- metric: "utilization" | "unrestricted_qty" | "volume" | "missing_dimensions"
+- ranking: "highest" | "lowest" | None
+- limit: integer (default 10)
+- condition: "empty" | "missing_dimensions" | "high_utilization" | "low_utilization"
+- aggregation: "list" | "count" | "sum" | "avg"
+- filters: {"plant": "<plant_code>", ...}
+
+STATE TRANSITION EXAMPLES:
+
+--- CONVERSATION FLOW 1: Bin Utilization Rankings ---
+Turn 1: "Show me the top 10 most utilized bins."
+  - State: entity=bin, metric=utilization, ranking=highest, limit=10, filters={}
+  - Columns Required: `Rank`, `Bin`, `Plant`, `Occupied Volume`, `Capacity`, `Utilization`
+  - SQL:
+    `SELECT TOP 10 ROW_NUMBER() OVER (ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) DESC) AS [Rank], b.BinLocation AS [Bin], b.Plant AS [Plant], ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 2) AS [Occupied Volume], CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Capacity], CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization] FROM dbo.ZWMS_BIN_MASTER b JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode WHERE b.Volume > 0 GROUP BY b.BinLocation, b.Plant, b.Volume, b.VolumeUnit ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) DESC`
+  - output_type: "table", intent: "top_utilized_bins"
+
+Turn 2: "What about the least utilized ones?"
+  - State: entity=bin, metric=utilization, ranking=lowest, limit=10 (preserved), filters={} (preserved)
+  - Understanding: "ones" = bins. Modify ranking from highest to lowest.
+  - SQL:
+    `SELECT TOP 10 ROW_NUMBER() OVER (ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) ASC) AS [Rank], b.BinLocation AS [Bin], b.Plant AS [Plant], ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 2) AS [Occupied Volume], CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Capacity], CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization] FROM dbo.ZWMS_BIN_MASTER b JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode WHERE b.Volume > 0 GROUP BY b.BinLocation, b.Plant, b.Volume, b.VolumeUnit ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) ASC`
+  - output_type: "table", intent: "least_utilized_bins"
+
+Turn 3: "Only for Plant 1258."
+  - State: entity=bin, metric=utilization, ranking=lowest (preserved), limit=10 (preserved), filters={"plant": "1258"}
+  - SQL: Same query with `AND b.Plant = '1258'` added to WHERE clause.
+  - output_type: "table", intent: "least_utilized_bins"
+
+Turn 4: "Show me the top 5 instead."
+  - State: entity=bin, metric=utilization, ranking=highest (reversed to highest), limit=5, filters={"plant": "1258"} (preserved)
+  - Understanding: "top 5" reverses "least" ranking to top 5 most utilized for Plant 1258.
+  - SQL: Same query with `TOP 5`, `ORDER BY ... DESC`, and `b.Plant = '1258'`.
+  - output_type: "table", intent: "top_utilized_bins"
+
+--- CONVERSATION FLOW 2: Empty Bins → Plant → Count ---
+Turn 1: "Show me empty bins."
+  - State: entity=bin, condition=empty, aggregation=list, filters={}
+  - Columns Required: `Bin`, `Plant`, `Storage Location`, `Inventory Qty`, `Status`
+  - SQL:
+    `SELECT TOP 50 b.BinLocation AS [Bin], b.Plant AS [Plant], b.StorageLocation AS [Storage Location], 0 AS [Inventory Qty], 'Available' AS [Status] FROM dbo.ZWMS_BIN_MASTER b LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant AND b.StorageLocation = i.StorageLocation WHERE (i.BinNo IS NULL OR i.UnrestrictedQty = 0) GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit ORDER BY b.Plant, b.StorageLocation, b.BinLocation`
+  - output_type: "table", intent: "putaway_bins"
+
+Turn 2: "Only in Plant 1258."
+  - State: entity=bin, condition=empty (preserved), filters={"plant": "1258"}
+  - SQL: Same query with `AND b.Plant = '1258'` added to WHERE clause.
+  - output_type: "table", intent: "putaway_bins"
+
+Turn 3: "How many are there?"
+  - State: entity=bin, condition=empty (preserved), filters={"plant": "1258"} (preserved), aggregation=count
+  - Understanding: "How many" asks for the COUNT of empty bins in Plant 1258.
+  - SQL:
+    `SELECT COUNT(DISTINCT b.BinLocation) AS [Empty Bins Count] FROM dbo.ZWMS_BIN_MASTER b LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant AND b.StorageLocation = i.StorageLocation WHERE (i.BinNo IS NULL OR i.UnrestrictedQty = 0) AND b.Plant = '1258'`
+  - output_type: "kpi", intent: "empty_bins_count"
 
 ===================================================================
 9. OUTPUT TYPE SELECTION RULES
 ===================================================================
-- If user asks for ONE KPI / single metric → `output_type`: "kpi", `chart_type`: "none"
+- If user asks for ONE KPI / single metric / count / "how many" → `output_type`: "kpi", `chart_type`: "none"
 - If user asks "show / list / find / get / give me" or Data Quality Exception reports or Top/Bottom Bins → `output_type`: "table", `chart_type`: "none"
 - If user asks about ranking / Top N / Share of volume → `output_type`: "bar_chart" or "table", `chart_type`: "bar" or "none"
 - If user asks about change over time / history / trend / monthly → `output_type`: "line_chart", `chart_type`: "line"
@@ -141,7 +187,7 @@ When the user asks a follow-up question or uses pronouns/anaphora:
 Format response strictly as JSON:
 {
   "query_plan": {
-    "user_intent": "data_quality | bin_utilization | plant_materials | avg_inventory_per_bin | putaway_bins | trend_analysis | consolidation | inventory_summary | top_utilized_bins | least_utilized_bins",
+    "user_intent": "data_quality | bin_utilization | plant_materials | avg_inventory_per_bin | putaway_bins | empty_bins_count | trend_analysis | consolidation | inventory_summary | top_utilized_bins | least_utilized_bins",
     "question_type": "missing_data | threshold_filter | ranking | single_kpi | multi_metric | time_series",
     "entity": "material | bin | plant | inventory",
     "analytical_task": "DATA QUALITY | FILTER | RANKING | KPI | TREND | COMPARISON | SUMMARY",
@@ -159,8 +205,8 @@ Format response strictly as JSON:
     "result_type": "table | kpi | line_chart | bar_chart | pie_chart"
   },
   "sql": "SELECT ...",
-  "intent": "data_quality_check | avg_inventory_per_bin | high_utilization_bins | low_utilization_bins | plant_materials | putaway_bins | trend_analysis | bin_utilization | material_volume | consolidation | inventory_summary | stock_lookup | top_utilized_bins | least_utilized_bins",
-  "metric": "missing_dimensions | avg_stock_per_bin | bin_fullness | plant_inventory | unoccupied_bins | warehouse_utilization | unrestricted_qty | bin_volume | difference_qty | stock_count | bin_utilization_ranking",
+  "intent": "data_quality_check | avg_inventory_per_bin | high_utilization_bins | low_utilization_bins | plant_materials | putaway_bins | empty_bins_count | trend_analysis | bin_utilization | material_volume | consolidation | inventory_summary | stock_lookup | top_utilized_bins | least_utilized_bins",
+  "metric": "missing_dimensions | avg_stock_per_bin | bin_fullness | plant_inventory | unoccupied_bins | empty_bins_count | warehouse_utilization | unrestricted_qty | bin_volume | difference_qty | stock_count | bin_utilization_ranking",
   "filters": {},
   "time_range": "last_6_months | current | all_time",
   "output_type": "kpi" | "table" | "line_chart" | "bar_chart" | "pie_chart" | "list" | "text",
