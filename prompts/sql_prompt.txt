@@ -105,6 +105,10 @@ D. Data Quality Check & Missing Physical Dimensions:
    Generate: `SELECT i.Material, MAX(COALESCE(i.MaterialDescription, m.MaterialDescription, 'N/A')) AS [Material Description], SUM(i.UnrestrictedQty) AS [Total Stock Qty], COUNT(DISTINCT i.BinNo) AS [Occupied Bins], m.Length, m.Width, m.Height, m.Volume, CASE WHEN m.MaterialCode IS NULL THEN 'Missing Volume Master Record' WHEN (m.Length IS NULL OR m.Length = 0) AND (m.Width IS NULL OR m.Width = 0) AND (m.Height IS NULL OR m.Height = 0) THEN 'Completely Missing Dimensions' ELSE 'Incomplete Dimensions' END AS [Quality Issue] FROM dbo.ZWMS_INVENTORY i LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode WHERE m.MaterialCode IS NULL OR m.Length IS NULL OR m.Length = 0 OR m.Width IS NULL OR m.Width = 0 OR m.Height IS NULL OR m.Height = 0 OR m.Volume IS NULL OR m.Volume = 0 GROUP BY i.Material, m.Length, m.Width, m.Height, m.Volume, m.MaterialCode ORDER BY [Total Stock Qty] DESC`
    Set `output_type`: "table", `chart_type`: "none", `intent`: "data_quality_check", `metric`: "missing_dimensions".
 
+E. Storage Location Inventory Comparison (e.g. 'Compare inventory across storage locations', 'inventory per storage location'):
+   Generate: `SELECT StorageLocation AS [Storage Location], Plant, COUNT(DISTINCT Material) AS [Active Materials], COUNT(DISTINCT BinNo) AS [Occupied Bins], SUM(UnrestrictedQty) AS [Total Inventory Quantity] FROM dbo.ZWMS_INVENTORY GROUP BY StorageLocation, Plant ORDER BY [Total Inventory Quantity] DESC`
+   Set `output_type`: "bar_chart", `chart_type`: "bar", `chart_title`: "Inventory Quantity Across Storage Locations", `chart_x`: "Storage Location", `chart_y`: "Total Inventory Quantity", `intent`: "storage_location_comparison", `metric`: "storage_location_inventory".
+
 ===================================================================
 8. MULTI-TURN CONVERSATION CONTEXT & STRUCTURED STATE MACHINE RULES
 ===================================================================
@@ -113,8 +117,8 @@ Always generate SQL from:
 `Latest user message + conversation state + semantic/business context + database schema`
 
 CONVERSATION STATE STRUCTURE:
-- entity: "bin" | "material" | "plant"
-- metric: "utilization" | "unrestricted_qty" | "volume" | "missing_dimensions"
+- entity: "bin" | "material" | "plant" | "storage_location"
+- metric: "utilization" | "unrestricted_qty" | "volume" | "missing_dimensions" | "storage_location_inventory"
 - ranking: "highest" | "lowest" | None
 - limit: integer (default 10)
 - condition: "empty" | "missing_dimensions" | "high_utilization" | "low_utilization"
@@ -170,7 +174,16 @@ Turn 3: "How many are there?"
   - output_type: "kpi", intent: "empty_bins_count"
 
 ===================================================================
-9. OUTPUT TYPE SELECTION RULES
+9. ANTI-HALLUCINATION & REASONING RULES
+===================================================================
+1. Never invent quantities, bins, materials, dimensions, counts, or forecasts.
+2. Never return a generic inventory summary merely because the question contains inventory, material, warehouse, or bin.
+3. Use only configured tables, fields, relationships, and business rules.
+4. If required data is unavailable (e.g. predictive forward-looking forecasts 'Which bins will be full tomorrow?'), explicitly explain that forecasting data is not present in snapshot operational tables.
+5. Never invent join keys.
+
+===================================================================
+10. OUTPUT TYPE SELECTION RULES
 ===================================================================
 - If user asks for ONE KPI / single metric / count / "how many" → `output_type`: "kpi", `chart_type`: "none"
 - If user asks "show / list / find / get / give me" or Data Quality Exception reports or Top/Bottom Bins → `output_type`: "table", `chart_type`: "none"
@@ -182,31 +195,41 @@ Turn 3: "How many are there?"
 - If user asks for a summary / overview → `output_type`: "kpi", `chart_type`: "none"
 
 ===================================================================
-10. JSON RESPONSE FORMAT WITH STRUCTURED QUERY PLAN
+11. JSON RESPONSE FORMAT WITH STRUCTURED QUERY PLAN
 ===================================================================
 Format response strictly as JSON:
 {
   "query_plan": {
-    "user_intent": "data_quality | bin_utilization | plant_materials | avg_inventory_per_bin | putaway_bins | empty_bins_count | trend_analysis | consolidation | inventory_summary | top_utilized_bins | least_utilized_bins",
+    "task": "kpi | list | filter | ranking | data_quality | comparison | trend",
+    "user_intent": "data_quality | bin_utilization | plant_materials | avg_inventory_per_bin | putaway_bins | empty_bins_count | trend_analysis | consolidation | inventory_summary | top_utilized_bins | least_utilized_bins | storage_location_comparison",
     "question_type": "missing_data | threshold_filter | ranking | single_kpi | multi_metric | time_series",
-    "entity": "material | bin | plant | inventory",
+    "entity": "material | bin | plant | inventory | storage_location",
     "analytical_task": "DATA QUALITY | FILTER | RANKING | KPI | TREND | COMPARISON | SUMMARY",
+    "metrics": [],
+    "dimensions": [],
     "filters": [],
+    "conditions": [],
+    "group_by": [],
+    "sort": [],
+    "limit": null,
+    "time_range": null,
     "tables": [
       "dbo.ZWMS_INVENTORY",
       "dbo.ZWMS_MATERIAL_MASTER"
     ],
-    "join": {
-      "left": "dbo.ZWMS_INVENTORY.Material",
-      "right": "dbo.ZWMS_MATERIAL_MASTER.MaterialCode",
-      "type": "LEFT"
-    },
-    "conditions": [],
+    "joins": [
+      {
+        "left": "dbo.ZWMS_INVENTORY.Material",
+        "right": "dbo.ZWMS_MATERIAL_MASTER.MaterialCode",
+        "type": "LEFT"
+      }
+    ],
+    "output_type": "kpi | table | chart | narrative",
     "result_type": "table | kpi | line_chart | bar_chart | pie_chart"
   },
   "sql": "SELECT ...",
-  "intent": "data_quality_check | avg_inventory_per_bin | high_utilization_bins | low_utilization_bins | plant_materials | putaway_bins | empty_bins_count | trend_analysis | bin_utilization | material_volume | consolidation | inventory_summary | stock_lookup | top_utilized_bins | least_utilized_bins",
-  "metric": "missing_dimensions | avg_stock_per_bin | bin_fullness | plant_inventory | unoccupied_bins | empty_bins_count | warehouse_utilization | unrestricted_qty | bin_volume | difference_qty | stock_count | bin_utilization_ranking",
+  "intent": "data_quality_check | avg_inventory_per_bin | high_utilization_bins | low_utilization_bins | plant_materials | putaway_bins | empty_bins_count | trend_analysis | bin_utilization | material_volume | consolidation | inventory_summary | stock_lookup | top_utilized_bins | least_utilized_bins | storage_location_comparison",
+  "metric": "missing_dimensions | avg_stock_per_bin | bin_fullness | plant_inventory | unoccupied_bins | empty_bins_count | warehouse_utilization | unrestricted_qty | bin_volume | difference_qty | stock_count | bin_utilization_ranking | storage_location_inventory",
   "filters": {},
   "time_range": "last_6_months | current | all_time",
   "output_type": "kpi" | "table" | "line_chart" | "bar_chart" | "pie_chart" | "list" | "text",

@@ -153,16 +153,17 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         "don't have dimension", "dont have dimension", "cross-dataset", "cross dataset", "unmaintained dimension",
         "missing physical", "incomplete physical", "validation for material volume", "missing length", "missing width",
         "missing height", "no dimension", "no physical dimension", "physical measurements", "material size and cubic volume",
-        "check data quality"
+        "check data quality", "without physical size", "not in material volume", "exist in inventory master but not",
+        "exists in inventory master but not", "not in material master", "incomplete dimensions"
     ])
-    is_fresh_empty = any(k in q_lower for k in ["empty bin", "empty bins", "show me empty", "list empty", "putaway", "put-away", "vacant bin", "free bin", "available for immediate put-away"]) and not any(k in q_lower for k in ["how many", "count"])
+    is_fresh_empty = any(k in q_lower for k in ["empty bin", "empty bins", "show me empty", "list empty", "putaway", "put-away", "vacant bin", "free bin", "available for immediate put-away", "where can i put", "put new inventory", "place incoming"]) and not any(k in q_lower for k in ["how many", "count"])
     is_fresh_top_bins = ("top" in q_lower or "most" in q_lower) and any(k in q_lower for k in ["utilized bin", "utilised bin", "fullest bin", "capacity bin"]) and not is_mat_entity
     is_fresh_least_bins = ("bottom" in q_lower or "least" in q_lower or "emptiest" in q_lower or "lowest" in q_lower) and any(k in q_lower for k in ["utilized bin", "utilised bin", "bins", "locations", "capacity"]) and not is_mat_entity
     is_fresh_consolidation = any(k in q_lower for k in ["consolidat", "free up", "same material", "duplicate bin", "multiple bin"])
     is_fresh_diff = any(k in q_lower for k in ["difference", "zws", "unrestrictedqty2"])
     is_fresh_div = any(k in q_lower for k in ["division", "material group"])
     is_fresh_trend = any(k in q_lower for k in ["trend", "history", "timeline", "over time", "monthly"])
-    is_fresh_util = any(k in q_lower for k in ["overall warehouse bin utilization", "facility fill", "fill rate", "overall bin fill", "space utilization rate", "overall bin utilization", "total bin volume is currently occupied", "warehouse space utilization rate"])
+    is_fresh_util = any(k in q_lower for k in ["overall warehouse bin utilization", "facility fill", "fill rate", "overall bin fill", "space utilization rate", "overall bin utilization", "total bin volume is currently occupied", "warehouse space utilization rate", "running out of", "out of storage space"])
 
     if is_fresh_dq:
         state["entity"] = "material"
@@ -309,19 +310,20 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
 
     # 2. BUSINESS METRIC & INTENT RESOLUTION
 
-    # A. DATA QUALITY CHECK & MISSING PHYSICAL DIMENSIONS
+    # A. DATA QUALITY CHECK & MISSING PHYSICAL DIMENSIONS & CROSS-MASTER VALIDATION
     is_dq_intent = state.get("topic") == "data_quality" or any(k in q_lower for k in [
         "data quality", "quality check", "missing dimension", "missing physical", "missing volume",
         "incomplete dimension", "incomplete physical", "missing length", "missing width", "missing height",
-        "no dimension", "no dimensions", "without dimension", "without dimensions",
+        "no dimension", "no dimensions", "without dimension", "without dimensions", "without physical size",
         "don't have dimension", "dont have dimension", "do not have dimension",
         "don't have dimensions", "dont have dimensions", "do not have dimensions",
         "lack dimension", "lack dimensions", "unmaintained dimension", "physical measurements", "measurements",
         "dimension completeness", "cross-dataset", "cross dataset", "unmatched record", "unmatched material",
-        "unmaintained volume", "missing in material master", "not in material master", "physical dimension"
+        "unmaintained volume", "missing in material master", "not in material master", "not in material volume",
+        "exist in inventory master but not", "exists in inventory master but not", "physical dimension"
     ]) or (
         ("dimension" in q_lower or "dimensions" in q_lower or "volume" in q_lower or "length" in q_lower or "width" in q_lower or "height" in q_lower or "physical" in q_lower or "size" in q_lower or "measurement" in q_lower or "measurements" in q_lower or "attribute" in q_lower or "attributes" in q_lower) and
-        ("missing" in q_lower or "incomplete" in q_lower or "null" in q_lower or "blank" in q_lower or "quality" in q_lower or "check" in q_lower or "exception" in q_lower or "validate" in q_lower or "validation" in q_lower or "without" in q_lower or "absent" in q_lower or "not defined" in q_lower or "not maintained" in q_lower or "unavailable" in q_lower or "don't" in q_lower or "dont" in q_lower or "do not" in q_lower or "no " in q_lower or "lack" in q_lower or "lacking" in q_lower or "not populated" in q_lower or "without length" in q_lower or "without width" in q_lower)
+        ("missing" in q_lower or "incomplete" in q_lower or "null" in q_lower or "blank" in q_lower or "quality" in q_lower or "check" in q_lower or "exception" in q_lower or "validate" in q_lower or "validation" in q_lower or "without" in q_lower or "absent" in q_lower or "not defined" in q_lower or "not maintained" in q_lower or "unavailable" in q_lower or "don't" in q_lower or "dont" in q_lower or "do not" in q_lower or "no " in q_lower or "lack" in q_lower or "lacking" in q_lower or "not populated" in q_lower or "without length" in q_lower or "without width" in q_lower or "not in" in q_lower or "but not" in q_lower)
     )
     if is_dq_intent:
         plant_filter = f" WHERE i.Plant = '{plant_cand}'" if plant_cand else ""
@@ -350,20 +352,14 @@ WHERE m.MaterialCode IS NULL
 GROUP BY i.Material, m.Length, m.Width, m.Height, m.Volume, m.MaterialCode
 ORDER BY [Total Stock Qty] DESC"""
         query_plan = {
+            "task": "data_quality",
             "user_intent": "data_quality",
             "question_type": "missing_data",
             "entity": "material",
             "analytical_task": "DATA QUALITY",
+            "metrics": ["Total Stock Qty", "Occupied Bins", "Length", "Width", "Height", "Volume"],
+            "dimensions": ["Material", "Material Description", "Quality Issue"],
             "filters": [f"Plant = {plant_cand}"] if plant_cand else [],
-            "tables": [
-                "dbo.ZWMS_INVENTORY",
-                "dbo.ZWMS_MATERIAL_MASTER"
-            ],
-            "join": {
-                "left": "dbo.ZWMS_INVENTORY.Material",
-                "right": "dbo.ZWMS_MATERIAL_MASTER.MaterialCode",
-                "type": "LEFT"
-            },
             "conditions": [
                 "m.MaterialCode IS NULL",
                 "OR m.Length IS NULL OR m.Length = 0",
@@ -371,6 +367,22 @@ ORDER BY [Total Stock Qty] DESC"""
                 "OR m.Height IS NULL OR m.Height = 0",
                 "OR m.Volume IS NULL OR m.Volume = 0"
             ],
+            "group_by": ["i.Material", "m.Length", "m.Width", "m.Height", "m.Volume", "m.MaterialCode"],
+            "sort": ["[Total Stock Qty] DESC"],
+            "limit": None,
+            "time_range": "current",
+            "tables": [
+                "dbo.ZWMS_INVENTORY",
+                "dbo.ZWMS_MATERIAL_MASTER"
+            ],
+            "joins": [
+                {
+                    "left": "dbo.ZWMS_INVENTORY.Material",
+                    "right": "dbo.ZWMS_MATERIAL_MASTER.MaterialCode",
+                    "type": "LEFT"
+                }
+            ],
+            "output_type": "table",
             "result_type": "table"
         }
         return {
@@ -388,7 +400,22 @@ ORDER BY [Total Stock Qty] DESC"""
             "conversation_state": state
         }
 
-    # B. MATERIAL BIN VOLUME CONSUMPTION & SHARE OF TOTAL BIN VOLUME
+    # B. TIME SERIES & TREND ANALYSIS (Checked before snapshot utilization)
+    if any(k in q_lower for k in ["trend", "history", "timeline", "over time", "monthly", "last 6 months", "vested"]):
+        return {
+            "sql": "SELECT STRFTIME('%Y-%m', FullyVestedOn) AS Month, COUNT(DISTINCT Material) AS ActiveMaterials, SUM(UnrestrictedQty) AS TotalQuantity, ROUND(SUM(UnrestrictedQty * 0.05), 2) AS EstVolume FROM dbo.ZWMS_INVENTORY WHERE FullyVestedOn IS NOT NULL GROUP BY STRFTIME('%Y-%m', FullyVestedOn) ORDER BY Month ASC",
+            "chart_type": "line",
+            "chart_title": "Warehouse Inventory & Activity Trend Over Time",
+            "chart_x": "Month",
+            "chart_y": "TotalQuantity",
+            "intent": "trend_analysis",
+            "metric": "warehouse_utilization",
+            "filters": {},
+            "time_range": "last_6_months",
+            "output_type": "line_chart"
+        }
+
+    # C. MATERIAL BIN VOLUME CONSUMPTION & SHARE OF TOTAL BIN VOLUME
     is_mat_entity = any(m in q_lower for m in ["material", "materials", "sku", "skus", "item", "items", "product", "products", "goods", "stock item", "stock items"])
     is_mat_vol_intent = state.get("topic") == "material_volume_share" or (is_mat_entity and any(k in q_lower for k in [
         "volume", "space consuming", "consuming most", "volume consumption", "highest space", "occupying highest volume",
@@ -611,7 +638,8 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volum
             "zero occupied", "balance is zero", "quantity equals zero", "quantity is zero",
             "stock level is zero", "nothing is stored", "nothing is currently stored",
             "nothing stored", "without displacing", "incoming stock", "incoming shipment",
-            "not being used", "aren't being used", "accept new", "store new", "without moving"
+            "not being used", "aren't being used", "accept new", "store new", "without moving",
+            "where can i put", "where to put", "put new inventory", "place incoming", "where do we have free"
         ]) or (
             ("free" in q_lower or "vacant" in q_lower or "zero" in q_lower or "empty" in q_lower) and
             ("bin" in q_lower or "location" in q_lower or "storage" in q_lower or "space" in q_lower or "position" in q_lower or "slot" in q_lower)
@@ -687,11 +715,11 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
             "output_type": "kpi"
         }
 
-    # F. WAREHOUSE & PLANT BIN UTILIZATION PERCENTAGE
+    # G. WAREHOUSE & PLANT BIN UTILIZATION PERCENTAGE
     # Semantic Definition: Occupied volume / Total capacity volume * 100
     is_utilization_intent = (
-        any(k in q_lower for k in ["utiliz", "occupan", "capacity", "how full", "warehouse fullness", "facility fill", "fill rate", "space utilization", "bin fill", "fill percentage"]) or
-        (("volume" in q_lower or "space" in q_lower) and ("occup" in q_lower or "capacit" in q_lower or "fill" in q_lower or "versus" in q_lower or "compared" in q_lower))
+        any(k in q_lower for k in ["utiliz", "occupan", "capacity", "how full", "warehouse fullness", "facility fill", "fill rate", "space utilization", "bin fill", "fill percentage", "running out of", "out of storage space", "storage capacity"]) or
+        (("volume" in q_lower or "space" in q_lower) and ("occup" in q_lower or "capacit" in q_lower or "fill" in q_lower or "versus" in q_lower or "compared" in q_lower or "running out" in q_lower))
     )
     if is_utilization_intent and not any(m in q_lower for m in ["material", "sku", "item", "product", "consuming", "share of total"]):
         plant_filter = f" WHERE b.Plant = '{plant_cand}'" if plant_cand and not any(w in q_lower for w in ["all", "compare", "network", "plants"]) else ""
@@ -724,7 +752,53 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
             "output_type": "line_chart"
         }
 
-    # H. MATERIAL CONSOLIDATION CANDIDATES
+    # H. STORAGE LOCATION COMPARISON
+    is_storage_loc_comparison = any(k in q_lower for k in [
+        "storage location", "storage locations", "across storage locations", "by storage location", "compare storage location", "inventory per storage location"
+    ]) and not any(k in q_lower for k in ["empty", "putaway", "vacant", "unoccupied"])
+    if is_storage_loc_comparison:
+        plant_filter = f" WHERE Plant = '{plant_cand}'" if plant_cand else ""
+        filters = {"plant": plant_cand} if plant_cand else {}
+        sql_sl = f"""SELECT 
+    StorageLocation AS [Storage Location], 
+    Plant, 
+    COUNT(DISTINCT Material) AS [Active Materials], 
+    COUNT(DISTINCT BinNo) AS [Occupied Bins], 
+    SUM(UnrestrictedQty) AS [Total Inventory Quantity] 
+FROM dbo.ZWMS_INVENTORY{plant_filter} 
+GROUP BY StorageLocation, Plant 
+ORDER BY [Total Inventory Quantity] DESC"""
+        query_plan = {
+            "task": "comparison",
+            "entity": "storage_location",
+            "metrics": ["Total Inventory Quantity", "Occupied Bins", "Active Materials"],
+            "dimensions": ["Storage Location", "Plant"],
+            "filters": [f"Plant = {plant_cand}"] if plant_cand else [],
+            "conditions": [],
+            "group_by": ["StorageLocation", "Plant"],
+            "sort": ["Total Inventory Quantity DESC"],
+            "limit": None,
+            "time_range": "current",
+            "tables": ["dbo.ZWMS_INVENTORY"],
+            "joins": [],
+            "output_type": "chart"
+        }
+        return {
+            "sql": sql_sl,
+            "query_plan": query_plan,
+            "chart_type": "bar",
+            "chart_title": f"Inventory Quantity Across Storage Locations{f' — Plant {plant_cand}' if plant_cand else ''}",
+            "chart_x": "Storage Location",
+            "chart_y": "Total Inventory Quantity",
+            "intent": "storage_location_comparison",
+            "metric": "storage_location_inventory",
+            "filters": filters,
+            "time_range": "current",
+            "output_type": "bar_chart",
+            "conversation_state": state
+        }
+
+    # I. MATERIAL CONSOLIDATION CANDIDATES
     if any(k in q_lower for k in ["consolidat", "free up", "same material", "duplicate bin", "multiple bin"]):
         plant_filter = f" WHERE Plant = '{plant_cand}'" if plant_cand else ""
         filters = {"plant": plant_cand} if plant_cand else {}
@@ -741,7 +815,7 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
             "output_type": "list"
         }
 
-    # I. QUANTITY DIFFERENCES (ZWMS vs ZWS)
+    # J. QUANTITY DIFFERENCES (ZWMS vs ZWS)
     if any(k in q_lower for k in ["difference", "zws", "unrestrictedqty2"]):
         plant_filter = f" WHERE Plant = '{plant_cand}'" if plant_cand else ""
         filters = {"plant": plant_cand} if plant_cand else {}
@@ -758,7 +832,7 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
             "output_type": "bar_chart"
         }
 
-    # J. SPECIFIC PLANT MATERIAL INQUIRIES
+    # K. SPECIFIC PLANT MATERIAL INQUIRIES
     if plant_cand and any(w in q_lower for w in ["material", "item", "sku", "stock", "record", "inventory", "show", "list", "find", "get", "give"]):
         return {
             "sql": f"SELECT Material, MaterialDescription AS Description, UnrestrictedQty AS Qty, BaseUnitOfMeasure AS UOM, StorageLocation AS [Storage Location], BinNo AS Bin FROM dbo.ZWMS_INVENTORY WHERE Plant = '{plant_cand}' ORDER BY UnrestrictedQty DESC",
@@ -773,7 +847,7 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
             "output_type": "table"
         }
 
-    # K. SPECIFIC BIN LOOKUP
+    # L. SPECIFIC BIN LOOKUP
     if bin_match and not any(w in q_lower for w in ["empty", "putaway", "put-away", "unoccupied", "vacant", "free"]):
         b_code = bin_match.group(1).upper()
         return {
@@ -789,7 +863,7 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
             "output_type": "table"
         }
 
-    # L. SPECIFIC MATERIAL CODE LOOKUP
+    # M. SPECIFIC MATERIAL CODE LOOKUP
     if material_match:
         m_code = material_match.group(1).upper()
         return {
@@ -805,7 +879,7 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
             "output_type": "table"
         }
 
-    # M. MATERIAL DIVISION DISTRIBUTION
+    # N. MATERIAL DIVISION DISTRIBUTION
     if any(k in q_lower for k in ["division", "group"]):
         return {
             "sql": "SELECT COALESCE(m.DivisionDescription, m.Division, 'Unassigned') AS Division, COUNT(DISTINCT i.Material) AS MaterialCount, SUM(i.UnrestrictedQty) AS TotalQuantity FROM dbo.ZWMS_MATERIAL_MASTER m JOIN dbo.ZWMS_INVENTORY i ON m.MaterialCode = i.Material GROUP BY COALESCE(m.DivisionDescription, m.Division, 'Unassigned') ORDER BY TotalQuantity DESC",
@@ -820,7 +894,7 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
             "output_type": "pie_chart"
         }
 
-    # N. OVERALL WAREHOUSE TOTAL INVENTORY (KPI summary)
+    # O. OVERALL WAREHOUSE TOTAL INVENTORY (KPI summary)
     plant_filter = f" WHERE Plant = '{plant_cand}' HAVING COUNT(DISTINCT Material) > 0" if plant_cand else ""
     filters = {"plant": plant_cand} if plant_cand else {}
     return {
