@@ -161,7 +161,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         ("missing" in q_lower or "absent" in q_lower or "not present" in q_lower or "doesn't exist" in q_lower or "does not exist" in q_lower or "don't exist" in q_lower or "no record" in q_lower or "no entry" in q_lower or "no entries" in q_lower or "not maintained" in q_lower or "not in" in q_lower or "do not have" in q_lower or "dont have" in q_lower or "lack" in q_lower or "lacking" in q_lower or "without" in q_lower or "no matching" in q_lower or "unmatched" in q_lower)
     )
     is_fresh_mat_vol = is_mat_entity and not is_fresh_missing_master and any(k in q_lower for k in [
-        "space consuming", "consuming most", "volume consumption", "highest space", "occupying highest volume",
+        "volume", "consuming", "space consuming", "consuming most", "volume consumption", "highest space", "occupying highest volume",
         "share of total", "percentage of our total", "percentage of total", "highest percentage", "footprint",
         "cubic capacity", "take up", "occupy", "occupying", "room in the warehouse", "proportion of bin", "storage space",
         "largest volume footprint", "highest proportion", "biggest share", "most room", "consuming the highest percentage"
@@ -646,8 +646,8 @@ ORDER BY [Total Stock Qty] DESC"""
 
     # C. MATERIAL BIN VOLUME CONSUMPTION & SHARE OF TOTAL BIN VOLUME
     is_mat_entity = any(m in q_lower for m in ["material", "materials", "sku", "skus", "item", "items", "product", "products", "goods", "stock item", "stock items"])
-    is_mat_vol_intent = state.get("topic") == "material_volume_share" or (is_mat_entity and any(k in q_lower for k in [
-        "space consuming", "consuming most", "volume consumption", "highest space", "occupying highest volume",
+    is_mat_vol_intent = state.get("topic") == "material_volume_share" or (is_mat_entity and not is_missing_master_record and any(k in q_lower for k in [
+        "volume", "consuming", "space consuming", "consuming most", "volume consumption", "highest space", "occupying highest volume",
         "share of total", "percentage of our total", "percentage of total", "highest percentage", "footprint",
         "cubic capacity", "take up", "occupy", "occupying", "room in the warehouse", "proportion of bin", "storage space",
         "largest volume footprint", "highest proportion", "biggest share", "most room"
