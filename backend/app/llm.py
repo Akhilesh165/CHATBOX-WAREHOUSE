@@ -318,15 +318,76 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
         plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{4,5})\b", q_lower)
         plant_cand = plant_match.group(1) if plant_match and plant_match.group(1) not in ["2024", "2025", "2026"] else None
     
-    bin_match = re.search(r"\bbin\s*[:#-]?\s*([a-z0-9_-]{3,25})\b", q_lower, re.IGNORECASE)
-    if bin_match and bin_match.group(1).lower() in ["capacity", "utilization", "master", "table", "space", "volume", "location", "locations", "occupancy", "fullness"]:
-        bin_match = None
+    # Extract specific bin codes (e.g. B001, BIN-001, BIN001, B045, etc.)
+    bin_matches = re.findall(r"(?:bin\s*[:#-]?\s*([a-z0-9_-]{2,25})|\b(b\d{3,5})\b)", q_lower, re.IGNORECASE)
+    raw_bins = []
+    for bm in bin_matches:
+        b_val = (bm[0] or bm[1] or "").strip()
+        if b_val and b_val.lower() not in ["capacity", "utilization", "master", "table", "space", "volume", "location", "locations", "occupancy", "fullness", "empty", "vacant", "free", "ones", "these", "those"]:
+            raw_bins.append(b_val.upper())
+    
+    bin_match = raw_bins[0] if raw_bins else None
 
     material_match = re.search(r"\b(?:material|sku|item|code)\s*[:#-]?\s*([a-z0-9_-]{5,20})\b", q_lower, re.IGNORECASE)
     if material_match and material_match.group(1).lower() in ["division", "group", "type", "description", "name", "master", "table", "plant", "stock", "quantity", "inventory"]:
         material_match = None
 
     # 2. BUSINESS METRIC & INTENT RESOLUTION
+
+    # A0. SPECIFIC BIN UTILIZATION & COMPARISON (Single Bin or Multi-Bin Scope)
+    if raw_bins and any(k in q_lower for k in ["utiliz", "occupan", "capacity", "how full", "space", "compare", "fullness", "fill rate"]) and not any(k in q_lower for k in ["top", "bottom", "least utilized ones", "most utilized ones"]):
+        plant_filter = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
+        filters = {"plant": plant_cand} if plant_cand else {}
+        if len(raw_bins) == 1:
+            filters["bin"] = raw_bins[0]
+            where_bin_clause = f"(b.BinLocation = '{raw_bins[0]}' OR b.BinLocation LIKE '{raw_bins[0]}%')"
+        else:
+            filters["bins"] = raw_bins
+            in_list = ", ".join(f"'{b}'" for b in raw_bins)
+            where_bin_clause = f"b.BinLocation IN ({in_list})"
+
+        sql_specific_bin = f"""SELECT 
+    b.BinLocation AS [Bin],
+    b.Plant AS [Plant],
+    b.StorageLocation AS [Storage Location],
+    CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Bin Capacity],
+    ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Occupied Volume],
+    CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %]
+FROM dbo.ZWMS_BIN_MASTER b
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+WHERE {where_bin_clause}{plant_filter}
+GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit"""
+
+        query_plan = {
+            "intent": "SPECIFIC_BIN_UTILIZATION" if len(raw_bins) == 1 else "BIN_COMPARISON",
+            "task": "kpi" if len(raw_bins) == 1 else "comparison",
+            "task_type": "SPECIFIC_ENTITY_LOOKUP" if len(raw_bins) == 1 else "COMPARISON",
+            "user_intent": "specific_bin_utilization",
+            "entity": "BIN",
+            "source_tables": ["dbo.ZWMS_BIN_MASTER", "dbo.ZWMS_INVENTORY"],
+            "reference_tables": ["dbo.ZWMS_MATERIAL_MASTER"],
+            "join_keys": ["b.BinLocation = i.BinNo", "i.Material = m.MaterialCode"],
+            "filters": filters,
+            "metric": "utilization_percentage",
+            "response_format": "kpi" if len(raw_bins) == 1 else "table",
+            "output_type": "kpi" if len(raw_bins) == 1 else "table"
+        }
+
+        return {
+            "sql": sql_specific_bin,
+            "query_plan": query_plan,
+            "chart_type": "bar" if len(raw_bins) > 1 else "none",
+            "chart_title": f"Utilization of Bin {raw_bins[0]}" if len(raw_bins) == 1 else f"Bin Utilization Comparison ({', '.join(raw_bins)})",
+            "chart_x": "Bin" if len(raw_bins) > 1 else None,
+            "chart_y": "Utilization %" if len(raw_bins) > 1 else None,
+            "intent": "specific_bin_utilization" if len(raw_bins) == 1 else "bin_comparison",
+            "metric": "bin_utilization",
+            "filters": filters,
+            "time_range": "current",
+            "output_type": "kpi" if len(raw_bins) == 1 else "table",
+            "conversation_state": state
+        }
 
     # A. INTENT A: MATERIALS MISSING FROM VOLUME MASTER (Rule DQ-001 - Cross-Table Validation)
     is_missing_master_record = any(k in q_lower for k in [
