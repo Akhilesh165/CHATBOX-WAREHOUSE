@@ -1001,7 +1001,7 @@ ORDER BY [Total Inventory Quantity] DESC"""
 
     # L. SPECIFIC BIN LOOKUP
     if bin_match and not any(w in q_lower for w in ["empty", "putaway", "put-away", "unoccupied", "vacant", "free"]):
-        b_code = bin_match.group(1).upper()
+        b_code = bin_match.group(1).upper() if hasattr(bin_match, "group") else str(bin_match).upper()
         return {
             "sql": f"SELECT b.BinLocation AS Bin, b.Plant, b.StorageLocation AS [Storage Location], b.Volume, b.VolumeUnit, b.PalletType, i.Material, i.MaterialDescription AS Description, i.UnrestrictedQty AS Qty, i.BaseUnitOfMeasure AS UOM FROM dbo.ZWMS_BIN_MASTER b LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant WHERE b.BinLocation = '{b_code}' OR i.BinNo = '{b_code}'",
             "chart_type": "none",
@@ -1017,7 +1017,7 @@ ORDER BY [Total Inventory Quantity] DESC"""
 
     # M. SPECIFIC MATERIAL CODE LOOKUP
     if material_match:
-        m_code = material_match.group(1).upper()
+        m_code = material_match.group(1).upper() if hasattr(material_match, "group") else str(material_match).upper()
         return {
             "sql": f"SELECT BinNo, Plant, StorageLocation, Batch, UnrestrictedQty, BaseUnitOfMeasure, MaterialDescription FROM dbo.ZWMS_INVENTORY WHERE Material = '{m_code}' ORDER BY UnrestrictedQty DESC",
             "chart_type": "none",

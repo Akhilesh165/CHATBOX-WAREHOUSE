@@ -177,3 +177,11 @@ def test_q20_are_we_running_out_of_storage_space():
     res = deterministic_warehouse_sql_generator("Are we running out of storage space?")
     assert "dbo.ZWMS_BIN_MASTER" in res["sql"]
     assert "BinUtilizationPct" in res["sql"] or "VolumeUtilizationPct" in res["sql"] or "SUM(b.Volume)" in res["sql"]
+
+def test_q21_specific_bin_material_lookup():
+    """Q21: 'show me the material of this bin NRJP2124D2' -> Specific bin lookup without regex group attribute errors"""
+    res = deterministic_warehouse_sql_generator("show me the material of this bin NRJP2124D2")
+    assert "NRJP2124D2" in res["sql"]
+    assert res["intent"] == "bin_lookup"
+    assert res["filters"]["bin"] == "NRJP2124D2"
+
