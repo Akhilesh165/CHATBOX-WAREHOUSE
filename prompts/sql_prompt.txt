@@ -68,16 +68,21 @@ First identify the user's requested analytical operation:
 6. DATA QUALITY & CROSS-MASTER VALIDATION RULES
 ===================================================================
 1. RULE DQ-001: Materials Missing From Volume Master
-   - Intent: `MATERIALS_MISSING_FROM_VOLUME_MASTER`
-   - Task: Cross-table validation / Data quality exception
-   - Entity: Material
-   - Source: Inventory Master (`dbo.ZWMS_INVENTORY`)
-   - Reference: Material Volume Master (`dbo.ZWMS_MATERIAL_MASTER`)
+   - Intent: `MATERIALS_MISSING_FROM_VOLUME_MASTER` (List) / `MATERIALS_MISSING_FROM_VOLUME_MASTER_COUNT` (Count)
+   - Task Type: Cross-table validation / Data quality exception
+   - Entity: Inventory Material / Item
+   - Source Table: Inventory Master (`dbo.ZWMS_INVENTORY`)
+   - Reference Table: Material Volume Master (`dbo.ZWMS_MATERIAL_MASTER`)
    - Business Key: `Inventory.Material = MaterialVolumeMaster.MaterialCode`
-   - Condition: `v.MaterialCode IS NULL` (Material exists in inventory but has no matching volume master record)
-   - Canonical Query:
-     `SELECT DISTINCT i.Material, MAX(COALESCE(i.MaterialDescription, 'N/A')) AS [Material Description], i.Plant, i.StorageLocation AS [Storage Location], SUM(i.UnrestrictedQty) AS [Inventory Qty] FROM dbo.ZWMS_INVENTORY i LEFT JOIN dbo.ZWMS_MATERIAL_MASTER v ON i.Material = v.MaterialCode WHERE v.MaterialCode IS NULL GROUP BY i.Material, i.Plant, i.StorageLocation ORDER BY [Inventory Qty] DESC`
-   - Output: Exception Table (`Material`, `Material Description`, `Plant`, `Storage Location`, `Inventory Qty`)
+   - Condition: `v.MaterialCode IS NULL` (Inventory item has NO matching Volume Master entry)
+   - Aggregation: 
+     * If asking for count/how many ("How many inventory items do not have corresponding Volume Master entries?", "What is the count of materials missing from the Volume Master?"):
+       Aggregation: `COUNT(DISTINCT i.Material) AS [Missing Materials Count]`
+       Query: `SELECT COUNT(DISTINCT i.Material) AS [Missing Materials Count] FROM dbo.ZWMS_INVENTORY i LEFT JOIN dbo.ZWMS_MATERIAL_MASTER v ON i.Material = v.MaterialCode WHERE v.MaterialCode IS NULL`
+       Output: Single-line statement KPI ("There are X inventory items that do not have corresponding Volume Master entries.")
+     * If asking for list/records ("Find materials in inventory but missing from the volume master"):
+       Query: `SELECT DISTINCT i.Material, MAX(COALESCE(i.MaterialDescription, 'N/A')) AS [Material Description], i.Plant, i.StorageLocation AS [Storage Location], SUM(i.UnrestrictedQty) AS [Inventory Qty] FROM dbo.ZWMS_INVENTORY i LEFT JOIN dbo.ZWMS_MATERIAL_MASTER v ON i.Material = v.MaterialCode WHERE v.MaterialCode IS NULL GROUP BY i.Material, i.Plant, i.StorageLocation ORDER BY [Inventory Qty] DESC`
+       Output: Exception Table (`Material`, `Material Description`, `Plant`, `Storage Location`, `Inventory Qty`)
 
 2. RULE DQ-002: Missing Physical Dimensions Check
    - Intent: `MISSING_DIMENSIONS` / `DATA_QUALITY_CHECK`

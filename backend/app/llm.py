@@ -142,24 +142,30 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     # 1. Check if current query is a new independent top-level topic
     is_mat_entity = any(m in q_lower for m in ["material", "materials", "sku", "skus", "item", "items", "product", "products", "goods", "stock item", "stock items"])
     is_fresh_both = ("top" in q_lower or "most" in q_lower or "fullest" in q_lower or "highest" in q_lower) and ("bottom" in q_lower or "least" in q_lower or "emptiest" in q_lower or "lowest" in q_lower) and any(b in q_lower for b in ["bin", "bins", "location", "locations", "racks"])
-    is_fresh_mat_vol = is_mat_entity and any(k in q_lower for k in [
-        "volume", "space consuming", "consuming most", "volume consumption", "highest space", "occupying highest volume",
-        "share of total", "percentage of our total", "percentage of total", "highest percentage", "footprint",
-        "cubic capacity", "take up", "occupy", "occupying", "room in the warehouse", "proportion of bin", "storage space",
-        "largest volume footprint", "highest proportion", "biggest share", "most room"
-    ])
     is_fresh_missing_master = any(k in q_lower for k in [
         "missing from the volume master", "missing from volume master", "not in the volume master",
         "not in volume master", "missing in volume master", "exist in inventory master but not",
         "exists in inventory master but not", "exist in inventory but missing from", "exists in inventory but missing from",
         "in inventory but missing from", "missing from material master", "not in material master",
         "no matching volume master", "unmatched volume master", "missing volume master record",
-        "not present in material volume master", "not present in volume master", "without volume master"
+        "missing volume master records", "no volume master record", "no volume master records",
+        "no volume master entry", "no volume master entries", "without volume master",
+        "do not have corresponding volume master", "dont have corresponding volume master",
+        "do not have volume master", "dont have volume master", "no corresponding volume master",
+        "without corresponding volume master", "missing corresponding volume master",
+        "not present in material volume master", "not present in volume master", "without volume master",
+        "no master entry", "no master entries", "not maintained in volume master"
     ]) or (
-        ("inventory" in q_lower or "material" in q_lower or "sku" in q_lower or "item" in q_lower) and
-        ("volume master" in q_lower or "material master" in q_lower) and
-        ("missing" in q_lower or "absent" in q_lower or "not present" in q_lower or "doesn't exist" in q_lower or "does not exist" in q_lower or "no record" in q_lower or "not maintained" in q_lower or "not in" in q_lower or "without" in q_lower)
+        ("inventory" in q_lower or "material" in q_lower or "materials" in q_lower or "sku" in q_lower or "skus" in q_lower or "item" in q_lower or "items" in q_lower or "product" in q_lower or "goods" in q_lower) and
+        ("volume master" in q_lower or "material master" in q_lower or "volume-master" in q_lower or "material volume master" in q_lower) and
+        ("missing" in q_lower or "absent" in q_lower or "not present" in q_lower or "doesn't exist" in q_lower or "does not exist" in q_lower or "don't exist" in q_lower or "no record" in q_lower or "no entry" in q_lower or "no entries" in q_lower or "not maintained" in q_lower or "not in" in q_lower or "do not have" in q_lower or "dont have" in q_lower or "lack" in q_lower or "lacking" in q_lower or "without" in q_lower or "no matching" in q_lower or "unmatched" in q_lower)
     )
+    is_fresh_mat_vol = is_mat_entity and not is_fresh_missing_master and any(k in q_lower for k in [
+        "space consuming", "consuming most", "volume consumption", "highest space", "occupying highest volume",
+        "share of total", "percentage of our total", "percentage of total", "highest percentage", "footprint",
+        "cubic capacity", "take up", "occupy", "occupying", "room in the warehouse", "proportion of bin", "storage space",
+        "largest volume footprint", "highest proportion", "biggest share", "most room", "consuming the highest percentage"
+    ]) and not any(k in q_lower for k in ["volume master", "material master", "missing", "without dimension", "no record", "no entry", "do not have", "dont have"])
     is_fresh_dq = any(k in q_lower for k in [
         "data quality", "quality check", "missing dimension", "incomplete dimension", "without dimension",
         "don't have dimension", "dont have dimension", "cross-dataset", "cross dataset", "unmaintained dimension",
@@ -177,14 +183,18 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     is_fresh_util = any(k in q_lower for k in ["overall warehouse bin utilization", "facility fill", "fill rate", "overall bin fill", "space utilization rate", "overall bin utilization", "total bin volume is currently occupied", "warehouse space utilization rate", "running out of", "out of storage space"])
 
     if is_fresh_missing_master:
+        is_cnt = any(k in q_lower for k in ["how many", "count", "number of", "total count", "what is the count", "how many are there"])
         state["entity"] = "material"
         state["condition"] = "missing_volume_master_record"
         state["topic"] = "materials_missing_from_volume_master"
+        state["aggregation"] = "count" if is_cnt else "list"
         state["filters"] = {"plant": new_plant} if new_plant else {}
     elif is_fresh_dq:
+        is_cnt = any(k in q_lower for k in ["how many", "count", "number of", "total count", "what is the count", "how many are there"])
         state["entity"] = "material"
         state["condition"] = "missing_dimensions"
         state["topic"] = "data_quality"
+        state["aggregation"] = "count" if is_cnt else "list"
         state["filters"] = {"plant": new_plant} if new_plant else {}
     elif is_fresh_both:
         state["entity"] = "bin"
@@ -285,9 +295,15 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     elif state["topic"] == "top_utilized_bins":
         state["resolved_query"] = f"top{limit_clause} most utilized bins{plant_clause}"
     elif state["topic"] == "materials_missing_from_volume_master":
-        state["resolved_query"] = f"find materials in inventory missing from volume master{plant_clause}"
+        if state.get("aggregation") == "count":
+            state["resolved_query"] = f"how many materials in inventory are missing from volume master{plant_clause}"
+        else:
+            state["resolved_query"] = f"find materials in inventory missing from volume master{plant_clause}"
     elif state["topic"] == "data_quality":
-        state["resolved_query"] = f"materials with missing dimensions{plant_clause}"
+        if state.get("aggregation") == "count":
+            state["resolved_query"] = f"how many materials with missing dimensions{plant_clause}"
+        else:
+            state["resolved_query"] = f"materials with missing dimensions{plant_clause}"
     elif state["topic"] == "material_volume_share":
         state["resolved_query"] = f"top{limit_clause} materials by share of total bin volume{plant_clause}"
     elif state["topic"] == "plant_materials":
@@ -395,16 +411,77 @@ GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit"""
         "not in volume master", "missing in volume master", "exist in inventory master but not",
         "exists in inventory master but not", "exist in inventory but missing from", "exists in inventory but missing from",
         "in inventory but missing from", "missing from material master", "not in material master",
-        "no matching volume master", "unmatched volume master", "missing volume master record"
+        "no matching volume master", "unmatched volume master", "missing volume master record",
+        "missing volume master records", "no volume master record", "no volume master records",
+        "no volume master entry", "no volume master entries", "without volume master",
+        "do not have corresponding volume master", "dont have corresponding volume master",
+        "do not have volume master", "dont have volume master", "no corresponding volume master",
+        "without corresponding volume master", "missing corresponding volume master",
+        "no master entry", "no master entries", "not maintained in volume master"
     ]) or (
-        ("inventory" in q_lower or "material" in q_lower or "sku" in q_lower or "item" in q_lower) and
-        ("volume master" in q_lower or "material master" in q_lower) and
-        ("missing" in q_lower or "absent" in q_lower or "not present" in q_lower or "doesn't exist" in q_lower or "does not exist" in q_lower or "no record" in q_lower or "not maintained" in q_lower or "not in" in q_lower)
+        ("inventory" in q_lower or "material" in q_lower or "materials" in q_lower or "sku" in q_lower or "skus" in q_lower or "item" in q_lower or "items" in q_lower or "product" in q_lower or "goods" in q_lower) and
+        ("volume master" in q_lower or "material master" in q_lower or "volume-master" in q_lower or "material volume master" in q_lower) and
+        ("missing" in q_lower or "absent" in q_lower or "not present" in q_lower or "doesn't exist" in q_lower or "does not exist" in q_lower or "don't exist" in q_lower or "no record" in q_lower or "no entry" in q_lower or "no entries" in q_lower or "not maintained" in q_lower or "not in" in q_lower or "do not have" in q_lower or "dont have" in q_lower or "lack" in q_lower or "lacking" in q_lower or "without" in q_lower or "no matching" in q_lower or "unmatched" in q_lower)
     )
 
     if is_missing_master_record:
         plant_filter = f" AND i.Plant = '{plant_cand}'" if plant_cand else ""
         filters = {"plant": plant_cand} if plant_cand else {}
+        is_count_request = any(c in q_lower for c in ["how many", "count", "number of", "total count", "how much", "how many items", "how many materials", "how many inventory items"])
+        
+        if is_count_request:
+            sql_missing_master_count = f"""SELECT COUNT(DISTINCT i.Material) AS [Missing Materials Count]
+FROM dbo.ZWMS_INVENTORY i
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER v ON i.Material = v.MaterialCode
+WHERE v.MaterialCode IS NULL{plant_filter}"""
+            query_plan = {
+                "intent": "MATERIALS_MISSING_FROM_VOLUME_MASTER_COUNT",
+                "task": "count",
+                "task_type": "CROSS_TABLE_VALIDATION",
+                "user_intent": "materials_missing_from_volume_master_count",
+                "entity": "INVENTORY_MATERIAL",
+                "source_table": "dbo.ZWMS_INVENTORY",
+                "reference_table": "dbo.ZWMS_MATERIAL_MASTER",
+                "join_key": "i.Material = v.MaterialCode",
+                "condition": "NO_MATCHING_VOLUME_MASTER_ENTRY",
+                "aggregation": "COUNT",
+                "metrics": ["Missing Materials Count"],
+                "dimensions": [],
+                "filters": [f"Plant = {plant_cand}"] if plant_cand else [],
+                "conditions": ["v.MaterialCode IS NULL"],
+                "group_by": [],
+                "sort": [],
+                "limit": None,
+                "time_range": "current",
+                "tables": [
+                    "dbo.ZWMS_INVENTORY",
+                    "dbo.ZWMS_MATERIAL_MASTER"
+                ],
+                "joins": [
+                    {
+                        "left": "dbo.ZWMS_INVENTORY.Material",
+                        "right": "dbo.ZWMS_MATERIAL_MASTER.MaterialCode",
+                        "type": "LEFT"
+                    }
+                ],
+                "output_type": "kpi",
+                "result_type": "kpi"
+            }
+            return {
+                "sql": sql_missing_master_count,
+                "query_plan": query_plan,
+                "chart_type": "none",
+                "chart_title": f"Count of Inventory Items Missing from Volume Master{f' — Plant {plant_cand}' if plant_cand else ''}",
+                "chart_x": None,
+                "chart_y": None,
+                "intent": "materials_missing_from_volume_master_count",
+                "metric": "missing_materials_count",
+                "filters": filters,
+                "time_range": "current",
+                "output_type": "kpi",
+                "conversation_state": state
+            }
+
         sql_missing_master = f"""SELECT DISTINCT
     i.Material,
     MAX(COALESCE(i.MaterialDescription, 'N/A')) AS [Material Description],
@@ -570,11 +647,11 @@ ORDER BY [Total Stock Qty] DESC"""
     # C. MATERIAL BIN VOLUME CONSUMPTION & SHARE OF TOTAL BIN VOLUME
     is_mat_entity = any(m in q_lower for m in ["material", "materials", "sku", "skus", "item", "items", "product", "products", "goods", "stock item", "stock items"])
     is_mat_vol_intent = state.get("topic") == "material_volume_share" or (is_mat_entity and any(k in q_lower for k in [
-        "volume", "space consuming", "consuming most", "volume consumption", "highest space", "occupying highest volume",
+        "space consuming", "consuming most", "volume consumption", "highest space", "occupying highest volume",
         "share of total", "percentage of our total", "percentage of total", "highest percentage", "footprint",
         "cubic capacity", "take up", "occupy", "occupying", "room in the warehouse", "proportion of bin", "storage space",
         "largest volume footprint", "highest proportion", "biggest share", "most room"
-    ]))
+    ]) and not any(k in q_lower for k in ["volume master", "material master", "missing", "without dimension", "no record", "no entry", "do not have", "dont have"]))
     if is_mat_vol_intent:
         n_val = state.get("limit", 10)
         plant_filter = f" AND i.Plant = '{plant_cand}'" if plant_cand else ""
@@ -1146,6 +1223,16 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     cols = list(rows[0].keys())
     q_lower = question.lower()
     is_single_statement_requested = any(s in q_lower for s in ["single statement", "single line", "one line", "concise", "briefly", "in short", "just the percentage", "just the number", "only the number"])
+
+    # 0A0. Cross-Table Validation: Count of Materials Missing from Volume Master (Rule DQ-001 Count)
+    if "Missing Materials Count" in cols or ("Count" in cols and any(k in q_lower for k in ["volume master", "material master", "missing", "without dimension", "no corresponding", "entries", "entry"])):
+        count_val = rows[0].get("Missing Materials Count", rows[0].get("Count", 0))
+        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
+        plant_val = plant_match.group(1) if plant_match else None
+        plant_str = f" in Plant {plant_val}" if plant_val else ""
+
+        single_stmt = f"There are **{count_val:,}** inventory items that do not have corresponding Volume Master entries{plant_str}."
+        return single_stmt
 
     # 0A. Cross-Table Validation: Materials Missing from Volume Master (Rule DQ-001)
     if "Inventory Qty" in cols and ("Storage Location" in cols or "StorageLocation" in cols) and "Quality Issue" not in cols and "Bin" not in cols and "BinLocation" not in cols:

@@ -90,3 +90,36 @@ def test_materials_missing_from_volume_master_dq001():
         answer = format_deterministic_answer("Find materials in inventory but missing from the volume master", rows)
         assert "Materials Missing from Volume Master" in answer
         assert "MaterialVolumeMaster" in answer or "Volume Master" in answer
+
+def test_materials_missing_from_volume_master_dq001_count():
+    """Test Rule DQ-001 Count: How many inventory items do not have corresponding Volume Master entries?"""
+    questions = [
+        "How many inventory items do not have corresponding Volume Master entries?",
+        "What is the count of materials missing from the Volume Master?",
+        "How many materials in inventory have no Volume Master record?",
+        "Count of inventory items without volume master entries"
+    ]
+    for q in questions:
+        gen = deterministic_warehouse_sql_generator(q)
+        assert gen["intent"] == "materials_missing_from_volume_master_count"
+        assert gen["output_type"] == "kpi"
+        assert "COUNT(DISTINCT i.Material)" in gen["sql"]
+        assert "v.MaterialCode IS NULL" in gen["sql"]
+        assert "dbo.ZWMS_INVENTORY" in gen["sql"]
+        assert "dbo.ZWMS_MATERIAL_MASTER" in gen["sql"]
+
+        plan = gen.get("query_plan", {})
+        assert plan.get("intent") == "MATERIALS_MISSING_FROM_VOLUME_MASTER_COUNT"
+        assert plan.get("task_type") == "CROSS_TABLE_VALIDATION"
+        assert plan.get("aggregation") == "COUNT"
+        assert plan.get("condition") == "NO_MATCHING_VOLUME_MASTER_ENTRY"
+
+    # Execution & Single-Line Statement Test
+    rows, elapsed = execute_readonly(gen["sql"])
+    assert isinstance(rows, list)
+    if rows:
+        answer = format_deterministic_answer("How many inventory items do not have corresponding Volume Master entries?", rows)
+        assert "There are" in answer
+        assert "inventory items that do not have corresponding Volume Master entries" in answer
+        assert "\n" not in answer.strip()  # Single-line statement verification
+
