@@ -1267,6 +1267,15 @@ async def _call_llm(system_prompt: str, user_prompt: str) -> str:
 
 async def generate_sql(question: str, history: list[dict], retry_context: dict | None = None) -> dict[str, Any]:
     """Context-grounded SQL generator leveraging warehouse semantic layer."""
+    det_plan = deterministic_warehouse_sql_generator(question, history=history)
+    det_intent = det_plan.get("intent", "")
+    q_lower = question.lower()
+    
+    # If the deterministic semantic layer identified a concrete domain intent or user asked for summary, use it directly
+    is_explicit_summary = any(k in q_lower for k in ["summary", "overview", "dashboard", "overall", "network overview", "status"])
+    if det_intent != "inventory_summary" or is_explicit_summary:
+        return det_plan
+
     try:
         if retry_context:
             user_prompt = RETRY_PROMPT_TEMPLATE.format(
@@ -1296,7 +1305,7 @@ async def generate_sql(question: str, history: list[dict], retry_context: dict |
             "output_type": parsed.get("output_type", default_out)
         }
     except Exception:
-        return deterministic_warehouse_sql_generator(question, history=history)
+        return det_plan
 
 def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     """Creates clear, grounded summary from database rows."""
@@ -1764,6 +1773,24 @@ async def generate_answer(question: str, sql: str, rows: list[dict]) -> str:
     """Generate grounded, human-readable summary of query results."""
     if not rows:
         return "No matching warehouse records were found for your query in the database."
+    
+    cols = list(rows[0].keys()) if rows else []
+    q_lower = question.lower()
+    is_single_metric_query = (
+        len(rows) == 1 and (
+            len(cols) == 1 or
+            "Occupied Bins Count" in cols or
+            "Total Bins Count" in cols or
+            "Empty Bins Count" in cols or
+            "Missing Materials Count" in cols or
+            "Total Unique Materials" in cols or
+            "Total Unrestricted Quantity" in cols or
+            any(k in q_lower for k in ["how many", "count", "percentage", "total occupied", "how much stock"])
+        ) and not any(k in q_lower for k in ["summary", "overview", "dashboard", "breakdown", "all plants"])
+    )
+    if is_single_metric_query:
+        return format_deterministic_answer(question, rows)
+
     try:
         rows_preview = rows[:100]
         user_prompt = (
@@ -1816,17 +1843,17 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
     # 2. KPI Cards for single row totals or warehouse scalar KPIs
     if row_count == 1:
         if "Occupied Bins Count" in cols:
-            return {"output_type": "kpi", "chart_type": "none", "metric": "occupied_bins", "intent": "occupied_bins_count", "time_range": "current"}
+            return {"output_type": "text", "chart_type": "none", "metric": "occupied_bins", "intent": "occupied_bins_count", "time_range": "current"}
         if "Total Bins Count" in cols:
-            return {"output_type": "kpi", "chart_type": "none", "metric": "total_bins", "intent": "total_bins_count", "time_range": "current"}
+            return {"output_type": "text", "chart_type": "none", "metric": "total_bins", "intent": "total_bins_count", "time_range": "current"}
         if "Empty Bins Count" in cols:
-            return {"output_type": "kpi", "chart_type": "none", "metric": "empty_bins", "intent": "empty_bins_count", "time_range": "current"}
+            return {"output_type": "text", "chart_type": "none", "metric": "empty_bins", "intent": "empty_bins_count", "time_range": "current"}
         if "Missing Materials Count" in cols:
-            return {"output_type": "kpi", "chart_type": "none", "metric": "missing_materials", "intent": "materials_missing_from_volume_master_count", "time_range": "current"}
+            return {"output_type": "text", "chart_type": "none", "metric": "missing_materials", "intent": "materials_missing_from_volume_master_count", "time_range": "current"}
         if "Total Unique Materials" in cols and "TotalUnrestrictedQuantity" not in cols:
-            return {"output_type": "kpi", "chart_type": "none", "metric": "unique_materials", "intent": "unique_materials_count", "time_range": "current"}
+            return {"output_type": "text", "chart_type": "none", "metric": "unique_materials", "intent": "unique_materials_count", "time_range": "current"}
         if "Total Unrestricted Quantity" in cols and "TotalUniqueMaterials" not in cols:
-            return {"output_type": "kpi", "chart_type": "none", "metric": "total_unrestricted_quantity", "intent": "total_inventory_quantity", "time_range": "current"}
+            return {"output_type": "text", "chart_type": "none", "metric": "total_unrestricted_quantity", "intent": "total_inventory_quantity", "time_range": "current"}
         if "AvgInventoryPerOccupiedBin" in cols:
             return {"output_type": "kpi", "chart_type": "none", "metric": "avg_stock_per_bin", "intent": "avg_inventory_per_bin", "time_range": "current"}
         if "TotalUnrestrictedQuantity" in cols and "TotalUniqueMaterials" in cols:
