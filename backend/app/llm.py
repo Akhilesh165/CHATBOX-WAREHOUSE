@@ -1124,11 +1124,17 @@ ORDER BY [Total Inventory Quantity] DESC"""
         }
 
     # N1. OCCUPIED BINS COUNT (Single metric query)
-    if any(k in q_lower for k in ["occupied bin", "occupied bins", "bins are occupied", "bins currently occupied", "bins in use", "bins with stock"]) and any(k in q_lower for k in ["how many", "count", "number of"]):
-        plant_filter = f" AND Plant = '{plant_cand}'" if plant_cand else ""
+    is_occupied_bins_count = (
+        ("occupied" in q_lower or "in use" in q_lower or "with stock" in q_lower or "containing stock" in q_lower or "holding stock" in q_lower or "active bin" in q_lower or "active bins" in q_lower) and
+        any(b in q_lower for b in ["bin", "bins", "location", "locations", "racks"]) and
+        any(k in q_lower for k in ["how many", "count", "number of", "total", "what is the count", "tell me the count"]) and
+        not any(w in q_lower for w in ["average", "avg", "summary", "overview", "dashboard", "breakdown", "list", "show", "details"])
+    )
+    if is_occupied_bins_count:
+        plant_filter = f" WHERE Plant = '{plant_cand}' AND UnrestrictedQty > 0" if plant_cand else " WHERE UnrestrictedQty > 0"
         filters = {"plant": plant_cand} if plant_cand else {}
         return {
-            "sql": f"SELECT COUNT(DISTINCT BinNo) AS [Occupied Bins Count] FROM dbo.ZWMS_INVENTORY WHERE UnrestrictedQty > 0{plant_filter}",
+            "sql": f"SELECT COUNT(DISTINCT BinNo) AS [Occupied Bins Count] FROM dbo.ZWMS_INVENTORY{plant_filter}",
             "chart_type": "none",
             "chart_title": f"Occupied Bins Count{f' — Plant {plant_cand}' if plant_cand else ''}",
             "chart_x": None,
@@ -1141,7 +1147,12 @@ ORDER BY [Total Inventory Quantity] DESC"""
         }
 
     # N2. TOTAL BINS COUNT (Single metric query)
-    if any(k in q_lower for k in ["total bins", "total number of bins", "how many bins do we have", "total bin count", "how many bins in total", "number of bins", "count of bins"]) and not any(k in q_lower for k in ["empty", "occupied", "utiliz"]):
+    is_total_bins_count = (
+        any(b in q_lower for b in ["bin", "bins", "locations", "slots"]) and
+        any(k in q_lower for k in ["how many total", "how many bins", "total bins", "total number of bins", "number of bins", "count of bins", "total bin count", "how many do we have", "how many bins do we have"]) and
+        not any(w in q_lower for w in ["empty", "occupied", "utiliz", "summary", "overview", "dashboard", "breakdown", "fill", "capacity"])
+    )
+    if is_total_bins_count:
         plant_filter = f" WHERE Plant = '{plant_cand}'" if plant_cand else ""
         filters = {"plant": plant_cand} if plant_cand else {}
         return {
@@ -1158,7 +1169,12 @@ ORDER BY [Total Inventory Quantity] DESC"""
         }
 
     # N3. TOTAL UNIQUE MATERIALS / SKU COUNT (Single metric query)
-    if any(k in q_lower for k in ["how many materials", "how many unique materials", "how many skus", "number of unique materials", "count of materials", "sku count", "material count", "number of skus", "how many items", "how many products"]):
+    is_materials_count = (
+        any(m in q_lower for m in ["material", "materials", "sku", "skus", "item", "items", "product", "products"]) and
+        any(k in q_lower for k in ["how many", "count", "number of", "total unique", "unique count"]) and
+        not any(w in q_lower for w in ["volume master", "material master", "missing", "dimension", "summary", "overview", "dashboard", "breakdown", "list", "show"])
+    )
+    if is_materials_count:
         plant_filter = f" WHERE Plant = '{plant_cand}'" if plant_cand else ""
         filters = {"plant": plant_cand} if plant_cand else {}
         return {
