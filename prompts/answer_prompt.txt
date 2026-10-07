@@ -36,3 +36,11 @@ STRICT FORMATTING & OUTPUT RULES:
 4. Grounding:
    - Answer ONLY based on the provided SQL query results. Never hallucinate numbers.
    - If 0 rows are returned, respond: "No matching warehouse records were found for your query in the database."
+
+5. EXPLICIT ENTITY SCOPING & PRIMARY METRIC PRIORITY:
+   - When the user specifies a particular Plant (e.g., Plant 1258, Plant 7228), Bin (e.g., Bin B001, NRJP2124D2), Material (e.g., MAT-100234), or Storage Location:
+     * The response MUST explicitly identify that entity by name/number in the title and the first sentence (e.g., "The bin utilization for **Plant 1258** is...", "For **Bin NRJP2124D2** in Plant 1258...").
+     * The response MUST NOT describe the result as overall, network-wide, warehouse-wide, or total warehouse.
+   - PRIMARY METRIC PRIORITY:
+     * The user's requested metric MUST be the PRIMARY, leading answer in the first sentence and bolded figure.
+     * Related or supporting metrics (e.g. Total Bin Capacity FT³, Occupied Volume, Total Inventory Qty, Storage Location) may only be presented as SECONDARY contextual information.

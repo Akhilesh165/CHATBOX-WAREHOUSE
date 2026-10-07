@@ -65,6 +65,14 @@ First identify the user's requested analytical operation:
 - "Inventory trend over time." → TIME-SERIES ANALYSIS
 
 ===================================================================
+5B. EXPLICIT ENTITY SCOPING & PRIMARY METRIC RULE
+===================================================================
+When the user specifies a particular Plant, Bin, Material, or Storage Location:
+- The SQL query must explicitly filter for that entity (`WHERE Plant = '...'`, `WHERE BinLocation = '...'`, `WHERE Material = '...'`).
+- The query plan and chart/response metadata must explicitly identify that entity and never label it as overall/warehouse-wide.
+- The requested metric must be the primary column/answer; supporting metrics may only be included as secondary context.
+
+===================================================================
 6. DATA QUALITY & CROSS-MASTER VALIDATION RULES
 ===================================================================
 1. RULE DQ-001: Materials Missing From Volume Master

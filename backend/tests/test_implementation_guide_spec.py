@@ -185,3 +185,38 @@ def test_q21_specific_bin_material_lookup():
     assert res["intent"] == "bin_lookup"
     assert res["filters"]["bin"] == "NRJP2124D2"
 
+def test_explicit_entity_scoping_and_primary_metric_rule():
+    """Verifies that entity-scoped queries explicitly identify the entity and prioritize the requested metric without warehouse-wide descriptions."""
+    # 1. Plant-scoped bin utilization
+    plant_rows = [
+        {"Plant": "1258", "TotalBins": 100, "OccupiedBins": 75, "EmptyBins": 25, "BinUtilizationPct": 75.0, "TotalBinCapacityVolume": 1000.0, "OccupiedBinVolume": 750.0, "VolumeUtilizationPct": 75.0}
+    ]
+    ans1 = format_deterministic_answer("What is the bin utilization for Plant 1258?", plant_rows)
+    assert "Plant 1258" in ans1
+    assert "overall warehouse" not in ans1.lower()
+    assert "warehouse network" not in ans1.lower()
+    assert "75.0%" in ans1
+
+    # 2. Specific Bin utilization
+    bin_rows = [
+        {"Bin": "B001", "Plant": "1258", "Storage Location": "S001", "Bin Capacity": "100 FT3", "Occupied Volume": "85 FT3", "Utilization %": "85.0%"}
+    ]
+    ans2 = format_deterministic_answer("What is the utilization of bin B001?", bin_rows)
+    assert "Bin B001" in ans2
+    assert "85.0%" in ans2
+    assert "overall warehouse" not in ans2.lower()
+
+    # 3. Plant-scoped Empty Bins Count
+    empty_rows = [{"Empty Bins Count": 25}]
+    ans3 = format_deterministic_answer("How many empty bins in Plant 1258?", empty_rows)
+    assert "Plant 1258" in ans3
+    assert "across the warehouse network" not in ans3.lower()
+
+    # 4. Plant-scoped Average Inventory per Occupied Bin
+    avg_rows = [{"AvgInventoryPerOccupiedBin": 45.5, "TotalQuantity": 4550.0, "OccupiedBins": 100}]
+    ans4 = format_deterministic_answer("Average inventory per occupied bin in Plant 1258", avg_rows)
+    assert "Plant 1258" in ans4
+    assert "45.50" in ans4
+    assert "across the warehouse network" not in ans4.lower()
+
+

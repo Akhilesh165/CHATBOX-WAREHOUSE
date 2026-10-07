@@ -1317,26 +1317,75 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         ]
         return "\n".join(lines)
 
+    # 0C. Specific Bin Utilization & Details (Explicit Single Bin Scope)
+    if "Bin" in cols and ("Utilization %" in cols or "Bin Capacity" in cols or "PalletType" in cols or "VolumeUnit" in cols) and len(rows) == 1 and not any(k in q_lower for k in ["top", "bottom", "least", "most", "ranking", "more than", "less than"]):
+        bin_val = rows[0].get("Bin", "N/A")
+        plant_val = rows[0].get("Plant", "")
+        plant_str = f" in Plant {plant_val}" if plant_val else ""
+        util_val = rows[0].get("Utilization %", "")
+        cap_val = rows[0].get("Bin Capacity", rows[0].get("Volume", "N/A"))
+        occ_vol = rows[0].get("Occupied Volume", "")
+        sloc_val = rows[0].get("Storage Location", rows[0].get("StorageLocation", ""))
+        mat_val = rows[0].get("Material", "")
+        desc_val = rows[0].get("Description", rows[0].get("MaterialDescription", ""))
+        qty_val = rows[0].get("Qty", rows[0].get("UnrestrictedQty", None))
+        uom_val = rows[0].get("UOM", rows[0].get("BaseUnitOfMeasure", "EA"))
+
+        if util_val:
+            single_stmt = f"The utilization of **Bin {bin_val}**{plant_str} is **{util_val}** (Occupied: {occ_vol}, Capacity: {cap_val})."
+        elif mat_val and qty_val is not None:
+            single_stmt = f"**Bin {bin_val}**{plant_str} currently stores **{qty_val:,.0f} {uom_val}** of Material **`{mat_val}`** ({desc_val})."
+        else:
+            single_stmt = f"**Bin {bin_val}**{plant_str} is in Storage Location **{sloc_val}** with capacity of **{cap_val}**."
+
+        if is_single_statement_requested:
+            return single_stmt
+
+        lines = [
+            f"### 📦 Bin {bin_val}{plant_str} Details\n",
+            single_stmt,
+            f"\n**Bin Specifications & Context:**"
+        ]
+        if util_val:
+            lines.append(f"- **Current Utilization (Primary):** **{util_val}**")
+        if occ_vol:
+            lines.append(f"- **Occupied Volume:** {occ_vol}")
+        if cap_val:
+            lines.append(f"- **Total Bin Capacity:** {cap_val}")
+        if sloc_val:
+            lines.append(f"- **Storage Location:** `{sloc_val}`")
+        if mat_val and qty_val is not None:
+            lines.append(f"- **Stored Stock:** **{qty_val:,.0f} {uom_val}** of Material `{mat_val}` ({desc_val})")
+
+        return "\n".join(lines)
+
     # 1. Empty Bins Count (Scalar KPI)
     if "Empty Bins Count" in cols:
         count_val = rows[0].get("Empty Bins Count", 0)
-        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-        plant_val = plant_match.group(1) if plant_match else None
-        plant_str = f" in Plant {plant_val}" if plant_val else " across the warehouse network"
+        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
+        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
         
-        single_stmt = f"There are **{count_val:,}** completely empty bins{plant_str}."
-        if is_single_statement_requested:
-            return single_stmt
-            
-        return (
-            f"### 📦 Empty Bins Count\n\n"
-            f"{single_stmt}"
-        )
+        if plant_val:
+            single_stmt = f"There are **{count_val:,}** completely empty bins in **Plant {plant_val}**."
+            if is_single_statement_requested:
+                return single_stmt
+            return (
+                f"### 📦 Plant {plant_val} Empty Bins Count\n\n"
+                f"{single_stmt}"
+            )
+        else:
+            single_stmt = f"There are **{count_val:,}** completely empty bins across the warehouse network."
+            if is_single_statement_requested:
+                return single_stmt
+            return (
+                f"### 📦 Warehouse Network Empty Bins Count\n\n"
+                f"{single_stmt}"
+            )
 
     # 2. Empty Bins List (Table Output)
     if ("Storage Location" in cols or "StorageLocation" in cols) and ("Status" in cols or "Inventory Qty" in cols) and ("Bin" in cols or "BinLocation" in cols):
-        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-        plant_val = plant_match.group(1) if plant_match else None
+        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
+        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
         plant_str = f" — Plant {plant_val}" if plant_val else ""
         
         single_stmt = f"Found **{count} empty bins**{plant_str} currently available for put-away (Inventory Qty = 0)."
@@ -1356,8 +1405,8 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         leader = rows[0].get("Bin", "N/A") if rows else "N/A"
         l_util = rows[0].get("Utilization", rows[0].get("Utilization %", "0%")) if rows else "0%"
         
-        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-        plant_val = plant_match.group(1) if plant_match else None
+        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
+        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
         plant_str = f" — Plant {plant_val}" if plant_val else ""
         
         single_stmt = f"Top {count} {label} Utilized Bins{plant_str} (leader: **`{leader}`** at **{l_util}**)."
@@ -1401,57 +1450,130 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         tot_qty = rows[0].get("TotalQuantity", 0.0)
         occ_bins = rows[0].get("OccupiedBins", 0)
         plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
-        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
-        plant_str = f" in **Plant {plant_val}**" if plant_val else " across the warehouse network"
+        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else (rows[0].get("Plant") if "Plant" in rows[0] and str(rows[0]["Plant"]) != "All" else None)
         
-        single_stmt = f"The average inventory per occupied bin{plant_str} is **{avg_val:,.2f} units** across **{occ_bins:,} occupied bins** (Total Stock: **{tot_qty:,.2f} units**)."
-        if is_single_statement_requested:
-            return single_stmt
-            
-        return (
-            f"### 📦 Average Inventory per Occupied Bin\n\n"
-            f"{single_stmt}\n\n"
-            f"**Key Operational Highlights:**\n"
-            f"- **Average Units per Occupied Bin:** **{avg_val:,.2f}**\n"
-            f"- **Total Active Occupied Bins:** **{occ_bins:,}**\n"
-            f"- **Total Unrestricted Stock:** **{tot_qty:,.2f}** units"
-        )
+        if plant_val:
+            single_stmt = f"The average inventory per occupied bin in **Plant {plant_val}** is **{avg_val:,.2f} units** across **{occ_bins:,} occupied bins** (Total Stock: **{tot_qty:,.2f} units**)."
+            if is_single_statement_requested:
+                return single_stmt
+                
+            return (
+                f"### 📦 Plant {plant_val} Average Inventory per Occupied Bin\n\n"
+                f"{single_stmt}\n\n"
+                f"**Plant {plant_val} Operational Highlights:**\n"
+                f"- **Average Units per Occupied Bin (Primary):** **{avg_val:,.2f}**\n"
+                f"- **Active Occupied Bins:** **{occ_bins:,}**\n"
+                f"- **Total Unrestricted Stock:** **{tot_qty:,.2f}** units"
+            )
+        else:
+            single_stmt = f"The average inventory per occupied bin across the warehouse network is **{avg_val:,.2f} units** across **{occ_bins:,} occupied bins** (Total Stock: **{tot_qty:,.2f} units**)."
+            if is_single_statement_requested:
+                return single_stmt
+                
+            return (
+                f"### 📦 Warehouse Network Average Inventory per Occupied Bin\n\n"
+                f"{single_stmt}\n\n"
+                f"**Network Operational Highlights:**\n"
+                f"- **Average Units per Occupied Bin (Primary):** **{avg_val:,.2f}**\n"
+                f"- **Total Active Occupied Bins:** **{occ_bins:,}**\n"
+                f"- **Total Unrestricted Stock:** **{tot_qty:,.2f}** units"
+            )
 
     # 5. Bin Utilization and Occupancy Percentage
     if "BinUtilizationPct" in cols or "VolumeUtilizationPct" in cols or "BinOccupancyPct" in cols:
-        total_bins = sum(r.get("TotalBins", 0) for r in rows)
-        occupied_bins = sum(r.get("OccupiedBins", 0) for r in rows)
-        empty_bins = sum(r.get("EmptyBins", 0) for r in rows)
-        overall_bin_pct = round((occupied_bins * 100.0 / total_bins), 2) if total_bins > 0 else 0.0
+        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
+        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else (rows[0].get("Plant") if len(rows) == 1 and rows[0].get("Plant") and str(rows[0].get("Plant")) != "All" else None)
         
-        total_cap_vol = sum(r.get("TotalBinCapacityVolume", 0.0) for r in rows)
-        total_occ_vol = sum(r.get("OccupiedBinVolume", 0.0) for r in rows)
-        overall_vol_pct = round((total_occ_vol * 100.0 / total_cap_vol), 2) if total_cap_vol > 0 else 0.0
+        if plant_val:
+            matching_row = next((r for r in rows if str(r.get("Plant")) == str(plant_val)), rows[0])
+            tb = matching_row.get("TotalBins", 0)
+            ob = matching_row.get("OccupiedBins", 0)
+            eb = matching_row.get("EmptyBins", max(0, tb - ob))
+            bpct = matching_row.get("BinUtilizationPct", matching_row.get("BinOccupancyPct", round((ob * 100.0 / tb), 2) if tb > 0 else 0.0))
+            tvol = matching_row.get("TotalBinCapacityVolume", 0.0)
+            ovol = matching_row.get("OccupiedBinVolume", 0.0)
+            vpct = matching_row.get("VolumeUtilizationPct", round((ovol * 100.0 / tvol), 2) if tvol > 0 else 0.0)
 
-        single_statement = (
-            f"The overall warehouse bin utilization right now is **{overall_bin_pct}%** "
-            f"({occupied_bins:,} occupied bins of {total_bins:,} total bins, leaving {empty_bins:,} empty bins available for put-away) "
-            f"with total volume utilization of **{overall_vol_pct}%** ({total_occ_vol:,.2f} FT³ occupied of {total_cap_vol:,.2f} FT³ total capacity)."
-        )
+            single_statement = (
+                f"The bin utilization in **Plant {plant_val}** is **{bpct}%** "
+                f"({ob:,} occupied bins of {tb:,} total bins, leaving {eb:,} empty bins available for put-away) "
+                f"with volume utilization of **{vpct}%** ({ovol:,.2f} FT³ occupied of {tvol:,.2f} FT³ total capacity)."
+            )
 
+            if is_single_statement_requested:
+                return single_statement
+
+            return (
+                f"### 🏭 Plant {plant_val} Bin Utilization & Storage Capacity\n\n"
+                f"{single_statement}\n\n"
+                f"**Plant {plant_val} Operational Highlights:**\n"
+                f"- **Primary Bin Utilization:** **{bpct}%** ({ob:,} of {tb:,} bins occupied)\n"
+                f"- **Available Empty Bins:** **{eb:,}** bins\n"
+                f"- **Volume Utilization:** **{vpct}%** ({ovol:,.2f} FT³ occupied of {tvol:,.2f} FT³ total capacity)"
+            )
+        else:
+            total_bins = sum(r.get("TotalBins", 0) for r in rows)
+            occupied_bins = sum(r.get("OccupiedBins", 0) for r in rows)
+            empty_bins = sum(r.get("EmptyBins", 0) for r in rows)
+            overall_bin_pct = round((occupied_bins * 100.0 / total_bins), 2) if total_bins > 0 else 0.0
+            
+            total_cap_vol = sum(r.get("TotalBinCapacityVolume", 0.0) for r in rows)
+            total_occ_vol = sum(r.get("OccupiedBinVolume", 0.0) for r in rows)
+            overall_vol_pct = round((total_occ_vol * 100.0 / total_cap_vol), 2) if total_cap_vol > 0 else 0.0
+
+            single_statement = (
+                f"The overall warehouse bin utilization right now is **{overall_bin_pct}%** "
+                f"({occupied_bins:,} occupied bins of {total_bins:,} total bins, leaving {empty_bins:,} empty bins available for put-away) "
+                f"with total volume utilization of **{overall_vol_pct}%** ({total_occ_vol:,.2f} FT³ occupied of {total_cap_vol:,.2f} FT³ total capacity)."
+            )
+
+            if is_single_statement_requested:
+                return single_statement
+
+            lines = [
+                f"### 📊 Warehouse Network Bin Utilization & Capacity\n",
+                single_statement,
+                f"\n**Plant Breakdown Highlights:**"
+            ]
+            for r in rows:
+                plant = r.get("Plant", "N/A")
+                tb = r.get("TotalBins", 0)
+                ob = r.get("OccupiedBins", 0)
+                bpct = r.get("BinUtilizationPct", r.get("BinOccupancyPct", 0))
+                tvol = r.get("TotalBinCapacityVolume", 0)
+                ovol = r.get("OccupiedBinVolume", 0)
+                vpct = r.get("VolumeUtilizationPct", 0)
+                lines.append(f"- **Plant {plant}**: **{bpct:.2f}%** Bin Utilization ({ob:,} of {tb:,} bins occupied) | {vpct:.2f}% Volume Utilization ({ovol:,.2f} of {tvol:,.2f} FT³).")
+
+            return "\n".join(lines)
+
+    # 5B. Specific Material Code Stock & Locations (Explicit Single Material Scope)
+    if ("Batch" in cols or "BaseUnitOfMeasure" in cols) and ("MaterialDescription" in cols or "Material" in cols or "BinNo" in cols) and any(k in q_lower for k in ["material", "sku", "item", "stock location", "where is", "find material", "how much of", "stock of"]):
+        mat_match = re.search(r"\b(?:material|sku|item|code)\s*[:#-]?\s*([a-z0-9_-]{5,20})\b", q_lower, re.IGNORECASE)
+        mat_code = mat_match.group(1).upper() if (mat_match and hasattr(mat_match, "group")) else (rows[0].get("Material", "N/A") if "Material" in rows[0] else "N/A")
+        mat_desc = rows[0].get("MaterialDescription", rows[0].get("Description", ""))
+        tot_qty = sum(r.get("UnrestrictedQty", r.get("Qty", 0)) for r in rows)
+        uom = rows[0].get("BaseUnitOfMeasure", rows[0].get("UOM", "EA"))
+        plant_val = rows[0].get("Plant", "")
+        plant_str = f" in Plant {plant_val}" if plant_val else ""
+        bin_count = len(set(r.get("BinNo", r.get("Bin", "")) for r in rows if r.get("BinNo") or r.get("Bin")))
+
+        single_stmt = f"Material **`{mat_code}`** ({mat_desc}) has a total stock of **{tot_qty:,.0f} {uom}** located across **{bin_count} bins**{plant_str}."
         if is_single_statement_requested:
-            return single_statement
+            return single_stmt
 
         lines = [
-            f"### 📊 Warehouse Bin Utilization & Capacity\n",
-            single_statement,
-            f"\n**Plant Breakdown Highlights:**"
+            f"### 📦 Material {mat_code} Stock & Locations\n",
+            single_stmt,
+            f"\n**Storage Allocations:**",
         ]
-        for r in rows:
-            plant = r.get("Plant", "N/A")
-            tb = r.get("TotalBins", 0)
-            ob = r.get("OccupiedBins", 0)
-            bpct = r.get("BinUtilizationPct", r.get("BinOccupancyPct", 0))
-            tvol = r.get("TotalBinCapacityVolume", 0)
-            ovol = r.get("OccupiedBinVolume", 0)
-            vpct = r.get("VolumeUtilizationPct", 0)
-            lines.append(f"- **Plant {plant}**: **{bpct:.2f}%** Bin Utilization ({ob:,} of {tb:,} bins occupied) | {vpct:.2f}% Volume Utilization ({ovol:,.2f} of {tvol:,.2f} FT³).")
-
+        for r in rows[:5]:
+            bn = r.get("BinNo", r.get("Bin", "N/A"))
+            q = r.get("UnrestrictedQty", r.get("Qty", 0))
+            sl = r.get("StorageLocation", r.get("Storage Location", "N/A"))
+            bt = r.get("Batch", "N/A")
+            lines.append(f"- **Bin `{bn}`**: **{q:,.0f} {uom}** | SLoc `{sl}` | Batch `{bt}`")
+        lines.append(f"\n💡 *The complete list of bin locations for Material **`{mat_code}`** is rendered in the **Data Table** below.*")
         return "\n".join(lines)
 
     # 6. Specific Plant Material Records
@@ -1489,20 +1611,36 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         mats = rows[0].get("TotalUniqueMaterials", 0)
         bins = rows[0].get("TotalActiveBins", 0)
         plants = rows[0].get("PlantCount", 0)
+        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
+        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
         
-        single_stmt = f"The warehouse network currently holds a total of **{tot:,.2f} unrestricted units** across **{mats:,} unique materials** and **{bins:,} active bins**."
-        if is_single_statement_requested:
-            return single_stmt
+        if plant_val:
+            single_stmt = f"**Plant {plant_val}** currently holds a total of **{tot:,.2f} unrestricted units** across **{mats:,} unique materials** and **{bins:,} active bins**."
+            if is_single_statement_requested:
+                return single_stmt
 
-        return (
-            f"### 🏢 Overall Warehouse Inventory Summary\n\n"
-            f"{single_stmt}\n\n"
-            f"**Network Inventory Highlights:**\n"
-            f"- **Total Unrestricted Quantity:** **{tot:,.2f}** units\n"
-            f"- **Unique Active SKUs:** **{mats:,}** materials\n"
-            f"- **Active Occupied Bins:** **{bins:,}** bins\n"
-            f"- **Operational Plants:** **{plants}** facilities"
-        )
+            return (
+                f"### 🏭 Plant {plant_val} Inventory Summary\n\n"
+                f"{single_stmt}\n\n"
+                f"**Plant {plant_val} Highlights:**\n"
+                f"- **Total Unrestricted Quantity (Primary):** **{tot:,.2f}** units\n"
+                f"- **Unique Active SKUs:** **{mats:,}** materials\n"
+                f"- **Active Occupied Bins:** **{bins:,}** bins"
+            )
+        else:
+            single_stmt = f"The warehouse network currently holds a total of **{tot:,.2f} unrestricted units** across **{mats:,} unique materials** and **{bins:,} active bins**."
+            if is_single_statement_requested:
+                return single_stmt
+
+            return (
+                f"### 🏢 Warehouse Network Inventory Summary\n\n"
+                f"{single_stmt}\n\n"
+                f"**Network Inventory Highlights:**\n"
+                f"- **Total Unrestricted Quantity (Primary):** **{tot:,.2f}** units\n"
+                f"- **Unique Active SKUs:** **{mats:,}** materials\n"
+                f"- **Active Occupied Bins:** **{bins:,}** bins\n"
+                f"- **Operational Plants:** **{plants}** facilities"
+            )
 
     return f"### 📋 Warehouse Query Results\nRetrieved **{count}** matching warehouse records. Please inspect the visual charts and data table below for full itemized details."
 
