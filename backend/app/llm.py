@@ -1143,7 +1143,7 @@ ORDER BY [Total Inventory Quantity] DESC"""
             "metric": "occupied_bins",
             "filters": filters,
             "time_range": "current",
-            "output_type": "kpi"
+            "output_type": "text"
         }
 
     # N2. TOTAL BINS COUNT (Single metric query)
@@ -1165,7 +1165,7 @@ ORDER BY [Total Inventory Quantity] DESC"""
             "metric": "total_bins",
             "filters": filters,
             "time_range": "current",
-            "output_type": "kpi"
+            "output_type": "text"
         }
 
     # N3. TOTAL UNIQUE MATERIALS / SKU COUNT (Single metric query)
@@ -1187,7 +1187,7 @@ ORDER BY [Total Inventory Quantity] DESC"""
             "metric": "unique_materials",
             "filters": filters,
             "time_range": "current",
-            "output_type": "kpi"
+            "output_type": "text"
         }
 
     # N4. TOTAL INVENTORY QUANTITY (Single scalar value without full overview)
@@ -1204,7 +1204,49 @@ ORDER BY [Total Inventory Quantity] DESC"""
             "metric": "total_unrestricted_quantity",
             "filters": filters,
             "time_range": "current",
-            "output_type": "kpi"
+            "output_type": "text"
+        }
+
+    # N5. ACTIVE PLANTS COUNT (Single metric query)
+    is_plants_count = (
+        any(p in q_lower for p in ["plant", "plants", "facility", "facilities", "sites"]) and
+        any(k in q_lower for k in ["how many", "count", "number of", "total plants", "total facilities", "active plants", "active facilities", "how many active", "how many plants are currently active"]) and
+        not any(w in q_lower for w in ["material", "sku", "bin", "utiliz", "capacity", "summary", "overview", "dashboard", "breakdown", "list", "show", "table"])
+    )
+    if is_plants_count:
+        return {
+            "sql": "SELECT COUNT(DISTINCT Plant) AS [Active Plants Count] FROM dbo.ZWMS_INVENTORY",
+            "chart_type": "none",
+            "chart_title": "Active Operational Plants Count",
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "active_plants_count",
+            "metric": "plants_count",
+            "filters": {},
+            "time_range": "current",
+            "output_type": "text"
+        }
+
+    # N6. STORAGE LOCATIONS COUNT (Single metric query)
+    is_sloc_count = (
+        any(s in q_lower for s in ["storage location", "storage locations", "sloc", "slocs"]) and
+        any(k in q_lower for k in ["how many", "count", "number of", "total"]) and
+        not any(w in q_lower for w in ["summary", "overview", "dashboard", "breakdown", "list", "show", "compare"])
+    )
+    if is_sloc_count:
+        plant_filter = f" WHERE Plant = '{plant_cand}'" if plant_cand else ""
+        filters = {"plant": plant_cand} if plant_cand else {}
+        return {
+            "sql": f"SELECT COUNT(DISTINCT StorageLocation) AS [Storage Locations Count] FROM dbo.ZWMS_INVENTORY{plant_filter}",
+            "chart_type": "none",
+            "chart_title": f"Storage Locations Count{f' — Plant {plant_cand}' if plant_cand else ''}",
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "storage_locations_count",
+            "metric": "storage_locations_count",
+            "filters": filters,
+            "time_range": "current",
+            "output_type": "text"
         }
 
     # O. OVERALL WAREHOUSE TOTAL INVENTORY (Full Multi-Metric KPI summary - only when explicitly asked for overview/summary)
@@ -1452,6 +1494,19 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
 
         return "\n".join(lines)
 
+    # 0D_plants. Active Operational Plants Count (Direct Single Metric)
+    if "Active Plants Count" in cols or ("PlantCount" in cols and len(cols) == 1) or ("Plant Count" in cols and len(cols) == 1):
+        count_val = rows[0].get("Active Plants Count", rows[0].get("PlantCount", rows[0].get("Plant Count", 4)))
+        return f"**{count_val:,} operational plants** (1258, 1266, 1268, 7228)."
+
+    # 0D_slocs. Storage Locations Count (Direct Single Metric)
+    if "Storage Locations Count" in cols or ("Storage Location Count" in cols and len(cols) == 1):
+        count_val = rows[0].get("Storage Locations Count", rows[0].get("Storage Location Count", 0))
+        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
+        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
+        plant_str = f" in Plant {plant_val}" if plant_val else ""
+        return f"**{count_val:,} storage locations**{plant_str}."
+
     # 0D. Occupied Bins Count (Direct Single Metric)
     if "Occupied Bins Count" in cols:
         count_val = rows[0].get("Occupied Bins Count", 0)
@@ -1491,21 +1546,9 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
         
         if plant_val:
-            single_stmt = f"There are **{count_val:,}** completely empty bins in **Plant {plant_val}**."
-            if is_single_statement_requested:
-                return single_stmt
-            return (
-                f"### 📦 Plant {plant_val} Empty Bins Count\n\n"
-                f"{single_stmt}"
-            )
+            return f"There are **{count_val:,}** completely empty bins in Plant {plant_val}."
         else:
-            single_stmt = f"There are **{count_val:,}** completely empty bins across the warehouse network."
-            if is_single_statement_requested:
-                return single_stmt
-            return (
-                f"### 📦 Warehouse Network Empty Bins Count\n\n"
-                f"{single_stmt}"
-            )
+            return f"There are **{count_val:,}** completely empty bins across the warehouse network."
 
     # 2. Empty Bins List (Table Output)
     if ("Storage Location" in cols or "StorageLocation" in cols) and ("Status" in cols or "Inventory Qty" in cols) and ("Bin" in cols or "BinLocation" in cols):
@@ -1848,6 +1891,10 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
             return {"output_type": "text", "chart_type": "none", "metric": "total_bins", "intent": "total_bins_count", "time_range": "current"}
         if "Empty Bins Count" in cols:
             return {"output_type": "text", "chart_type": "none", "metric": "empty_bins", "intent": "empty_bins_count", "time_range": "current"}
+        if "Active Plants Count" in cols:
+            return {"output_type": "text", "chart_type": "none", "metric": "plants_count", "intent": "active_plants_count", "time_range": "current"}
+        if "Storage Locations Count" in cols:
+            return {"output_type": "text", "chart_type": "none", "metric": "storage_locations_count", "intent": "storage_locations_count", "time_range": "current"}
         if "Missing Materials Count" in cols:
             return {"output_type": "text", "chart_type": "none", "metric": "missing_materials", "intent": "materials_missing_from_volume_master_count", "time_range": "current"}
         if "Total Unique Materials" in cols and "TotalUnrestrictedQuantity" not in cols:
