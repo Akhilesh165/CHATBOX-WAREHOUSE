@@ -176,6 +176,10 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     is_fresh_empty = any(k in q_lower for k in ["empty bin", "empty bins", "show me empty", "list empty", "putaway", "put-away", "vacant bin", "free bin", "available for immediate put-away", "where can i put", "put new inventory", "place incoming"]) and not any(k in q_lower for k in ["how many", "count"])
     is_fresh_top_bins = ("top" in q_lower or "most" in q_lower) and any(k in q_lower for k in ["utilized bin", "utilised bin", "fullest bin", "capacity bin"]) and not is_mat_entity
     is_fresh_least_bins = ("bottom" in q_lower or "least" in q_lower or "emptiest" in q_lower or "lowest" in q_lower) and any(k in q_lower for k in ["utilized bin", "utilised bin", "bins", "locations", "capacity"]) and not is_mat_entity
+    is_fresh_plant_count = any(p in q_lower for p in ["plant", "plants", "facility", "facilities"]) and any(k in q_lower for k in ["how many", "count", "number of", "total plants", "active plants"])
+    is_fresh_mat_count = is_mat_entity and any(k in q_lower for k in ["how many", "count", "number of", "total unique", "unique count"]) and not is_fresh_missing_master and not is_fresh_dq
+    is_fresh_occupied_bins_count = ("occupied" in q_lower or "in use" in q_lower or "active bin" in q_lower) and any(b in q_lower for b in ["bin", "bins"]) and any(k in q_lower for k in ["how many", "count", "number of", "total"])
+    is_fresh_total_stock = any(k in q_lower for k in ["total inventory", "total stock", "how much stock", "total unrestricted", "how much inventory"]) and not any(k in q_lower for k in ["summary", "overview", "dashboard", "breakdown"])
     is_fresh_consolidation = any(k in q_lower for k in ["consolidat", "free up", "same material", "duplicate bin", "multiple bin"])
     is_fresh_diff = any(k in q_lower for k in ["difference", "zws", "unrestrictedqty2"])
     is_fresh_div = any(k in q_lower for k in ["division", "material group"])
@@ -195,6 +199,34 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["condition"] = "missing_dimensions"
         state["topic"] = "data_quality"
         state["aggregation"] = "count" if is_cnt else "list"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+    elif is_fresh_plant_count:
+        state["entity"] = "plant"
+        state["metric"] = "plants_count"
+        state["topic"] = "active_plants_count"
+        state["condition"] = None
+        state["aggregation"] = "count"
+        state["filters"] = {}
+    elif is_fresh_mat_count:
+        state["entity"] = "material"
+        state["metric"] = "unique_materials"
+        state["topic"] = "unique_materials_count"
+        state["condition"] = None
+        state["aggregation"] = "count"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+    elif is_fresh_occupied_bins_count:
+        state["entity"] = "bin"
+        state["metric"] = "occupied_bins"
+        state["topic"] = "occupied_bins_count"
+        state["condition"] = "occupied"
+        state["aggregation"] = "count"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+    elif is_fresh_total_stock:
+        state["entity"] = "inventory"
+        state["metric"] = "total_unrestricted_quantity"
+        state["topic"] = "total_inventory_quantity"
+        state["condition"] = None
+        state["aggregation"] = "sum"
         state["filters"] = {"plant": new_plant} if new_plant else {}
     elif is_fresh_both:
         state["entity"] = "bin"
