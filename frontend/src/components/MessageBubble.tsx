@@ -45,17 +45,31 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
 
   const rows = message.data || message.rows || [];
   const hasTable = rows.length > 0;
-  const outputType = message.output_type || (
+  const isSingleMetricIntent = (
+    message.output_type === 'text' ||
+    message.output_type === 'single_value' ||
+    message.intent?.endsWith('_count') ||
+    message.intent === 'SINGLE_METRIC' ||
+    message.intent === 'active_plants_count' ||
+    message.intent === 'occupied_bins_count' ||
+    message.intent === 'total_bins_count' ||
+    message.intent === 'empty_bins_count' ||
+    message.intent === 'unique_materials_count' ||
+    message.intent === 'total_inventory_quantity' ||
+    message.intent === 'storage_locations_count'
+  );
+
+  const outputType = isSingleMetricIntent ? 'text' : (message.output_type || (
     message.chart?.type === 'line' ? 'line_chart' :
     message.chart?.type === 'bar' ? 'bar_chart' :
     message.chart?.type === 'pie' ? 'pie_chart' :
     hasTable ? 'table' : 'text'
-  );
+  ));
 
-  const showChart = (outputType === 'bar_chart' || outputType === 'line_chart' || outputType === 'pie_chart') && message.chart && message.chart.data && message.chart.data.length > 0;
-  const showKpi = outputType === 'kpi' && hasTable;
-  const showList = outputType === 'list' && hasTable;
-  const showTable = (outputType === 'table' || showChart || showKpi || showList) && hasTable;
+  const showChart = !isSingleMetricIntent && (outputType === 'bar_chart' || outputType === 'line_chart' || outputType === 'pie_chart') && message.chart && message.chart.data && message.chart.data.length > 0;
+  const showKpi = !isSingleMetricIntent && outputType === 'kpi' && hasTable && message.intent === 'inventory_summary';
+  const showList = !isSingleMetricIntent && outputType === 'list' && hasTable;
+  const showTable = !isSingleMetricIntent && (outputType === 'table' || showChart || showKpi || showList) && hasTable;
 
   if (isUser) {
     return (
