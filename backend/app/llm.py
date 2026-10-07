@@ -382,19 +382,86 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
 
     # 2. BUSINESS METRIC & INTENT RESOLUTION
 
-    # A0. SPECIFIC BIN UTILIZATION & COMPARISON (Single Bin or Multi-Bin Scope)
-    if raw_bins and any(k in q_lower for k in ["utiliz", "occupan", "capacity", "how full", "space", "compare", "fullness", "fill rate"]) and not any(k in q_lower for k in ["top", "bottom", "least utilized ones", "most utilized ones"]):
+    # A0. SPECIFIC BIN QUESTIONS (Attributes, Utilization, Occupancy, Quantity, Materials)
+    if raw_bins:
+        b_code = raw_bins[0]
         plant_filter = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
-        filters = {"plant": plant_cand} if plant_cand else {}
-        if len(raw_bins) == 1:
-            filters["bin"] = raw_bins[0]
-            where_bin_clause = f"(b.BinLocation = '{raw_bins[0]}' OR b.BinLocation LIKE '{raw_bins[0]}%')"
-        else:
-            filters["bins"] = raw_bins
-            in_list = ", ".join(f"'{b}'" for b in raw_bins)
-            where_bin_clause = f"b.BinLocation IN ({in_list})"
+        filters = {"bin": b_code}
+        if plant_cand:
+            filters["plant"] = plant_cand
 
-        sql_specific_bin = f"""SELECT 
+        # 1. Bin Occupancy Yes/No check: "Is bin NRJP2124D2 occupied?", "Is bin NRJP2124D2 empty?"
+        if any(k in q_lower for k in ["occupied", "empty", "vacant", "in use"]) and any(q_start in q_lower for q_start in ["is ", "are ", "does ", "is the"]):
+            return {
+                "sql": f"SELECT COUNT(DISTINCT Material) AS MaterialCount, COALESCE(SUM(UnrestrictedQty), 0) AS TotalQty FROM dbo.ZWMS_INVENTORY WHERE BinNo = '{b_code}' AND UnrestrictedQty > 0",
+                "chart_type": "none",
+                "chart_title": f"Occupancy Status of Bin {b_code}",
+                "chart_x": None,
+                "chart_y": None,
+                "intent": "bin_occupancy_status",
+                "metric": "bin_status",
+                "filters": filters,
+                "time_range": "current",
+                "output_type": "text"
+            }
+
+        # 2. Bin Plant Lookup: "Which plant does bin NRJP2124D2 belong to?"
+        if any(k in q_lower for k in ["which plant", "what plant", "belong to", "plant of bin", "plant for bin", "where is bin located"]):
+            return {
+                "sql": f"SELECT DISTINCT COALESCE(b.Plant, i.Plant, 'Unknown') AS Plant, COALESCE(b.StorageLocation, i.StorageLocation, 'N/A') AS StorageLocation FROM dbo.ZWMS_BIN_MASTER b FULL OUTER JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo WHERE b.BinLocation = '{b_code}' OR i.BinNo = '{b_code}'",
+                "chart_type": "none",
+                "chart_title": f"Plant for Bin {b_code}",
+                "chart_x": None,
+                "chart_y": None,
+                "intent": "bin_plant_lookup",
+                "metric": "plant_lookup",
+                "filters": filters,
+                "time_range": "current",
+                "output_type": "text"
+            }
+
+        # 3. Bin Inventory Quantity: "What is the inventory quantity in bin NRJP2124D2?", "What is the stock in bin NRJP2124D2?"
+        if any(k in q_lower for k in ["inventory quantity", "quantity in bin", "stock in bin", "units in bin", "how much in bin", "how much is stored in bin", "how many units in bin", "quantity stored in bin"]):
+            return {
+                "sql": f"SELECT COALESCE(SUM(UnrestrictedQty), 0) AS [Inventory Qty], MAX(BaseUnitOfMeasure) AS UOM FROM dbo.ZWMS_INVENTORY WHERE BinNo = '{b_code}'",
+                "chart_type": "none",
+                "chart_title": f"Inventory Quantity in Bin {b_code}",
+                "chart_x": None,
+                "chart_y": None,
+                "intent": "bin_quantity_lookup",
+                "metric": "bin_inventory_quantity",
+                "filters": filters,
+                "time_range": "current",
+                "output_type": "text"
+            }
+
+        # 4. Bin Materials Count: "How many materials are stored in bin NRJP2124D2?"
+        if any(k in q_lower for k in ["how many materials", "how many skus", "how many items", "number of materials", "count of materials"]) and any(b in q_lower for b in ["in bin", "stored in bin", "inside bin", "for bin"]):
+            return {
+                "sql": f"SELECT COUNT(DISTINCT Material) AS [Stored Materials Count] FROM dbo.ZWMS_INVENTORY WHERE BinNo = '{b_code}' AND UnrestrictedQty > 0",
+                "chart_type": "none",
+                "chart_title": f"Materials Stored in Bin {b_code}",
+                "chart_x": None,
+                "chart_y": None,
+                "intent": "bin_materials_count",
+                "metric": "bin_materials_count",
+                "filters": filters,
+                "time_range": "current",
+                "output_type": "text"
+            }
+
+        # 5. Bin Utilization: "What is the utilization of bin NRJP2124D2?" (Single or Multi)
+        if any(k in q_lower for k in ["utiliz", "occupan", "capacity", "how full", "space", "compare", "fullness", "fill rate"]) and not any(k in q_lower for k in ["top", "bottom", "least utilized ones", "most utilized ones"]):
+            if len(raw_bins) == 1:
+                where_bin_clause = f"(b.BinLocation = '{raw_bins[0]}' OR b.BinLocation LIKE '{raw_bins[0]}%')"
+                out_type = "text"
+            else:
+                filters["bins"] = raw_bins
+                in_list = ", ".join(f"'{b}'" for b in raw_bins)
+                where_bin_clause = f"b.BinLocation IN ({in_list})"
+                out_type = "table"
+
+            sql_specific_bin = f"""SELECT 
     b.BinLocation AS [Bin],
     b.Plant AS [Plant],
     b.StorageLocation AS [Storage Location],
@@ -407,35 +474,19 @@ LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
 WHERE {where_bin_clause}{plant_filter}
 GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit"""
 
-        query_plan = {
-            "intent": "SPECIFIC_BIN_UTILIZATION" if len(raw_bins) == 1 else "BIN_COMPARISON",
-            "task": "kpi" if len(raw_bins) == 1 else "comparison",
-            "task_type": "SPECIFIC_ENTITY_LOOKUP" if len(raw_bins) == 1 else "COMPARISON",
-            "user_intent": "specific_bin_utilization",
-            "entity": "BIN",
-            "source_tables": ["dbo.ZWMS_BIN_MASTER", "dbo.ZWMS_INVENTORY"],
-            "reference_tables": ["dbo.ZWMS_MATERIAL_MASTER"],
-            "join_keys": ["b.BinLocation = i.BinNo", "i.Material = m.MaterialCode"],
-            "filters": filters,
-            "metric": "utilization_percentage",
-            "response_format": "kpi" if len(raw_bins) == 1 else "table",
-            "output_type": "kpi" if len(raw_bins) == 1 else "table"
-        }
-
-        return {
-            "sql": sql_specific_bin,
-            "query_plan": query_plan,
-            "chart_type": "bar" if len(raw_bins) > 1 else "none",
-            "chart_title": f"Utilization of Bin {raw_bins[0]}" if len(raw_bins) == 1 else f"Bin Utilization Comparison ({', '.join(raw_bins)})",
-            "chart_x": "Bin" if len(raw_bins) > 1 else None,
-            "chart_y": "Utilization %" if len(raw_bins) > 1 else None,
-            "intent": "specific_bin_utilization" if len(raw_bins) == 1 else "bin_comparison",
-            "metric": "bin_utilization",
-            "filters": filters,
-            "time_range": "current",
-            "output_type": "kpi" if len(raw_bins) == 1 else "table",
-            "conversation_state": state
-        }
+            return {
+                "sql": sql_specific_bin,
+                "chart_type": "bar" if len(raw_bins) > 1 else "none",
+                "chart_title": f"Utilization of Bin {raw_bins[0]}" if len(raw_bins) == 1 else f"Bin Utilization Comparison ({', '.join(raw_bins)})",
+                "chart_x": "Bin" if len(raw_bins) > 1 else None,
+                "chart_y": "Utilization %" if len(raw_bins) > 1 else None,
+                "intent": "specific_bin_utilization" if len(raw_bins) == 1 else "bin_comparison",
+                "metric": "bin_utilization",
+                "filters": filters,
+                "time_range": "current",
+                "output_type": out_type,
+                "conversation_state": state
+            }
 
     # A. INTENT A: MATERIALS MISSING FROM VOLUME MASTER (Rule DQ-001 - Cross-Table Validation)
     is_missing_master_record = any(k in q_lower for k in [
