@@ -1123,7 +1123,75 @@ ORDER BY [Total Inventory Quantity] DESC"""
             "output_type": "pie_chart"
         }
 
-    # O. OVERALL WAREHOUSE TOTAL INVENTORY (KPI summary)
+    # N1. OCCUPIED BINS COUNT (Single metric query)
+    if any(k in q_lower for k in ["occupied bin", "occupied bins", "bins are occupied", "bins currently occupied", "bins in use", "bins with stock"]) and any(k in q_lower for k in ["how many", "count", "number of"]):
+        plant_filter = f" AND Plant = '{plant_cand}'" if plant_cand else ""
+        filters = {"plant": plant_cand} if plant_cand else {}
+        return {
+            "sql": f"SELECT COUNT(DISTINCT BinNo) AS [Occupied Bins Count] FROM dbo.ZWMS_INVENTORY WHERE UnrestrictedQty > 0{plant_filter}",
+            "chart_type": "none",
+            "chart_title": f"Occupied Bins Count{f' — Plant {plant_cand}' if plant_cand else ''}",
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "occupied_bins_count",
+            "metric": "occupied_bins",
+            "filters": filters,
+            "time_range": "current",
+            "output_type": "kpi"
+        }
+
+    # N2. TOTAL BINS COUNT (Single metric query)
+    if any(k in q_lower for k in ["total bins", "total number of bins", "how many bins do we have", "total bin count", "how many bins in total", "number of bins", "count of bins"]) and not any(k in q_lower for k in ["empty", "occupied", "utiliz"]):
+        plant_filter = f" WHERE Plant = '{plant_cand}'" if plant_cand else ""
+        filters = {"plant": plant_cand} if plant_cand else {}
+        return {
+            "sql": f"SELECT COUNT(DISTINCT BinLocation) AS [Total Bins Count] FROM dbo.ZWMS_BIN_MASTER{plant_filter}",
+            "chart_type": "none",
+            "chart_title": f"Total Bins Count{f' — Plant {plant_cand}' if plant_cand else ''}",
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "total_bins_count",
+            "metric": "total_bins",
+            "filters": filters,
+            "time_range": "current",
+            "output_type": "kpi"
+        }
+
+    # N3. TOTAL UNIQUE MATERIALS / SKU COUNT (Single metric query)
+    if any(k in q_lower for k in ["how many materials", "how many unique materials", "how many skus", "number of unique materials", "count of materials", "sku count", "material count", "number of skus", "how many items", "how many products"]):
+        plant_filter = f" WHERE Plant = '{plant_cand}'" if plant_cand else ""
+        filters = {"plant": plant_cand} if plant_cand else {}
+        return {
+            "sql": f"SELECT COUNT(DISTINCT Material) AS [Total Unique Materials] FROM dbo.ZWMS_INVENTORY{plant_filter}",
+            "chart_type": "none",
+            "chart_title": f"Total Unique Materials Count{f' — Plant {plant_cand}' if plant_cand else ''}",
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "unique_materials_count",
+            "metric": "unique_materials",
+            "filters": filters,
+            "time_range": "current",
+            "output_type": "kpi"
+        }
+
+    # N4. TOTAL INVENTORY QUANTITY (Single scalar value without full overview)
+    if any(k in q_lower for k in ["how much total inventory", "total inventory quantity", "what is the total stock quantity", "total unrestricted quantity", "how much stock", "total stock", "total inventory", "how much inventory"]) and not any(k in q_lower for k in ["summary", "overview", "dashboard", "executive", "breakdown", "all plants"]):
+        plant_filter = f" WHERE Plant = '{plant_cand}'" if plant_cand else ""
+        filters = {"plant": plant_cand} if plant_cand else {}
+        return {
+            "sql": f"SELECT SUM(UnrestrictedQty) AS [Total Unrestricted Quantity] FROM dbo.ZWMS_INVENTORY{plant_filter}",
+            "chart_type": "none",
+            "chart_title": f"Total Unrestricted Quantity{f' — Plant {plant_cand}' if plant_cand else ''}",
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "total_inventory_quantity",
+            "metric": "total_unrestricted_quantity",
+            "filters": filters,
+            "time_range": "current",
+            "output_type": "kpi"
+        }
+
+    # O. OVERALL WAREHOUSE TOTAL INVENTORY (Full Multi-Metric KPI summary - only when explicitly asked for overview/summary)
     plant_filter = f" WHERE Plant = '{plant_cand}' HAVING COUNT(DISTINCT Material) > 0" if plant_cand else ""
     filters = {"plant": plant_cand} if plant_cand else {}
     return {
@@ -1358,6 +1426,38 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
             lines.append(f"- **Stored Stock:** **{qty_val:,.0f} {uom_val}** of Material `{mat_val}` ({desc_val})")
 
         return "\n".join(lines)
+
+    # 0D. Occupied Bins Count (Direct Single Metric)
+    if "Occupied Bins Count" in cols:
+        count_val = rows[0].get("Occupied Bins Count", 0)
+        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
+        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
+        plant_str = f" in Plant {plant_val}" if plant_val else ""
+        return f"**{count_val:,} occupied bins**{plant_str}."
+
+    # 0E. Total Bins Count (Direct Single Metric)
+    if "Total Bins Count" in cols:
+        count_val = rows[0].get("Total Bins Count", 0)
+        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
+        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
+        plant_str = f" in Plant {plant_val}" if plant_val else ""
+        return f"**{count_val:,} total bins**{plant_str}."
+
+    # 0F. Total Unique Materials / SKU Count (Direct Single Metric)
+    if "Total Unique Materials" in cols and "TotalUnrestrictedQuantity" not in cols:
+        count_val = rows[0].get("Total Unique Materials", 0)
+        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
+        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
+        plant_str = f" in Plant {plant_val}" if plant_val else ""
+        return f"**{count_val:,} unique materials**{plant_str}."
+
+    # 0G. Total Unrestricted Quantity (Direct Single Metric)
+    if "Total Unrestricted Quantity" in cols and "TotalUniqueMaterials" not in cols:
+        tot_val = rows[0].get("Total Unrestricted Quantity", 0.0)
+        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
+        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
+        plant_str = f" in Plant {plant_val}" if plant_val else ""
+        return f"**{tot_val:,.2f} total unrestricted units**{plant_str}."
 
     # 1. Empty Bins Count (Scalar KPI)
     if "Empty Bins Count" in cols:
@@ -1698,16 +1798,25 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
         }
 
     # 2. KPI Cards for single row totals or warehouse scalar KPIs
-    if row_count == 1 and any(k in cols for k in ["TotalUnrestrictedQuantity", "TotalQuantity", "TotalUniqueMaterials", "TotalBins", "AvgInventoryPerOccupiedBin"]):
-        metric_name = "avg_stock_per_bin" if "AvgInventoryPerOccupiedBin" in cols else "total_inventory"
-        intent_name = "avg_inventory_per_bin" if "AvgInventoryPerOccupiedBin" in cols else "inventory_summary"
-        return {
-            "output_type": "kpi",
-            "chart_type": "none",
-            "metric": metric_name,
-            "intent": intent_name,
-            "time_range": "current"
-        }
+    if row_count == 1:
+        if "Occupied Bins Count" in cols:
+            return {"output_type": "kpi", "chart_type": "none", "metric": "occupied_bins", "intent": "occupied_bins_count", "time_range": "current"}
+        if "Total Bins Count" in cols:
+            return {"output_type": "kpi", "chart_type": "none", "metric": "total_bins", "intent": "total_bins_count", "time_range": "current"}
+        if "Empty Bins Count" in cols:
+            return {"output_type": "kpi", "chart_type": "none", "metric": "empty_bins", "intent": "empty_bins_count", "time_range": "current"}
+        if "Missing Materials Count" in cols:
+            return {"output_type": "kpi", "chart_type": "none", "metric": "missing_materials", "intent": "materials_missing_from_volume_master_count", "time_range": "current"}
+        if "Total Unique Materials" in cols and "TotalUnrestrictedQuantity" not in cols:
+            return {"output_type": "kpi", "chart_type": "none", "metric": "unique_materials", "intent": "unique_materials_count", "time_range": "current"}
+        if "Total Unrestricted Quantity" in cols and "TotalUniqueMaterials" not in cols:
+            return {"output_type": "kpi", "chart_type": "none", "metric": "total_unrestricted_quantity", "intent": "total_inventory_quantity", "time_range": "current"}
+        if "AvgInventoryPerOccupiedBin" in cols:
+            return {"output_type": "kpi", "chart_type": "none", "metric": "avg_stock_per_bin", "intent": "avg_inventory_per_bin", "time_range": "current"}
+        if "TotalUnrestrictedQuantity" in cols and "TotalUniqueMaterials" in cols:
+            return {"output_type": "kpi", "chart_type": "none", "metric": "total_inventory", "intent": "inventory_summary", "time_range": "current"}
+        if any(k in cols for k in ["TotalUnrestrictedQuantity", "TotalQuantity", "TotalUniqueMaterials", "TotalBins"]):
+            return {"output_type": "kpi", "chart_type": "none", "metric": generated.get("metric", "total_inventory"), "intent": generated.get("intent", "inventory_summary"), "time_range": "current"}
 
     # 3. Plant / Warehouse Bin Utilization
     if "BinUtilizationPct" in cols or "VolumeUtilizationPct" in cols:
