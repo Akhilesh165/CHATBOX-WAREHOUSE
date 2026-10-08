@@ -204,7 +204,34 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                 valid_raw_bins.append(b_val.upper())
     is_fresh_specific_bin = len(valid_raw_bins) > 0
 
-    if is_fresh_specific_bin:
+    is_plant_scope = bool(new_plant or state.get("filters", {}).get("plant"))
+    is_util_keyword = any(k in q_lower for k in ["utiliz", "occupan", "capacity", "how full", "space utilization", "bin fill", "fullness"])
+    is_affirmative_followup = any(w in q_lower.split() for w in ["yes", "yeah", "sure", "please", "expand", "yep", "do"]) or any(k in q_lower for k in ["generate detailed", "detailed version", "detailed analysis", "show detail", "detailed breakdown", "generate detail"])
+    
+    is_followup_for_detail = (
+        (state.get("topic") in ["plant_bin_utilization_detail", "plant_bin_utilization_summary", "warehouse_utilization"] and is_affirmative_followup) or
+        (any(k in q_lower for k in ["generate detailed bin utilization", "detailed bin utilization analysis", "storage location breakdown", "detailed version of this analysis", "sloc breakdown", "detailed version"]) and is_plant_scope)
+    )
+    is_fresh_plant_bin_util_detail = (
+        is_util_keyword and is_plant_scope and not is_fresh_specific_bin and not is_mat_entity and
+        not is_fresh_top_bins and not is_fresh_least_bins and not is_fresh_both and not is_fresh_empty and not is_followup_for_detail
+    )
+
+    if is_followup_for_detail:
+        state["entity"] = "bin"
+        state["metric"] = "storage_location_utilization"
+        state["topic"] = "plant_bin_utilization_detailed_analysis"
+        state["filters"]["plant"] = new_plant or state.get("filters", {}).get("plant", "7228")
+        state["granularity"] = "storage_location"
+        state["aggregation"] = "breakdown"
+    elif is_fresh_plant_bin_util_detail:
+        state["entity"] = "bin"
+        state["metric"] = "bin_utilization"
+        state["topic"] = "plant_bin_utilization_detail"
+        state["filters"]["plant"] = new_plant or state.get("filters", {}).get("plant")
+        state["aggregation"] = "summary"
+    elif is_fresh_specific_bin:
+
         state["entity"] = "bin"
         state["condition"] = None
         state["filters"] = {"bin": valid_raw_bins[0]}
@@ -348,7 +375,11 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     plant_clause = f" in plant {state['filters']['plant']}" if state['filters'].get('plant') else ""
     limit_clause = f" {state['limit']}" if state.get('limit') else " 10"
 
-    if state["topic"] == "top_and_bottom_bins":
+    if state["topic"] == "plant_bin_utilization_detailed_analysis":
+        state["resolved_query"] = f"detailed bin utilization analysis for plant {state['filters'].get('plant', '7228')}"
+    elif state["topic"] == "plant_bin_utilization_detail":
+        state["resolved_query"] = f"bin utilization detail of plant {state['filters'].get('plant', '7228')}"
+    elif state["topic"] == "top_and_bottom_bins":
         state["resolved_query"] = f"top{limit_clause} most and bottom{limit_clause} least utilized bins{plant_clause}"
     elif state["topic"] == "empty_bins_count":
         state["resolved_query"] = f"how many empty bins{plant_clause}"
@@ -376,6 +407,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["resolved_query"] = question
 
     return state
+
 
 def resolve_conversation_context(question: str, history: list[dict] | None = None) -> str:
     """Intelligently resolves follow-up questions, anaphora, elliptical queries, filter refinements, and entity inheritance from conversation history."""
@@ -1075,13 +1107,92 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
             "output_type": "kpi"
         }
 
-    # G. WAREHOUSE & PLANT BIN UTILIZATION PERCENTAGE
-    # Semantic Definition: Occupied volume / Total capacity volume * 100
+    # G. WAREHOUSE & PLANT BIN UTILIZATION (Multi-Tiered Response Templates)
+    # Semantic Definition: Occupied volume / Total capacity volume * 100 or Occupied Bins / Total Bins * 100
     is_utilization_intent = (
+        state.get("topic") in ["plant_bin_utilization_detailed_analysis", "plant_bin_utilization_detail", "warehouse_utilization"] or
         any(k in q_lower for k in ["utiliz", "occupan", "capacity", "how full", "warehouse fullness", "facility fill", "fill rate", "space utilization", "bin fill", "fill percentage", "running out of", "out of storage space", "storage capacity"]) or
         (("volume" in q_lower or "space" in q_lower) and ("occup" in q_lower or "capacit" in q_lower or "fill" in q_lower or "versus" in q_lower or "compared" in q_lower or "running out" in q_lower))
     )
     if is_utilization_intent and not any(m in q_lower for m in ["material", "sku", "item", "product", "consuming", "share of total"]):
+        # 1. EXPANSION: Detailed Storage Location Breakdown for Plant (on requested follow-up / detail)
+        if state.get("topic") == "plant_bin_utilization_detailed_analysis" or (
+            any(k in q_lower for k in ["detailed bin utilization", "storage location breakdown", "detailed version", "sloc breakdown", "by storage location"]) and plant_cand
+        ):
+            plant_val = plant_cand or state.get("filters", {}).get("plant", "7228")
+            sql_detailed = f"""SELECT 
+    b.Plant AS [Plant], 
+    COALESCE(b.StorageLocation, 'Unassigned') AS [Storage Location], 
+    COUNT(DISTINCT b.BinLocation) AS [Total Bins], 
+    COUNT(DISTINCT i.BinNo) AS [Occupied Bins], 
+    (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS [Empty Bins], 
+    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1), '%') AS [Bin Utilization %], 
+    ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1) AS [UtilizationPct], 
+    ROUND(SUM(b.Volume), 2) AS [Total Capacity Volume (FT3)], 
+    ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS [Occupied Volume (FT3)] 
+FROM dbo.ZWMS_BIN_MASTER b 
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant AND b.StorageLocation = i.StorageLocation 
+WHERE b.Plant = '{plant_val}' 
+GROUP BY b.Plant, b.StorageLocation 
+ORDER BY COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0) DESC"""
+
+            return {
+                "sql": sql_detailed,
+                "chart_type": "bar",
+                "chart_title": f"Plant {plant_val} Bin Utilization by Storage Location (%)",
+                "chart_x": "Storage Location",
+                "chart_y": "UtilizationPct",
+                "intent": "plant_bin_utilization_detailed_analysis",
+                "metric": "storage_location_utilization",
+                "filters": {"plant": plant_val, "granularity": "storage_location"},
+                "time_range": "current",
+                "output_type": "bar_chart",
+                "conversation_state": state
+            }
+
+        # 2. PLANT BIN UTILIZATION DETAIL TEMPLATE (DEFAULT SUMMARY + RELEVANT KPIS + SUMMARY TABLE + DETAIL OFFER)
+        if (state.get("topic") == "plant_bin_utilization_detail" or plant_cand) and not any(w in q_lower for w in ["all", "compare", "network", "plants"]):
+            plant_val = plant_cand or state.get("filters", {}).get("plant", "7228")
+            sql_plant_summary = f"""SELECT 
+    b.Plant AS [Plant], 
+    COUNT(DISTINCT b.BinLocation) AS [Total Bins], 
+    COUNT(DISTINCT i.BinNo) AS [Occupied Bins], 
+    (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS [Empty Bins], 
+    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1), '%') AS [Bin Utilization %], 
+    ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1) AS [UtilizationPct], 
+    ROUND(SUM(b.Volume), 2) AS [Total Capacity Volume (FT3)], 
+    ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS [Occupied Volume (FT3)] 
+FROM dbo.ZWMS_BIN_MASTER b 
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant 
+WHERE b.Plant = '{plant_val}' 
+GROUP BY b.Plant"""
+
+            return {
+                "sql": sql_plant_summary,
+                "chart_type": "none",
+                "chart_title": f"Plant {plant_val} Bin Utilization Summary",
+                "chart_x": None,
+                "chart_y": None,
+                "intent": "plant_bin_utilization_detail",
+                "metric": "plant_bin_utilization",
+                "filters": {"plant": plant_val, "granularity": "plant"},
+                "time_range": "current",
+                "output_type": "table",
+                "follow_up_action": {
+                    "message": "Would you like me to generate a detailed version of this analysis?",
+                    "action": "generate_detail",
+                    "action_prompt": f"Generate detailed bin utilization analysis for Plant {plant_val}",
+                    "label": "Generate Detailed Analysis"
+                },
+                "relevant_kpis": [
+                    {"label": "Bin Utilization", "value": "bin_utilization"},
+                    {"label": "Occupied Bins", "value": "occupied_bins"},
+                    {"label": "Empty Bins", "value": "empty_bins"},
+                    {"label": "Total Bins", "value": "total_bins"}
+                ],
+                "conversation_state": state
+            }
+
         plant_filter = f" WHERE b.Plant = '{plant_cand}'" if plant_cand and not any(w in q_lower for w in ["all", "compare", "network", "plants"]) else ""
         filters = {"plant": plant_cand} if plant_filter else {}
         return {
@@ -1096,6 +1207,7 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
             "time_range": "current",
             "output_type": "bar_chart"
         }
+
 
     # G. TIME SERIES & TREND ANALYSIS
     if any(k in q_lower for k in ["trend", "history", "timeline", "over time", "monthly", "last 6 months", "vested"]):
@@ -1813,8 +1925,39 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
                 f"- **Total Unrestricted Stock:** **{tot_qty:,.2f}** units"
             )
 
+    # 4B. Detailed Storage Location Bin Utilization Breakdown
+    if "Storage Location" in cols and ("Bin Utilization %" in cols or "UtilizationPct" in cols) and "Plant" in cols:
+        plant_val = rows[0].get("Plant", "7228")
+        top_zone = rows[0].get("Storage Location", "N/A")
+        top_util = rows[0].get("Bin Utilization %", "0%")
+        top_occ = rows[0].get("Occupied Bins", 0)
+        tot_cap_vol = sum(r.get("Total Capacity Volume (FT3)", 0.0) for r in rows)
+        tot_occ_vol = sum(r.get("Occupied Volume (FT3)", 0.0) for r in rows)
+        
+        lines = [
+            f"### 📊 Plant {plant_val} Detailed Storage Location Breakdown\n",
+            f"Storage location utilization breakdown for **Plant {plant_val}** across **{len(rows)} storage zones**:\n",
+            f"- **Highest Occupancy Zone:** SLoc `{top_zone}` at **{top_util}** ({top_occ:,} occupied bins).",
+            f"- **Total Storage Capacity:** **{tot_cap_vol:,.2f} FT³** ({tot_occ_vol:,.2f} FT³ currently occupied).",
+            f"\n💡 *The **Storage Location Bar Chart** and itemized **Data Table** below display complete occupancy metrics and volume breakdowns across all zones.*"
+        ]
+        return "\n".join(lines)
+
+    # 4C. Plant Bin Utilization Summary (Plant Bin Utilization Detail Template - Max 2 lines)
+    if ("Total Bins" in cols or "TotalBins" in cols) and ("Occupied Bins" in cols or "OccupiedBins" in cols) and len(rows) == 1:
+        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
+        plant_val = plant_match.group(1) if plant_match else rows[0].get("Plant", "7228")
+        tb = rows[0].get("Total Bins", rows[0].get("TotalBins", 0))
+        ob = rows[0].get("Occupied Bins", rows[0].get("OccupiedBins", 0))
+        eb = rows[0].get("Empty Bins", rows[0].get("EmptyBins", max(0, tb - ob)))
+        bpct_raw = rows[0].get("Bin Utilization %", f"{round(ob * 100.0 / tb, 1) if tb > 0 else 0}%")
+        bpct = str(bpct_raw) if "%" in str(bpct_raw) else f"{bpct_raw}%"
+        
+        return f"The bin utilization for **Plant {plant_val}** is **{bpct}**, with **{ob:,}** of **{tb:,}** total bins currently occupied and **{eb:,}** empty bins available for put-away."
+
     # 5. Bin Utilization and Occupancy Percentage
     if "BinUtilizationPct" in cols or "VolumeUtilizationPct" in cols or "BinOccupancyPct" in cols:
+
         plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
         plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else (rows[0].get("Plant") if len(rows) == 1 and rows[0].get("Plant") and str(rows[0].get("Plant")) != "All" else None)
         
@@ -2028,8 +2171,30 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
             "time_range": "current"
         }
 
-    # 1. Data Quality Check / Missing Dimensions Exception Table
+    # 1. Plant Bin Utilization Detail Templates
+    if generated.get("intent") == "plant_bin_utilization_detail":
+        return {
+            "output_type": "table",
+            "chart_type": "none",
+            "metric": "plant_bin_utilization",
+            "intent": "plant_bin_utilization_detail",
+            "time_range": "current"
+        }
+    if generated.get("intent") == "plant_bin_utilization_detailed_analysis":
+        return {
+            "output_type": "bar_chart",
+            "chart_type": "bar",
+            "chart_title": generated.get("chart_title", "Plant Bin Utilization by Storage Location (%)"),
+            "chart_x": "Storage Location",
+            "chart_y": "UtilizationPct",
+            "metric": "storage_location_utilization",
+            "intent": "plant_bin_utilization_detailed_analysis",
+            "time_range": "current"
+        }
+
+    # 1B. Data Quality Check / Missing Dimensions Exception Table
     if "Quality Issue" in cols or generated.get("intent") in ["data_quality_check", "DATA_QUALITY_CHECK"]:
+
         return {
             "output_type": "table",
             "chart_type": "none",

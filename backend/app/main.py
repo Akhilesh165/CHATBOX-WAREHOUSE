@@ -257,6 +257,25 @@ async def chat_endpoint(req: ChatRequest):
     time_range = opt.get("time_range") or generated.get("time_range", "current")
     query_plan = generated.get("query_plan") if isinstance(generated, dict) else None
 
+    # Extract follow_up_action and relevant_kpis if present in generated plan
+    follow_up_action = generated.get("follow_up_action") if isinstance(generated, dict) else None
+    relevant_kpis_raw = generated.get("relevant_kpis") if isinstance(generated, dict) else None
+    relevant_kpis = None
+    if relevant_kpis_raw and rows:
+        row0 = rows[0]
+        tb = row0.get("Total Bins", row0.get("TotalBins", 0))
+        ob = row0.get("Occupied Bins", row0.get("OccupiedBins", 0))
+        eb = row0.get("Empty Bins", row0.get("EmptyBins", max(0, tb - ob)))
+        bpct_raw = row0.get("Bin Utilization %", f"{round(ob * 100.0 / tb, 1) if tb > 0 else 0}%")
+        bpct_str = str(bpct_raw) if "%" in str(bpct_raw) else f"{bpct_raw}%"
+        
+        relevant_kpis = [
+            {"label": "Bin Utilization", "value": bpct_str, "subtext": "Occupancy Rate"},
+            {"label": "Occupied Bins", "value": f"{ob:,}", "subtext": "Active In Use"},
+            {"label": "Empty Bins", "value": f"{eb:,}", "subtext": "Available Put-Away"},
+            {"label": "Total Bins", "value": f"{tb:,}", "subtext": "Total Capacity"}
+        ]
+
     return ChatResponse(
         answer=answer,
         data=rows,
@@ -270,8 +289,11 @@ async def chat_endpoint(req: ChatRequest):
         metric=metric,
         filters=generated.get("filters", {}),
         time_range=time_range,
-        query_plan=query_plan
+        query_plan=query_plan,
+        follow_up_action=follow_up_action,
+        relevant_kpis=relevant_kpis
     )
+
 
 @app.post("/api/feedback", response_model=FeedbackResponse)
 async def submit_feedback(fb: FeedbackRequest):

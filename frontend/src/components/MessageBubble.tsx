@@ -26,12 +26,14 @@ interface MessageBubbleProps {
   message: ChatMessage;
   conversationId: string;
   isAdmin?: boolean;
+  onFollowUpClick?: (prompt: string) => void;
 }
 
 export const MessageBubble: React.FC<MessageBubbleProps> = ({
   message,
   conversationId,
-  isAdmin = false
+  isAdmin = false,
+  onFollowUpClick
 }) => {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
@@ -62,6 +64,8 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     message.intent === 'bin_materials_count'
   );
 
+  const isPlantBinUtilDetail = message.intent === 'plant_bin_utilization_detail';
+
   const outputType = isSingleMetricIntent ? 'text' : (message.output_type || (
     message.chart?.type === 'line' ? 'line_chart' :
     message.chart?.type === 'bar' ? 'bar_chart' :
@@ -72,7 +76,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   const showChart = !isSingleMetricIntent && (outputType === 'bar_chart' || outputType === 'line_chart' || outputType === 'pie_chart') && message.chart && message.chart.data && message.chart.data.length > 0;
   const showKpi = !isSingleMetricIntent && outputType === 'kpi' && hasTable && message.intent === 'inventory_summary';
   const showList = !isSingleMetricIntent && outputType === 'list' && hasTable;
-  const showTable = !isSingleMetricIntent && (outputType === 'table' || showChart || showKpi || showList) && hasTable;
+  const showTable = !isSingleMetricIntent && (outputType === 'table' || isPlantBinUtilDetail || showChart || showKpi || showList) && hasTable;
 
   if (isUser) {
     return (
@@ -135,7 +139,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
             </div>
           </div>
 
-          {/* 1. Summary / Theory Content */}
+          {/* 1. Summary / Theory Content (Max 2 lines for plant_bin_utilization_detail) */}
           {message.content && (
             <div className="prose prose-sm max-w-none text-slate-700 dark:text-slate-300 leading-relaxed font-normal">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>
@@ -144,21 +148,47 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
             </div>
           )}
 
-          {/* 2. KPI Cards (if output_type = 'kpi') */}
+          {/* 2. Relevant KPIs (for Plant Bin Utilization Detail or structured templates) */}
+          {message.relevant_kpis && message.relevant_kpis.length > 0 && (
+            <div className="w-full my-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {message.relevant_kpis.map((kpi, idx) => (
+                  <div
+                    key={idx}
+                    className="bg-gradient-to-br from-slate-50 to-white dark:from-slate-900 dark:to-slate-850 border border-slate-200/80 dark:border-slate-800 rounded-xl p-3 shadow-xs"
+                  >
+                    <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
+                      {kpi.label}
+                    </div>
+                    <div className="text-xl sm:text-2xl font-bold text-sky-600 dark:text-sky-400">
+                      {kpi.value}
+                    </div>
+                    {kpi.subtext && (
+                      <div className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
+                        {kpi.subtext}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 3. KPI Cards (if output_type = 'kpi') */}
           {showKpi && (
             <div className="pt-1">
               <KpiCard data={rows} metric={message.metric} />
             </div>
           )}
 
-          {/* 3. List View (if output_type = 'list') */}
+          {/* 4. List View (if output_type = 'list') */}
           {showList && (
             <div className="pt-1">
               <ListView data={rows} title={message.chart?.title} />
             </div>
           )}
 
-          {/* 4. Chart Views (if output_type = 'bar_chart' | 'line_chart' | 'pie_chart') */}
+          {/* 5. Chart Views (if output_type = 'bar_chart' | 'line_chart' | 'pie_chart') */}
           {showChart && message.chart && (
             <div className="pt-2">
               {(outputType === 'bar_chart' || message.chart.type === 'bar') && (
@@ -188,12 +218,31 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
             </div>
           )}
 
-          {/* 5. Data Table View (if output_type = 'table' or under chart/kpi/list) */}
+          {/* 6. Summary or Detailed Data Table View */}
           {showTable && (
             <div className="pt-2">
               <ResultTable rows={rows} pageSize={8} />
             </div>
           )}
+
+          {/* 7. Follow-up Action / Detail Offer */}
+          {message.follow_up_action && (
+            <div className="mt-3 p-3.5 bg-gradient-to-r from-sky-50 to-indigo-50 dark:from-slate-800/90 dark:to-sky-950/40 rounded-xl border border-sky-200/80 dark:border-sky-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div className="flex items-center space-x-2.5 text-slate-800 dark:text-slate-200 text-xs font-medium">
+                <Sparkles className="w-4 h-4 text-sky-600 dark:text-sky-400 flex-shrink-0" />
+                <span>{message.follow_up_action.message}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => onFollowUpClick && onFollowUpClick(message.follow_up_action!.action_prompt)}
+                className="flex items-center space-x-1.5 px-3.5 py-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer flex-shrink-0"
+              >
+                <span>{message.follow_up_action.label || 'Generate Detailed Analysis'}</span>
+                <span>→</span>
+              </button>
+            </div>
+          )}
+
 
           {/* Warnings */}
           {message.warnings && message.warnings.length > 0 && (

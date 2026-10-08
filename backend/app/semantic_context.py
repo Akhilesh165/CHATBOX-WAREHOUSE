@@ -225,5 +225,83 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
             "output_type": "kpi",
             "rule": "Render full 4-card Overview Dashboard only when explicitly asked for an overview/summary."
         }
+    },
+
+    # =========================================================================
+    # 7. RESPONSE TEMPLATES (Specialized Multi-Tiered Response Architectures)
+    # =========================================================================
+    "response_templates": {
+        "plant_bin_utilization_detail": {
+            "description": "Deterministic multi-tiered template for plant-scoped bin utilization inquiries requesting details",
+            "trigger": {
+                "intent": "BIN_UTILIZATION",
+                "scope": "PLANT",
+                "detail_request": True
+            },
+            "default_response": {
+                "sections": [
+                    "summary",
+                    "relevant_kpis",
+                    "summary_table",
+                    "detail_offer"
+                ],
+                "summary": {
+                    "max_lines": 2,
+                    "template": "The bin utilization for **Plant {plant}** is **{bin_utilization}%**, with **{occupied_bins:,}** of **{total_bins:,}** total bins currently occupied and **{empty_bins:,}** empty bins available for put-away."
+                },
+                "relevant_kpis": {
+                    "metrics": [
+                        "bin_utilization",
+                        "occupied_bins",
+                        "empty_bins",
+                        "total_bins"
+                    ]
+                },
+                "table": {
+                    "type": "summary",
+                    "include": [
+                        "Plant",
+                        "Total Bins",
+                        "Occupied Bins",
+                        "Empty Bins",
+                        "Bin Utilization %"
+                    ]
+                },
+                "follow_up": {
+                    "message": "Would you like me to generate a detailed version of this analysis?",
+                    "action": "generate_detail",
+                    "action_prompt": "Generate detailed bin utilization analysis for Plant {plant}",
+                    "label": "Generate Detailed Analysis"
+                }
+            },
+            "detailed_response": {
+                "sections": [
+                    "detailed_summary",
+                    "chart",
+                    "detailed_table"
+                ],
+                "granularity": "STORAGE_LOCATION",
+                "chart": {
+                    "type": "bar",
+                    "title": "Plant {plant} Bin Utilization by Storage Location (%)",
+                    "xAxis": "Storage Location",
+                    "yAxis": "Bin Utilization %"
+                },
+                "table": {
+                    "type": "detailed",
+                    "include": [
+                        "Plant",
+                        "Storage Location",
+                        "Total Bins",
+                        "Occupied Bins",
+                        "Empty Bins",
+                        "Bin Utilization %",
+                        "Total Capacity Volume (FT3)",
+                        "Occupied Volume (FT3)"
+                    ]
+                }
+            }
+        }
     }
 }
+

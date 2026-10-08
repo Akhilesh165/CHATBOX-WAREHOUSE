@@ -35,6 +35,17 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = Field(default="default", description="Conversation session ID")
     is_admin: Optional[bool] = Field(default=False, description="Whether caller is authorized for admin debug view")
 
+class FollowUpAction(BaseModel):
+    message: str = "Would you like me to generate a detailed version of this analysis?"
+    action: str = "generate_detail"
+    action_prompt: str = ""
+    label: str = "Generate Detailed Analysis"
+
+class RelevantKpi(BaseModel):
+    label: str
+    value: Any
+    subtext: Optional[str] = None
+
 class ChatResponse(BaseModel):
     answer: str
     data: list[dict[str, Any]] = Field(default_factory=list)
@@ -49,6 +60,8 @@ class ChatResponse(BaseModel):
     filters: dict[str, Any] = Field(default_factory=dict)
     time_range: Optional[str] = None
     query_plan: Optional[dict[str, Any]] = None
+    follow_up_action: Optional[FollowUpAction] = None
+    relevant_kpis: Optional[list[RelevantKpi]] = None
 
 class FeedbackRequest(BaseModel):
     conversation_id: str

@@ -233,5 +233,41 @@ def test_specific_bin_lookups_after_empty_bin_history():
     ans = format_deterministic_answer("Which plant does bin NRJP2124D2 belong to?", [{"Plant": "7228", "StorageLocation": "B2B"}])
     assert "Bin **NRJP2124D2** belongs to **Plant 7228**" in ans
 
+def test_plant_bin_utilization_detail_template():
+    """Verify plant_bin_utilization_detail template generates summary, relevant KPIs, and detail offer."""
+    res = deterministic_warehouse_sql_generator("Give me bin utilization details for plant 7228")
+    assert res["intent"] == "plant_bin_utilization_detail"
+    assert res["filters"]["plant"] == "7228"
+    assert "follow_up_action" in res
+    assert res["follow_up_action"]["action"] == "generate_detail"
+    assert "relevant_kpis" in res
+
+    rows = [{
+        "Plant": "7228",
+        "Total Bins": 9514,
+        "Occupied Bins": 7522,
+        "Empty Bins": 1992,
+        "Bin Utilization %": "79.1%"
+    }]
+    ans = format_deterministic_answer("Give me bin utilization details for plant 7228", rows)
+    assert "The bin utilization for **Plant 7228** is **79.1%**" in ans
+    assert "7,522" in ans
+    assert "1,992" in ans
+    assert "\n" not in ans  # strictly max 2 lines / single concise statement
+
+def test_plant_bin_utilization_expansion():
+    """Verify follow-up confirmation expands into detailed storage location breakdown with bar chart."""
+    history = [
+        {"role": "user", "content": "Give me bin utilization details for plant 7228"},
+        {"role": "assistant", "content": "The bin utilization for Plant 7228 is 79.1%."}
+    ]
+    res = deterministic_warehouse_sql_generator("Yes, please generate a detailed version", history=history)
+    assert res["intent"] == "plant_bin_utilization_detailed_analysis"
+    assert res["filters"]["plant"] == "7228"
+    assert res["chart_type"] == "bar"
+    assert res["chart_x"] == "Storage Location"
+    assert "StorageLocation" in res["sql"]
+
+
 
 

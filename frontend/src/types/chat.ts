@@ -1,5 +1,5 @@
 export type ChartType = 'bar' | 'line' | 'pie' | 'none';
-export type OutputType = 'kpi' | 'table' | 'line_chart' | 'bar_chart' | 'pie_chart' | 'list' | 'text';
+export type OutputType = 'kpi' | 'table' | 'line_chart' | 'bar_chart' | 'pie_chart' | 'list' | 'text' | 'kpi_summary_table';
 
 export interface ChartMetadata {
   type: ChartType;
@@ -17,6 +17,19 @@ export interface ResponseMeta {
   executionMs: number;
   llmMs?: number;
   sqlMs?: number;
+}
+
+export interface FollowUpAction {
+  message: string;
+  action: string;
+  action_prompt: string;
+  label?: string;
+}
+
+export interface RelevantKpi {
+  label: string;
+  value: string | number;
+  subtext?: string;
 }
 
 export interface ChatMessage {
@@ -38,6 +51,8 @@ export interface ChatMessage {
   metric?: string;
   filters?: Record<string, any>;
   time_range?: string;
+  follow_up_action?: FollowUpAction;
+  relevant_kpis?: RelevantKpi[];
   timestamp: Date;
 }
 
@@ -64,4 +79,7 @@ export interface ChatResponsePayload {
   execution_ms?: number;
   llm_ms?: number;
   sql_ms?: number;
+  follow_up_action?: FollowUpAction;
+  relevant_kpis?: RelevantKpi[];
 }
+

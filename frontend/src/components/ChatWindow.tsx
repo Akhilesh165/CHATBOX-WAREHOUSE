@@ -208,6 +208,8 @@ export const ChatWindow: React.FC = () => {
         metric: data.metric,
         filters: data.filters,
         time_range: data.time_range,
+        follow_up_action: data.follow_up_action,
+        relevant_kpis: data.relevant_kpis,
         timestamp: new Date(),
       };
 
@@ -275,8 +277,10 @@ export const ChatWindow: React.FC = () => {
                   message={msg}
                   conversationId={activeSessionId}
                   isAdmin={isAdminMode}
+                  onFollowUpClick={(prompt) => handleSendMessage(prompt)}
                 />
               ))}
+
 
               {isLoading && <LoadingIndicator />}
 
