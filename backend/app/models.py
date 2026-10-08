@@ -1,8 +1,8 @@
 from typing import Optional, Any, Literal
 import uuid
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-OutputType = Literal["kpi", "table", "line_chart", "bar_chart", "pie_chart", "list", "text"]
+OutputType = str
 
 class Chart(BaseModel):
     type: Literal["bar", "line", "pie", "none"] = "none"
@@ -31,11 +31,20 @@ class Meta(BaseModel):
     sqlMs: Optional[int] = None
 
 class ChatRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=4000, description="User inventory question")
+    message: str = Field(default="", description="User inventory question")
     conversation_id: Optional[str] = Field(default="default", description="Conversation session ID")
     is_admin: Optional[bool] = Field(default=False, description="Whether caller is authorized for admin debug view")
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_payload(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            msg = data.get("message") or data.get("question") or data.get("prompt") or data.get("query") or data.get("content") or ""
+            data["message"] = str(msg).strip()
+        return data
+
 class FollowUpAction(BaseModel):
+
     message: str = "Would you like me to generate a detailed version of this analysis?"
     action: str = "generate_detail"
     action_prompt: str = ""

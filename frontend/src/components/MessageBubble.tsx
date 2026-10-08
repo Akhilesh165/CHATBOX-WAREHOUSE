@@ -49,7 +49,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   const hasTable = rows.length > 0;
   const isSingleMetricIntent = (
     message.output_type === 'text' ||
-    message.output_type === 'single_value' ||
+    (message.output_type as string) === 'single_value' ||
     message.intent?.endsWith('_count') ||
     message.intent === 'active_plants_count' ||
     message.intent === 'occupied_bins_count' ||
@@ -63,6 +63,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     message.intent === 'bin_quantity_lookup' ||
     message.intent === 'bin_materials_count'
   );
+
 
   const isPlantBinUtilDetail = message.intent === 'plant_bin_utilization_detail';
 
