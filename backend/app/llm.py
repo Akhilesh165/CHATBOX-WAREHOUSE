@@ -10,6 +10,7 @@ import httpx
 from typing import Any
 from pathlib import Path
 from .config import settings
+from .semantic_context import WAREHOUSE_SEMANTIC_CONTEXT
 
 # Load Prompts from files or fallbacks
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -185,8 +186,39 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     is_fresh_div = any(k in q_lower for k in ["division", "material group"])
     is_fresh_trend = any(k in q_lower for k in ["trend", "history", "timeline", "over time", "monthly"])
     is_fresh_util = any(k in q_lower for k in ["overall warehouse bin utilization", "facility fill", "fill rate", "overall bin fill", "space utilization rate", "overall bin utilization", "total bin volume is currently occupied", "warehouse space utilization rate", "running out of", "out of storage space"])
+    
+    # Specific bin pattern detection (e.g. "Which plant does bin NRJP2124D2 belong to?", "Is bin NRJP2124D2 occupied?", etc.)
+    bin_cand_matches = re.findall(r"(?:bin\s*[:#-]?\s*([a-z0-9_-]{2,25})|\b(b\d{3,5})\b)", q_lower, re.IGNORECASE)
+    valid_raw_bins = []
+    excluded_bin_words = [
+        "capacity", "utilization", "master", "table", "space", "volume", "location", "locations",
+        "occupancy", "fullness", "empty", "vacant", "free", "ones", "these", "those", "cubic",
+        "bins", "fill", "level", "levels", "rate", "rates", "network", "usage", "storage"
+    ]
+    for bm in bin_cand_matches:
+        b_val = (bm[0] or bm[1] or "").strip()
+        if b_val and b_val.lower() not in excluded_bin_words:
+            if any(c.isdigit() for c in b_val) or (len(b_val) >= 4 and not b_val.lower().isalpha()):
+                valid_raw_bins.append(b_val.upper())
+            elif not is_mat_entity:
+                valid_raw_bins.append(b_val.upper())
+    is_fresh_specific_bin = len(valid_raw_bins) > 0
 
-    if is_fresh_missing_master:
+    if is_fresh_specific_bin:
+        state["entity"] = "bin"
+        state["condition"] = None
+        state["filters"] = {"bin": valid_raw_bins[0]}
+        if any(k in q_lower for k in ["which plant", "what plant", "belong to", "plant of bin", "plant for bin", "where is bin located"]):
+            state["topic"] = "bin_plant_lookup"
+        elif any(k in q_lower for k in ["occupied", "empty", "vacant", "in use"]) and any(q_start in q_lower for q_start in ["is ", "are ", "does ", "is the"]):
+            state["topic"] = "bin_occupancy_status"
+        elif any(k in q_lower for k in ["inventory quantity", "quantity in bin", "stock in bin", "units in bin", "how much in bin", "how much is stored in bin", "how many units in bin", "quantity stored in bin"]):
+            state["topic"] = "bin_quantity_lookup"
+        elif any(k in q_lower for k in ["how many materials", "how many skus", "how many items", "number of materials", "count of materials"]) and any(b in q_lower for b in ["in bin", "stored in bin", "inside bin", "for bin"]):
+            state["topic"] = "bin_materials_count"
+        else:
+            state["topic"] = "single_bin_utilization"
+    elif is_fresh_missing_master:
         is_cnt = any(k in q_lower for k in ["how many", "count", "number of", "total count", "what is the count", "how many are there"])
         state["entity"] = "material"
         state["condition"] = "missing_volume_master_record"
@@ -361,18 +393,29 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
     q_lower = resolved_q.lower()
 
     # 1. ENTITY & SCOPE EXTRACTION (Context-driven)
+    is_mat_entity = any(m in q_lower for m in ["material", "materials", "sku", "skus", "item", "items", "product", "products", "goods", "stock item", "stock items"])
     plant_cand = state["filters"].get("plant")
     if not plant_cand:
         plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{4,5})\b", q_lower)
         plant_cand = plant_match.group(1) if plant_match and plant_match.group(1) not in ["2024", "2025", "2026"] else None
     
-    # Extract specific bin codes (e.g. B001, BIN-001, BIN001, B045, etc.)
+    # Extract specific bin codes (e.g. B001, BIN-001, BIN001, B045, NRJP2124D2, etc.)
     bin_matches = re.findall(r"(?:bin\s*[:#-]?\s*([a-z0-9_-]{2,25})|\b(b\d{3,5})\b)", q_lower, re.IGNORECASE)
     raw_bins = []
+    excluded_bin_words = [
+        "capacity", "utilization", "master", "table", "space", "volume", "location", "locations",
+        "occupancy", "fullness", "empty", "vacant", "free", "ones", "these", "those", "cubic",
+        "bins", "fill", "level", "levels", "rate", "rates", "network", "usage", "storage",
+        "can", "be", "used", "for"
+    ]
     for bm in bin_matches:
         b_val = (bm[0] or bm[1] or "").strip()
-        if b_val and b_val.lower() not in ["capacity", "utilization", "master", "table", "space", "volume", "location", "locations", "occupancy", "fullness", "empty", "vacant", "free", "ones", "these", "those"]:
-            raw_bins.append(b_val.upper())
+        if b_val and b_val.lower() not in excluded_bin_words:
+            # If b_val has at least 1 digit or starts with B, it's a genuine bin code
+            if any(c.isdigit() for c in b_val) or (len(b_val) >= 4 and not b_val.lower().isalpha()):
+                raw_bins.append(b_val.upper())
+            elif not is_mat_entity:
+                raw_bins.append(b_val.upper())
     
     bin_match = raw_bins[0] if raw_bins else None
 
@@ -407,8 +450,13 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
 
         # 2. Bin Plant Lookup: "Which plant does bin NRJP2124D2 belong to?"
         if any(k in q_lower for k in ["which plant", "what plant", "belong to", "plant of bin", "plant for bin", "where is bin located"]):
+            sql_bin_plant = f"""SELECT DISTINCT Plant, StorageLocation FROM (
+    SELECT Plant, StorageLocation FROM dbo.ZWMS_BIN_MASTER WHERE BinLocation = '{b_code}'
+    UNION
+    SELECT Plant, StorageLocation FROM dbo.ZWMS_INVENTORY WHERE BinNo = '{b_code}'
+) sub WHERE Plant IS NOT NULL"""
             return {
-                "sql": f"SELECT DISTINCT COALESCE(b.Plant, i.Plant, 'Unknown') AS Plant, COALESCE(b.StorageLocation, i.StorageLocation, 'N/A') AS StorageLocation FROM dbo.ZWMS_BIN_MASTER b FULL OUTER JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo WHERE b.BinLocation = '{b_code}' OR i.BinNo = '{b_code}'",
+                "sql": sql_bin_plant,
                 "chart_type": "none",
                 "chart_title": f"Plant for Bin {b_code}",
                 "chart_x": None,
@@ -1442,6 +1490,41 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     q_lower = question.lower()
     is_single_statement_requested = any(s in q_lower for s in ["single statement", "single line", "one line", "concise", "briefly", "in short", "just the percentage", "just the number", "only the number"])
 
+    # 0A0. Specific Bin Lookups (Plant, Occupancy, Quantity, Materials)
+    bin_cand_matches = re.findall(r"(?:bin\s*[:#-]?\s*([a-z0-9_-]{2,25})|\b(b\d{3,5})\b)", q_lower, re.IGNORECASE)
+    spec_bins = [
+        (bm[0] or bm[1] or "").strip().upper()
+        for bm in bin_cand_matches
+        if (bm[0] or bm[1] or "").strip().lower() not in ["capacity", "utilization", "master", "table", "space", "volume", "location", "locations", "occupancy", "fullness", "empty", "vacant", "free", "ones", "these", "those"]
+    ]
+    if spec_bins and len(rows) <= 2:
+        b_code = spec_bins[0]
+        # Plant Lookup: "Which plant does bin NRJP2124D2 belong to?"
+        if any(k in q_lower for k in ["which plant", "what plant", "belong to", "plant of bin", "plant for bin", "where is bin located"]):
+            plant_val = rows[0].get("Plant", "Unknown") if rows else "Unknown"
+            sloc_val = rows[0].get("StorageLocation", rows[0].get("Storage Location", "N/A")) if rows else "N/A"
+            return f"Bin **{b_code}** belongs to **Plant {plant_val}** (Storage Location: `{sloc_val}`)."
+
+        # Occupancy Check: "Is bin NRJP2124D2 occupied?"
+        if "MaterialCount" in cols or "TotalQty" in cols or (any(k in q_lower for k in ["occupied", "empty", "vacant", "in use"]) and any(q_start in q_lower for q_start in ["is ", "are ", "does ", "is the"])):
+            tot_qty = rows[0].get("TotalQty", 0) if rows else 0
+            mat_cnt = rows[0].get("MaterialCount", 0) if rows else 0
+            if tot_qty > 0 or mat_cnt > 0:
+                return f"Yes, bin **{b_code}** is occupied (stores {tot_qty:,.0f} units across {mat_cnt} material{'s' if mat_cnt != 1 else ''})."
+            else:
+                return f"No, bin **{b_code}** is not occupied (0 inventory units)."
+
+        # Inventory Quantity in Bin: "What is the inventory quantity in bin NRJP2124D2?"
+        if "Inventory Qty" in cols and ("UOM" in cols or len(cols) <= 2) and any(k in q_lower for k in ["inventory quantity", "quantity in bin", "stock in bin", "units in bin", "how much in bin", "how much is stored in bin", "how many units in bin", "quantity stored in bin"]):
+            tot_qty = rows[0].get("Inventory Qty", 0) if rows else 0
+            uom = rows[0].get("UOM", "EA") if rows else "EA"
+            return f"Bin **{b_code}** currently has an inventory quantity of **{tot_qty:,.0f} {uom}**."
+
+        # Materials count in Bin: "How many materials are stored in bin NRJP2124D2?"
+        if "Stored Materials Count" in cols or (any(k in q_lower for k in ["how many materials", "how many skus", "how many items", "number of materials", "count of materials"]) and any(b in q_lower for b in ["in bin", "stored in bin", "inside bin", "for bin"])):
+            m_cnt = rows[0].get("Stored Materials Count", rows[0].get("MaterialCount", 0)) if rows else 0
+            return f"Bin **{b_code}** stores **{m_cnt} unique material{'s' if m_cnt != 1 else ''}**."
+
     # 0A0. Cross-Table Validation: Count of Materials Missing from Volume Master (Rule DQ-001 Count)
     if "Missing Materials Count" in cols or ("Count" in cols and any(k in q_lower for k in ["volume master", "material master", "missing", "without dimension", "no corresponding", "entries", "entry"])):
         count_val = rows[0].get("Missing Materials Count", rows[0].get("Count", 0))
@@ -1634,7 +1717,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
             return f"There are **{count_val:,}** completely empty bins across the warehouse network."
 
     # 2. Empty Bins List (Table Output)
-    if ("Storage Location" in cols or "StorageLocation" in cols) and ("Status" in cols or "Inventory Qty" in cols) and ("Bin" in cols or "BinLocation" in cols):
+    if ("Storage Location" in cols or "StorageLocation" in cols) and ("Status" in cols or "Inventory Qty" in cols) and ("Bin" in cols or "BinLocation" in cols) and any(k in q_lower for k in ["empty", "putaway", "put-away", "vacant", "unoccupied", "free"]):
         plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
         plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
         plant_str = f" — Plant {plant_val}" if plant_val else ""
@@ -1968,6 +2051,8 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
 
     # 2. KPI Cards for single row totals or warehouse scalar KPIs
     if row_count == 1:
+        if generated.get("intent") in ["bin_plant_lookup", "bin_occupancy_status", "bin_quantity_lookup", "bin_materials_count"]:
+            return {"output_type": "text", "chart_type": "none", "metric": generated.get("metric", "bin_lookup"), "intent": generated.get("intent"), "time_range": "current"}
         if "Occupied Bins Count" in cols:
             return {"output_type": "text", "chart_type": "none", "metric": "occupied_bins", "intent": "occupied_bins_count", "time_range": "current"}
         if "Total Bins Count" in cols:

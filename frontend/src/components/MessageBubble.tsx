@@ -49,14 +49,17 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     message.output_type === 'text' ||
     message.output_type === 'single_value' ||
     message.intent?.endsWith('_count') ||
-    message.intent === 'SINGLE_METRIC' ||
     message.intent === 'active_plants_count' ||
     message.intent === 'occupied_bins_count' ||
     message.intent === 'total_bins_count' ||
     message.intent === 'empty_bins_count' ||
     message.intent === 'unique_materials_count' ||
     message.intent === 'total_inventory_quantity' ||
-    message.intent === 'storage_locations_count'
+    message.intent === 'storage_locations_count' ||
+    message.intent === 'bin_plant_lookup' ||
+    message.intent === 'bin_occupancy_status' ||
+    message.intent === 'bin_quantity_lookup' ||
+    message.intent === 'bin_materials_count'
   );
 
   const outputType = isSingleMetricIntent ? 'text' : (message.output_type || (

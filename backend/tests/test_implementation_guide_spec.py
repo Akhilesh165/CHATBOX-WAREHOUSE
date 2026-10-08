@@ -219,4 +219,19 @@ def test_explicit_entity_scoping_and_primary_metric_rule():
     assert "45.50" in ans4
     assert "across the warehouse network" not in ans4.lower()
 
+def test_specific_bin_lookups_after_empty_bin_history():
+    """Verify specific bin lookup does not inherit previous empty bins state."""
+    history = [
+        {"role": "user", "content": "Are there any empty bins in Plant 7228?"},
+        {"role": "assistant", "content": "Found 50 empty bins in Plant 7228."}
+    ]
+    res = deterministic_warehouse_sql_generator("Which plant does bin NRJP2124D2 belong to?", history=history)
+    assert res["intent"] == "bin_plant_lookup"
+    assert "NRJP2124D2" in res["sql"]
+    assert res["output_type"] == "text"
+
+    ans = format_deterministic_answer("Which plant does bin NRJP2124D2 belong to?", [{"Plant": "7228", "StorageLocation": "B2B"}])
+    assert "Bin **NRJP2124D2** belongs to **Plant 7228**" in ans
+
+
 
