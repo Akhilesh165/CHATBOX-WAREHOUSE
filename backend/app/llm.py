@@ -397,6 +397,11 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["condition"] = None
         state["aggregation"] = "sum"
         state["filters"] = {"plant": new_plant} if new_plant else {}
+    elif is_plant_scope and any(w in q_lower for w in ["show me the materials", "show me materials", "show materials", "list materials", "materials in plant", "materials of plant", "which materials in plant", "list of materials"]):
+        state["entity"] = "material"
+        state["topic"] = "plant_materials"
+        state["aggregation"] = "list"
+        state["filters"] = {"plant": new_plant or state.get("filters", {}).get("plant")}
     elif is_fresh_both:
         state["entity"] = "bin"
         state["metric"] = "utilization"
@@ -1436,15 +1441,30 @@ ORDER BY [Total Inventory Quantity] DESC"""
             "output_type": "bar_chart"
         }
 
-    # K. SPECIFIC PLANT MATERIAL INQUIRIES
+    # K. SPECIFIC PLANT MATERIAL INQUIRIES (Detail Table List)
     is_plant_materials_query = (
         plant_cand and
-        any(w in q_lower for w in ["material", "item", "sku", "record", "show materials", "list materials", "materials in", "skus in"]) and
-        not any(k in q_lower for k in ["total inventory", "total stock", "how much inventory", "how much stock", "total unrestricted", "total units", "inventory quantity", "units in inventory", "total quantity"])
+        (
+            state.get("topic") == "plant_materials" or
+            any(w in q_lower for w in ["show me the materials", "show me materials", "show materials", "list materials", "materials in plant", "materials of plant", "which materials in plant", "materials in", "skus in"])
+        ) and
+        not any(k in q_lower for k in [
+            "how many", "count", "number of", "total inventory", "total stock", "how much inventory",
+            "how much stock", "total unrestricted", "total units", "inventory quantity", "units in inventory",
+            "total quantity", "records are there", "how many records", "count of records"
+        ])
     )
     if is_plant_materials_query:
+        query_plan = {
+            "intent": "LIST",
+            "entity": "material",
+            "scope": f"Plant {plant_cand}",
+            "operation": "LIST",
+            "response_format": "TABLE"
+        }
         return {
             "sql": f"SELECT Material, MaterialDescription AS Description, UnrestrictedQty AS Qty, BaseUnitOfMeasure AS UOM, StorageLocation AS [Storage Location], BinNo AS Bin FROM dbo.ZWMS_INVENTORY WHERE Plant = '{plant_cand}' ORDER BY UnrestrictedQty DESC",
+            "query_plan": query_plan,
             "chart_type": "none",
             "chart_title": f"Material Inventory Records for Plant {plant_cand}",
             "chart_x": None,
@@ -1453,7 +1473,8 @@ ORDER BY [Total Inventory Quantity] DESC"""
             "metric": "plant_stock_records",
             "filters": {"plant": plant_cand},
             "time_range": "current",
-            "output_type": "table"
+            "output_type": "table",
+            "conversation_state": state
         }
 
     # L. SPECIFIC BIN LOOKUP
