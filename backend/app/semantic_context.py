@@ -147,6 +147,10 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
         "TOTAL_INVENTORY_QUANTITY": {
             "meaning": "Sum of total unrestricted inventory quantity stored across warehouse bins",
             "metric": "total_inventory_quantity",
+            "entity": "inventory",
+            "field": "UnrestrictedQty",
+            "aggregation": "SUM",
+            "scope": "ALL_WAREHOUSE",
             "formula": "SUM(UnrestrictedQty)",
             "synonyms": [
                 "total warehouse inventory",
@@ -168,9 +172,11 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
                 "total stock"
             ],
             "default_response": {
-                "format": "single_line",
+                "format": "SINGLE_LINE",
                 "show_table": False,
-                "show_chart": False
+                "show_chart": False,
+                "example_warehouse": "Total warehouse inventory is 4,464,910 units.",
+                "example_plant": "Total inventory in Plant {plant} is {qty} units."
             },
             "if_user_requests_chart": {
                 "show": [
@@ -180,6 +186,62 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
                 ],
                 "chart_type": "bar",
                 "group_by": "Plant"
+            }
+        },
+        "INVENTORY_RECORDS_COUNT": {
+            "meaning": "Total physical count of rows / records in the inventory master dataset",
+            "metric": "inventory_records_count",
+            "entity": "inventory",
+            "field": "rows",
+            "aggregation": "COUNT",
+            "scope": "ALL_WAREHOUSE",
+            "formula": "COUNT(*)",
+            "synonyms": [
+                "how many inventory records are there",
+                "count of inventory records",
+                "total inventory records",
+                "how many inventory rows are there",
+                "number of inventory records",
+                "number of inventory rows",
+                "how many records in inventory",
+                "inventory record count",
+                "total records in inventory",
+                "inventory rows count"
+            ],
+            "default_response": {
+                "format": "SINGLE_LINE",
+                "show_table": False,
+                "show_chart": False,
+                "example_warehouse": "There are 35,419 inventory records.",
+                "example_plant": "There are 5,517 inventory records in Plant {plant}."
+            }
+        },
+        "UNIQUE_MATERIALS_COUNT": {
+            "meaning": "Total count of distinct active material SKUs in the inventory dataset",
+            "metric": "unique_materials_count",
+            "entity": "material",
+            "field": "Material",
+            "aggregation": "COUNT_DISTINCT",
+            "scope": "ALL_WAREHOUSE",
+            "formula": "COUNT(DISTINCT Material)",
+            "synonyms": [
+                "how many materials are in inventory",
+                "how many materials are there",
+                "how many unique materials",
+                "how many distinct materials",
+                "number of materials in inventory",
+                "how many materials do we have",
+                "number of unique skus",
+                "how many skus in inventory",
+                "count of unique materials",
+                "unique materials in warehouse"
+            ],
+            "default_response": {
+                "format": "SINGLE_LINE",
+                "show_table": False,
+                "show_chart": False,
+                "example_warehouse": "There are 2,883 unique materials in inventory.",
+                "example_plant": "There are {count} unique materials in Plant {plant}."
             }
         }
     },
@@ -410,7 +472,23 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
                 }
             }
         }
-    }
+    },
+
+    # =========================================================================
+    # 9. RESPONSE AND INTENT MASTER RULES
+    # =========================================================================
+    "response_and_intent_rules": [
+        "1. Never determine the query type from a single keyword. Interpret the complete user request semantically.",
+        "2. 'Inventory' does not automatically mean 'inventory records' or 'material list'.",
+        "3. Distinguish: Total inventory quantity = SUM(quantity), Inventory records = COUNT(records), Unique materials = COUNT(DISTINCT material).",
+        "4. Do not apply a Plant, Bin, Material, or other filter unless explicitly mentioned by the user or inherited from valid conversation context.",
+        "5. If the user asks for a total, count, percentage, KPI, or single value, return the appropriate aggregation instead of a row-level detail table.",
+        "6. If the user asks 'which', 'show me materials', 'list', or requests records, use a detail/list response.",
+        "7. Default response format should be determined from user intent: KPI/count/value -> concise single-line statement; List/detail -> table; Ranking -> ranking table; Comparison -> comparison output; Explicit graph/chart request -> summary + relevant chart + table.",
+        "8. Never show a large table when the user asks only for an aggregate KPI.",
+        "9. After query execution, validate that the result matches the user's requested intent, aggregation, scope, and response format. If it does not match, reject the result and regenerate the query.",
+        "10. Never invent or assume a Plant, Bin, Material, or other filter."
+    ]
 }
 
 

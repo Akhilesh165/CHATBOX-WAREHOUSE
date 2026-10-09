@@ -220,5 +220,20 @@ def validate_query_result(question: str, query_plan: dict | None, sql: str, rows
         if any(c in cols for c in ["TotalUniqueMaterials", "TotalActiveBins", "TotalUnrestrictedQuantity", "TotalBins"]) and "BinLocation" not in cols and "BinNo" not in cols and "Bin" not in cols:
             return False, "User requested: Available empty put-away bin records. Returned: Aggregated summary. These do not satisfy the requested analytical task."
 
+    # 4. Total Inventory Quantity / Aggregate KPI / Count Request vs Row-Level Detail Table
+    is_aggregate_req = (
+        (query_plan and query_plan.get("response_format") == "SINGLE_LINE" and query_plan.get("aggregation") in ["SUM", "COUNT", "COUNT_DISTINCT", "AVG"]) or
+        any(k in q_lower for k in [
+            "total warehouse inventory", "what is the total inventory", "how much inventory is currently in the warehouse",
+            "what is the total inventory quantity", "how many units are currently in inventory", "give me the current warehouse inventory",
+            "how many inventory records are there", "count of inventory records", "how many materials are in inventory",
+            "how many unique materials", "total stock quantity", "total unrestricted inventory"
+        ])
+    ) and not any(k in q_lower for k in ["show materials", "list materials", "which materials", "breakdown", "by plant", "across storage"])
+    
+    if is_aggregate_req:
+        if len(rows) > 1 and ("Material" in cols or "BinNo" in cols or "Bin" in cols or "Batch" in cols) and "Total Inventory Quantity" not in cols:
+            return False, "User requested: Aggregate KPI/count value. Returned: Multi-row row-level detail records table. Rejecting result to re-execute proper aggregation query."
+
     return True, "Passed semantic result validation."
 

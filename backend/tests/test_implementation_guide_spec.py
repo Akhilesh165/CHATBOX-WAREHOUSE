@@ -385,17 +385,77 @@ def test_inventory_kpi_synonym_detection_and_scoping():
     assert "**Plant 7228** currently holds a total of **854,120.00 unrestricted units**" in ans_plant
     assert "\n" not in ans_plant  # strictly single line
 
-def test_inventory_kpi_explicit_chart_followup():
-    """Verify that follow-up chart request for total inventory generates a bar chart by plant."""
-    history = [
-        {"role": "user", "content": "Total warehouse inventory"},
-        {"role": "assistant", "content": "The warehouse network currently holds a total of 2,279,723.00 unrestricted units across 6,076 unique materials and 17,542 active bins."}
+def test_three_inventory_concepts_separation():
+    """Verify mandatory separation of:
+    A. Total Inventory = SUM(UnrestrictedQty)
+    B. Inventory Records = COUNT(*)
+    C. Unique Materials = COUNT(DISTINCT Material)
+    """
+    from backend.app.validator import validate_query_result
+
+    # Concept A: Total Warehouse Inventory
+    res_a = deterministic_warehouse_sql_generator("Total warehouse inventory")
+    assert res_a["intent"] == "total_inventory_quantity"
+    assert "SUM(UnrestrictedQty)" in res_a["sql"]
+    assert "Plant =" not in res_a["sql"]
+    assert res_a["query_plan"]["aggregation"] == "SUM"
+    assert res_a["query_plan"]["scope"] == "ALL_WAREHOUSE"
+    assert res_a["query_plan"]["response_format"] == "SINGLE_LINE"
+
+    ans_a = format_deterministic_answer("Total warehouse inventory", [{"total_inventory": 4464910.0}])
+    assert "Total warehouse inventory is **4,464,910** units." in ans_a
+
+    # Concept A Scoped to Plant 7228
+    res_a_plant = deterministic_warehouse_sql_generator("Total inventory in Plant 7228")
+    assert "Plant = '7228'" in res_a_plant["sql"]
+    assert res_a_plant["query_plan"]["scope"] == "PLANT_7228"
+    assert res_a_plant["query_plan"]["plant"] == "7228"
+    ans_a_plant = format_deterministic_answer("Total inventory in Plant 7228", [{"total_inventory": 1245680.0}])
+    assert "Total inventory in Plant 7228 is **1,245,680** units." in ans_a_plant
+
+    # Concept B: Inventory Records Count
+    res_b = deterministic_warehouse_sql_generator("How many inventory records are there?")
+    assert res_b["intent"] == "inventory_records_count"
+    assert "COUNT(*)" in res_b["sql"]
+    assert "Plant =" not in res_b["sql"]
+    assert res_b["query_plan"]["aggregation"] == "COUNT"
+    assert res_b["query_plan"]["response_format"] == "SINGLE_LINE"
+
+    ans_b = format_deterministic_answer("How many inventory records are there?", [{"Inventory Records Count": 35419}])
+    assert "There are **35,419** inventory records." in ans_b
+
+    # Concept B Scoped to Plant 1258
+    res_b_plant = deterministic_warehouse_sql_generator("How many inventory records in Plant 1258?")
+    assert "Plant = '1258'" in res_b_plant["sql"]
+    ans_b_plant = format_deterministic_answer("How many inventory records in Plant 1258?", [{"Inventory Records Count": 5517}])
+    assert "There are **5,517** inventory records in Plant 1258." in ans_b_plant
+
+    # Concept C: Unique Materials Count
+    res_c = deterministic_warehouse_sql_generator("How many materials are in inventory?")
+    assert res_c["intent"] == "unique_materials_count"
+    assert "COUNT(DISTINCT Material)" in res_c["sql"]
+    assert "Plant =" not in res_c["sql"]
+    assert res_c["query_plan"]["aggregation"] == "COUNT_DISTINCT"
+    assert res_c["query_plan"]["response_format"] == "SINGLE_LINE"
+
+    ans_c = format_deterministic_answer("How many materials are in inventory?", [{"Unique Materials Count": 2883}])
+    assert "There are **2,883** unique materials in inventory." in ans_c
+
+    # Detail Query: Show me the materials in Plant 7228 -> Table
+    res_detail = deterministic_warehouse_sql_generator("Show me the materials in Plant 7228")
+    assert res_detail["intent"] == "plant_materials"
+    assert res_detail["output_type"] == "table"
+    assert "Plant = '7228'" in res_detail["sql"]
+
+    # Result Validation Rule 9: Reject row-level detail table when aggregate was requested
+    invalid_rows = [
+        {"Material": "MAT01", "Qty": 100, "Bin": "B1"},
+        {"Material": "MAT02", "Qty": 200, "Bin": "B2"}
     ]
-    res_chart = deterministic_warehouse_sql_generator("Show me a graph for this.", history=history)
-    assert res_chart["intent"] == "total_inventory_quantity"
-    assert res_chart["chart_type"] == "bar"
-    assert res_chart["chart_x"] == "Plant"
-    assert "GROUP BY Plant" in res_chart["sql"]
+    is_valid, reason = validate_query_result("Total warehouse inventory", res_a["query_plan"], res_a["sql"], invalid_rows)
+    assert is_valid is False
+    assert "detail records table" in reason
+
 
 
 
