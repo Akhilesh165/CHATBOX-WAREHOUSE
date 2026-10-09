@@ -346,6 +346,58 @@ def test_generic_visualization_rules_across_all_domains():
     assert res_plant_chart["chart_type"] == "bar"
     assert res_plant_chart["chart_x"] == "Plant"
 
+def test_inventory_kpi_synonym_detection_and_scoping():
+    """Verify that all wording variations map to total_inventory_quantity with correct scoping."""
+    variations = [
+        "Total warehouse inventory",
+        "What is the total inventory?",
+        "How much inventory is currently in the warehouse?",
+        "What is the total inventory quantity?",
+        "How many units are currently in inventory?",
+        "Give me the current warehouse inventory",
+        "How much stock is in the warehouse?",
+        "What is the total stock?"
+    ]
+
+    for q in variations:
+        res = deterministic_warehouse_sql_generator(q)
+        assert res["intent"] == "total_inventory_quantity", f"Failed for query: {q}"
+        assert res["metric"] == "total_inventory_quantity"
+        assert res["chart_type"] == "none"
+        assert res["output_type"] == "text"
+        assert "Plant =" not in res["sql"]  # Default scope is all plants
+
+    # Scoped Query: Total inventory for Plant 7228
+    res_plant = deterministic_warehouse_sql_generator("Total inventory for Plant 7228")
+    assert res_plant["intent"] == "total_inventory_quantity"
+    assert res_plant["filters"]["plant"] == "7228"
+    assert "Plant = '7228'" in res_plant["sql"]
+    assert res_plant["output_type"] == "text"
+
+    # Verify Single-line format output
+    mock_rows_all = [{"Total Unrestricted Quantity": 2279723.0, "TotalUniqueMaterials": 6076, "TotalActiveBins": 17542, "PlantCount": 4}]
+    ans_all = format_deterministic_answer("Total warehouse inventory", mock_rows_all)
+    assert "The warehouse network currently holds a total of **2,279,723.00 unrestricted units**" in ans_all
+    assert "\n" not in ans_all  # strictly single line
+
+    mock_rows_plant = [{"Total Unrestricted Quantity": 854120.0, "TotalUniqueMaterials": 3120, "TotalActiveBins": 7522, "PlantCount": 1}]
+    ans_plant = format_deterministic_answer("Total inventory for Plant 7228", mock_rows_plant)
+    assert "**Plant 7228** currently holds a total of **854,120.00 unrestricted units**" in ans_plant
+    assert "\n" not in ans_plant  # strictly single line
+
+def test_inventory_kpi_explicit_chart_followup():
+    """Verify that follow-up chart request for total inventory generates a bar chart by plant."""
+    history = [
+        {"role": "user", "content": "Total warehouse inventory"},
+        {"role": "assistant", "content": "The warehouse network currently holds a total of 2,279,723.00 unrestricted units across 6,076 unique materials and 17,542 active bins."}
+    ]
+    res_chart = deterministic_warehouse_sql_generator("Show me a graph for this.", history=history)
+    assert res_chart["intent"] == "total_inventory_quantity"
+    assert res_chart["chart_type"] == "bar"
+    assert res_chart["chart_x"] == "Plant"
+    assert "GROUP BY Plant" in res_chart["sql"]
+
+
 
 
 

@@ -143,6 +143,44 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
                 "missing dimensions", "missing physical", "incomplete dimension", "without dimension",
                 "no dimensions", "missing length", "missing width", "missing height", "data quality check"
             ]
+        },
+        "TOTAL_INVENTORY_QUANTITY": {
+            "meaning": "Sum of total unrestricted inventory quantity stored across warehouse bins",
+            "metric": "total_inventory_quantity",
+            "formula": "SUM(UnrestrictedQty)",
+            "synonyms": [
+                "total warehouse inventory",
+                "what is the total inventory",
+                "how much inventory is currently in the warehouse",
+                "what is the total inventory quantity",
+                "how many units are currently in inventory",
+                "give me the current warehouse inventory",
+                "how much stock is in the warehouse",
+                "what is the total stock",
+                "total unrestricted inventory",
+                "total units in inventory",
+                "how much total inventory",
+                "total stock quantity",
+                "current warehouse inventory",
+                "how many total units",
+                "how much inventory do we have",
+                "total inventory",
+                "total stock"
+            ],
+            "default_response": {
+                "format": "single_line",
+                "show_table": False,
+                "show_chart": False
+            },
+            "if_user_requests_chart": {
+                "show": [
+                    "summary",
+                    "relevant_chart",
+                    "supporting_table"
+                ],
+                "chart_type": "bar",
+                "group_by": "Plant"
+            }
         }
     },
 

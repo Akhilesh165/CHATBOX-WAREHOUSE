@@ -49,10 +49,10 @@ def test_top_materials_volume_consumption_semantic_rule():
     assert "Total Material Volume" in gen["sql"] or "ConsumedMaterialVolume" in gen["sql"]
 
 def test_output_selection_rules():
-    # 1. KPI
+    # 1. KPI / Single-line formatted response
     q_kpi = "What is our total warehouse inventory quantity?"
     gen_kpi = deterministic_warehouse_sql_generator(q_kpi)
-    assert gen_kpi["output_type"] == "kpi"
+    assert gen_kpi["output_type"] in ["text", "kpi"]
 
     # 2. Table for list/show
     q_table = "Show me materials of plant 1258"

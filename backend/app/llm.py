@@ -166,6 +166,19 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             state["metric"] = "storage_location_inventory"
             state["topic"] = "storage_location_comparison"
             state["aggregation"] = "comparison"
+        elif any(k in uq_lower for k in [
+            "total warehouse inventory", "what is the total inventory", "how much inventory is currently in the warehouse",
+            "what is the total inventory quantity", "how many units are currently in inventory", "give me the current warehouse inventory",
+            "how much stock is in the warehouse", "what is the total stock", "total unrestricted inventory", "total units in inventory",
+            "how much total inventory", "total inventory quantity", "what is the total stock quantity", "total unrestricted quantity",
+            "how much stock", "total stock", "total inventory", "how much inventory", "current warehouse inventory", "how many total units",
+            "units are currently in inventory", "how much inventory do we have", "total stock quantity", "total units of inventory"
+        ]) and not any(k in uq_lower for k in ["summary", "overview", "dashboard", "breakdown"]):
+            state["entity"] = "inventory"
+            state["metric"] = "total_inventory_quantity"
+            state["topic"] = "total_inventory_quantity"
+            state["condition"] = None
+            state["aggregation"] = "sum"
         elif any(k in uq_lower for k in ["materials in plant", "materials of plant", "plant inventory records", "show materials", "list materials"]):
             state["entity"] = "material"
             state["topic"] = "plant_materials"
@@ -212,7 +225,20 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     is_fresh_plant_count = any(p in q_lower for p in ["plant", "plants", "facility", "facilities"]) and any(k in q_lower for k in ["how many", "count", "number of", "total plants", "active plants"])
     is_fresh_mat_count = is_mat_entity and any(k in q_lower for k in ["how many", "count", "number of", "total unique", "unique count"]) and not is_fresh_missing_master and not is_fresh_dq
     is_fresh_occupied_bins_count = ("occupied" in q_lower or "in use" in q_lower or "active bin" in q_lower) and any(b in q_lower for b in ["bin", "bins"]) and any(k in q_lower for k in ["how many", "count", "number of", "total"])
-    is_fresh_total_stock = any(k in q_lower for k in ["total inventory", "total stock", "how much stock", "total unrestricted", "how much inventory"]) and not any(k in q_lower for k in ["summary", "overview", "dashboard", "breakdown"])
+    is_fresh_total_stock = (
+        any(k in q_lower for k in [
+            "total warehouse inventory", "what is the total inventory", "how much inventory is currently in the warehouse",
+            "what is the total inventory quantity", "how many units are currently in inventory", "give me the current warehouse inventory",
+            "how much stock is in the warehouse", "what is the total stock", "total unrestricted inventory", "total units in inventory",
+            "how much total inventory", "total inventory quantity", "what is the total stock quantity", "total unrestricted quantity",
+            "how much stock", "total stock", "total inventory", "how much inventory", "current warehouse inventory", "how many total units",
+            "units are currently in inventory", "how much inventory do we have", "total stock quantity", "total units of inventory"
+        ]) or (
+            ("inventory" in q_lower or "stock" in q_lower or "units" in q_lower) and
+            ("total" in q_lower or "how much" in q_lower or "how many units" in q_lower or "overall quantity" in q_lower) and
+            not any(w in q_lower for w in ["per bin", "bin utilization", "empty", "difference", "division", "volume master", "missing", "trend"])
+        )
+    ) and not any(k in q_lower for k in ["summary", "overview", "dashboard", "breakdown", "by plant", "across plants"])
     is_fresh_consolidation = any(k in q_lower for k in ["consolidat", "free up", "same material", "duplicate bin", "multiple bin"])
     is_fresh_diff = any(k in q_lower for k in ["difference", "zws", "unrestrictedqty2"])
     is_fresh_div = any(k in q_lower for k in ["division", "material group"])
@@ -1374,7 +1400,12 @@ ORDER BY [Total Inventory Quantity] DESC"""
         }
 
     # K. SPECIFIC PLANT MATERIAL INQUIRIES
-    if plant_cand and any(w in q_lower for w in ["material", "item", "sku", "stock", "record", "inventory", "show", "list", "find", "get", "give"]):
+    is_plant_materials_query = (
+        plant_cand and
+        any(w in q_lower for w in ["material", "item", "sku", "record", "show materials", "list materials", "materials in", "skus in"]) and
+        not any(k in q_lower for k in ["total inventory", "total stock", "how much inventory", "how much stock", "total unrestricted", "total units", "inventory quantity", "units in inventory", "total quantity"])
+    )
+    if is_plant_materials_query:
         return {
             "sql": f"SELECT Material, MaterialDescription AS Description, UnrestrictedQty AS Qty, BaseUnitOfMeasure AS UOM, StorageLocation AS [Storage Location], BinNo AS Bin FROM dbo.ZWMS_INVENTORY WHERE Plant = '{plant_cand}' ORDER BY UnrestrictedQty DESC",
             "chart_type": "none",
@@ -1502,21 +1533,49 @@ ORDER BY [Total Inventory Quantity] DESC"""
             "output_type": "text"
         }
 
-    # N4. TOTAL INVENTORY QUANTITY (Single scalar value without full overview)
-    if any(k in q_lower for k in ["how much total inventory", "total inventory quantity", "what is the total stock quantity", "total unrestricted quantity", "how much stock", "total stock", "total inventory", "how much inventory"]) and not any(k in q_lower for k in ["summary", "overview", "dashboard", "executive", "breakdown", "all plants"]):
+    # N4. TOTAL INVENTORY QUANTITY (Scalar KPI / Inventory KPI)
+    is_total_inv_intent = (
+        state.get("topic") == "total_inventory_quantity" or
+        any(k in q_lower for k in [
+            "total warehouse inventory", "what is the total inventory", "how much inventory is currently in the warehouse",
+            "what is the total inventory quantity", "how many units are currently in inventory", "give me the current warehouse inventory",
+            "how much stock is in the warehouse", "what is the total stock", "total unrestricted inventory", "total units in inventory",
+            "how much total inventory", "total inventory quantity", "what is the total stock quantity", "total unrestricted quantity",
+            "how much stock", "total stock", "total inventory", "how much inventory", "current warehouse inventory", "how many total units",
+            "units are currently in inventory", "how much inventory do we have", "total stock quantity", "total units of inventory"
+        ])
+    ) and not any(k in q_lower for k in ["summary", "overview", "dashboard", "executive", "breakdown"])
+    if is_total_inv_intent:
         plant_filter = f" WHERE Plant = '{plant_cand}'" if plant_cand else ""
         filters = {"plant": plant_cand} if plant_cand else {}
+
+        if is_explicit_chart:
+            return {
+                "sql": f"SELECT Plant, SUM(UnrestrictedQty) AS [Total Inventory Quantity], COUNT(DISTINCT Material) AS [Unique Materials], COUNT(DISTINCT BinNo) AS [Occupied Bins] FROM dbo.ZWMS_INVENTORY{plant_filter} GROUP BY Plant ORDER BY [Total Inventory Quantity] DESC",
+                "chart_type": "bar",
+                "chart_title": f"Total Inventory Quantity by Plant{f' — Plant {plant_cand}' if plant_cand else ''}",
+                "chart_x": "Plant",
+                "chart_y": "Total Inventory Quantity",
+                "intent": "total_inventory_quantity",
+                "metric": "total_inventory_quantity",
+                "filters": filters,
+                "time_range": "current",
+                "output_type": "bar_chart",
+                "conversation_state": state
+            }
+
         return {
-            "sql": f"SELECT SUM(UnrestrictedQty) AS [Total Unrestricted Quantity] FROM dbo.ZWMS_INVENTORY{plant_filter}",
+            "sql": f"SELECT SUM(UnrestrictedQty) AS [Total Unrestricted Quantity], COUNT(DISTINCT Material) AS TotalUniqueMaterials, COUNT(DISTINCT BinNo) AS TotalActiveBins, COUNT(DISTINCT Plant) AS PlantCount FROM dbo.ZWMS_INVENTORY{plant_filter}",
             "chart_type": "none",
             "chart_title": f"Total Unrestricted Quantity{f' — Plant {plant_cand}' if plant_cand else ''}",
             "chart_x": None,
             "chart_y": None,
             "intent": "total_inventory_quantity",
-            "metric": "total_unrestricted_quantity",
+            "metric": "total_inventory_quantity",
             "filters": filters,
             "time_range": "current",
-            "output_type": "text"
+            "output_type": "text",
+            "conversation_state": state
         }
 
     # N5. ACTIVE PLANTS COUNT (Single metric query)
@@ -2152,17 +2211,19 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         return "\n".join(lines)
 
     # 7. Total Inventory Scalar KPI
-    if "TotalUnrestrictedQuantity" in cols:
-        tot = rows[0].get("TotalUnrestrictedQuantity", 0.0)
-        mats = rows[0].get("TotalUniqueMaterials", 0)
-        bins = rows[0].get("TotalActiveBins", 0)
+    if "TotalUnrestrictedQuantity" in cols or "Total Unrestricted Quantity" in cols:
+        tot = rows[0].get("TotalUnrestrictedQuantity", rows[0].get("Total Unrestricted Quantity", 0.0))
+        mats = rows[0].get("TotalUniqueMaterials", rows[0].get("Unique Materials", 0))
+        bins = rows[0].get("TotalActiveBins", rows[0].get("Occupied Bins", 0))
         plants = rows[0].get("PlantCount", 0)
         plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
         plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
         
+        is_explicit_summary = any(k in q_lower for k in ["summary", "overview", "dashboard", "breakdown", "highlights", "detailed"])
+
         if plant_val:
             single_stmt = f"**Plant {plant_val}** currently holds a total of **{tot:,.2f} unrestricted units** across **{mats:,} unique materials** and **{bins:,} active bins**."
-            if is_single_statement_requested:
+            if not is_explicit_summary:
                 return single_stmt
 
             return (
@@ -2175,7 +2236,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
             )
         else:
             single_stmt = f"The warehouse network currently holds a total of **{tot:,.2f} unrestricted units** across **{mats:,} unique materials** and **{bins:,} active bins**."
-            if is_single_statement_requested:
+            if not is_explicit_summary:
                 return single_stmt
 
             return (
