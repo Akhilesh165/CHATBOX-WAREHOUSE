@@ -268,6 +268,41 @@ def test_plant_bin_utilization_expansion():
     assert res["chart_x"] == "Storage Location"
     assert "StorageLocation" in res["sql"]
 
+def test_visualization_rules_default_no_chart():
+    """Rule 1: Default response should not force unrequested charts (Summary + Table/KPI)."""
+    res = deterministic_warehouse_sql_generator("Fetch bin utilization detail for Plant 7228.")
+    assert res["chart_type"] == "none"
+    assert res["output_type"] == "table"
+
+    res_opt = optimize_response_format("Fetch bin utilization detail for Plant 7228.", [{"Plant": "7228", "Bin Utilization %": "79.1%"}], res)
+    assert res_opt["chart_type"] == "none"
+    assert res_opt["output_type"] == "table"
+
+def test_visualization_rules_explicit_chart_triggers_preserve_context():
+    """Rule 2 & 3: Explicit chart request triggers preserve previous query context without re-asking."""
+    triggers = [
+        "Show me a graph for this.",
+        "Can you visualize this?",
+        "Give me a chart",
+        "Show this in graph",
+        "create a chart",
+        "can you graph this",
+        "Show this in graphical form"
+    ]
+    
+    history = [
+        {"role": "user", "content": "Fetch bin utilization detail for Plant 7228."},
+        {"role": "assistant", "content": "The bin utilization for Plant 7228 is 79.06% with 7,522 occupied bins."}
+    ]
+
+    for trigger in triggers:
+        res = deterministic_warehouse_sql_generator(trigger, history=history)
+        assert res["intent"] == "plant_bin_utilization_detailed_analysis", f"Failed for trigger: {trigger}"
+        assert res["filters"]["plant"] == "7228", f"Failed to preserve plant filter for trigger: {trigger}"
+        assert res["chart_type"] == "bar", f"Failed to select bar chart for trigger: {trigger}"
+        assert "StorageLocation" in res["sql"], f"Failed to include StorageLocation breakdown in SQL for trigger: {trigger}"
+
+
 
 
 

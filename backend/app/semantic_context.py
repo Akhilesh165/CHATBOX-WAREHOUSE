@@ -302,6 +302,53 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
                 }
             }
         }
+    },
+
+    # =========================================================================
+    # 8. VISUALIZATION RULES (Explicit Graph Request Architecture)
+    # =========================================================================
+    "visualization_rules": {
+        "default": {
+            "show_chart": False,
+            "architecture": "Summary + Relevant Table"
+        },
+        "user_explicitly_requests_chart": {
+            "triggers": [
+                "show me a graph",
+                "show graph",
+                "give me a chart",
+                "visualize this",
+                "show this in graph",
+                "create a chart",
+                "can you graph this",
+                "graph for this",
+                "chart for this",
+                "show this in graphical form",
+                "draw a chart",
+                "plot this",
+                "visualize"
+            ],
+            "action": [
+                "preserve_previous_query_context",
+                "generate_relevant_chart",
+                "show_summary",
+                "show_chart",
+                "show_relevant_table"
+            ]
+        },
+        "follow_up_visualization": {
+            "examples": [
+                "Show me a graph for this",
+                "Can you visualize this?",
+                "Give me a chart",
+                "Show this in graphical form"
+            ],
+            "action": {
+                "reference": "previous_query",
+                "do_not_reask_context": True
+            }
+        }
     }
 }
+
 

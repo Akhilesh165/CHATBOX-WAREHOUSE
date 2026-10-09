@@ -103,7 +103,19 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             state["limit"] = int(lm.group(1))
 
         # Check topic signatures
-        if any(k in uq_lower for k in ["least utilized", "lowest utilized", "emptiest bins", "bottom bins", "least full"]):
+        if any(k in uq_lower for k in ["utilization detail", "utilization details", "utilization of plant", "plant utilization", "bin utilization detail"]) or (any(k in uq_lower for k in ["bin utilization", "bin occupancy"]) and ("plant" in uq_lower or state["filters"].get("plant"))):
+            state["entity"] = "bin"
+            state["metric"] = "bin_utilization"
+            state["topic"] = "plant_bin_utilization_detail"
+            state["condition"] = None
+            state["aggregation"] = "summary"
+        elif any(k in uq_lower for k in ["overall warehouse", "warehouse space utilization", "warehouse bin utilization", "overall bin utilization", "warehouse utilization", "space utilization rate"]):
+            state["entity"] = "bin"
+            state["metric"] = "warehouse_utilization"
+            state["topic"] = "warehouse_utilization"
+            state["condition"] = None
+            state["aggregation"] = "summary"
+        elif any(k in uq_lower for k in ["least utilized", "lowest utilized", "emptiest bins", "bottom bins", "least full"]):
             state["entity"] = "bin"
             state["metric"] = "utilization"
             state["ranking"] = "lowest"
@@ -204,9 +216,27 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                 valid_raw_bins.append(b_val.upper())
     is_fresh_specific_bin = len(valid_raw_bins) > 0
 
+    is_overall_network_request = any(k in q_lower for k in ["overall", "network", "all plants", "across all", "facility", "entire warehouse", "whole warehouse", "facility fill", "across the network"])
+    if is_overall_network_request and not new_plant:
+        state["filters"].pop("plant", None)
+
     is_plant_scope = bool(new_plant or state.get("filters", {}).get("plant"))
     is_util_keyword = any(k in q_lower for k in ["utiliz", "occupan", "capacity", "how full", "space utilization", "bin fill", "fullness"])
-    is_affirmative_followup = any(w in q_lower.split() for w in ["yes", "yeah", "sure", "please", "expand", "yep", "do"]) or any(k in q_lower for k in ["generate detailed", "detailed version", "detailed analysis", "show detail", "detailed breakdown", "generate detail"])
+    
+    # Visualization Triggers according to Visualization Rules:
+    is_explicit_chart_request = any(k in q_lower for k in [
+        "show me a graph", "show graph", "give me a chart", "visualize this", "show this in graph",
+        "create a chart", "can you graph this", "show me a graph for this", "can you visualize this",
+        "show this in graphical form", "draw a chart", "plot this", "visualize", "graph for this",
+        "chart for this", "graph of this", "chart of this", "show chart", "give chart", "make a chart",
+        "plot a chart", "draw a graph"
+    ])
+    
+    is_affirmative_followup = (
+        any(w in q_lower.split() for w in ["yes", "yeah", "sure", "please", "expand", "yep", "do"]) or
+        any(k in q_lower for k in ["generate detailed", "detailed version", "detailed analysis", "show detail", "detailed breakdown", "generate detail"]) or
+        is_explicit_chart_request
+    )
     
     is_followup_for_detail = (
         (state.get("topic") in ["plant_bin_utilization_detail", "plant_bin_utilization_summary", "warehouse_utilization"] and is_affirmative_followup) or
@@ -216,6 +246,9 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         is_util_keyword and is_plant_scope and not is_fresh_specific_bin and not is_mat_entity and
         not is_fresh_top_bins and not is_fresh_least_bins and not is_fresh_both and not is_fresh_empty and not is_followup_for_detail
     )
+
+    if is_explicit_chart_request:
+        state["is_explicit_chart_request"] = True
 
     if is_followup_for_detail:
         state["entity"] = "bin"
@@ -1151,7 +1184,7 @@ ORDER BY COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation),
             }
 
         # 2. PLANT BIN UTILIZATION DETAIL TEMPLATE (DEFAULT SUMMARY + RELEVANT KPIS + SUMMARY TABLE + DETAIL OFFER)
-        if (state.get("topic") == "plant_bin_utilization_detail" or plant_cand) and not any(w in q_lower for w in ["all", "compare", "network", "plants"]):
+        if (state.get("topic") == "plant_bin_utilization_detail" or plant_cand) and not any(w in q_lower for w in ["all", "compare", "network", "plants", "overall", "facility", "across all", "whole warehouse"]):
             plant_val = plant_cand or state.get("filters", {}).get("plant", "7228")
             sql_plant_summary = f"""SELECT 
     b.Plant AS [Plant], 
