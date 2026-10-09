@@ -305,12 +305,25 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
     },
 
     # =========================================================================
-    # 8. VISUALIZATION RULES (Explicit Graph Request Architecture)
+    # 8. VISUALIZATION RULES (Generic Explicit Graph Request Architecture)
     # =========================================================================
     "visualization_rules": {
+        "description": "Universal 2-tier visualization framework applicable across ALL warehouse analytical domains.",
+        "supported_domains": [
+            "BIN_UTILIZATION",
+            "MATERIAL_ANALYSIS",
+            "PLANT_COMPARISON",
+            "EMPTY_BINS",
+            "TOP_AND_BOTTOM_BINS",
+            "INVENTORY_TRENDS",
+            "DIVISION_BREAKDOWN",
+            "CONSOLIDATION_CANDIDATES",
+            "STORAGE_LOCATION_COMPARISON",
+            "DATA_QUALITY_ANOMALIES"
+        ],
         "default": {
             "show_chart": False,
-            "architecture": "Summary + Relevant Table"
+            "architecture": "Summary + Relevant Table / KPI (Clean, uncluttered response)"
         },
         "user_explicitly_requests_chart": {
             "triggers": [
@@ -345,7 +358,18 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
             ],
             "action": {
                 "reference": "previous_query",
-                "do_not_reask_context": True
+                "do_not_reask_context": True,
+                "domain_chart_mappings": {
+                    "material_volume_share": {"chart_type": "bar", "x": "Material", "y": "% of Total Bin Volume"},
+                    "warehouse_utilization": {"chart_type": "bar", "x": "Plant", "y": "BinUtilizationPct"},
+                    "plant_bin_utilization_detail": {"chart_type": "bar", "x": "Storage Location", "y": "UtilizationPct"},
+                    "top_utilized_bins": {"chart_type": "bar", "x": "Bin", "y": "Occupied Volume"},
+                    "least_utilized_bins": {"chart_type": "bar", "x": "Bin", "y": "Occupied Volume"},
+                    "trend_analysis": {"chart_type": "line", "x": "Month", "y": "TotalQuantity"},
+                    "division_breakdown": {"chart_type": "pie", "x": "Division", "y": "TotalQuantity"},
+                    "consolidation": {"chart_type": "bar", "x": "Material", "y": "ActiveBinCount"},
+                    "storage_location_comparison": {"chart_type": "bar", "x": "Storage Location", "y": "Total Inventory Quantity"}
+                }
             }
         }
     }

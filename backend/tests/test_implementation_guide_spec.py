@@ -302,6 +302,51 @@ def test_visualization_rules_explicit_chart_triggers_preserve_context():
         assert res["chart_type"] == "bar", f"Failed to select bar chart for trigger: {trigger}"
         assert "StorageLocation" in res["sql"], f"Failed to include StorageLocation breakdown in SQL for trigger: {trigger}"
 
+def test_generic_visualization_rules_across_all_domains():
+    """Verify that explicit chart follow-ups work generically across all warehouse domains without re-asking context."""
+    # 1. Material Volume Analysis Flow
+    history_mat = [
+        {"role": "user", "content": "Which materials are consuming the highest percentage of total bin volume in Plant 1258?"},
+        {"role": "assistant", "content": "Here are the top materials by volume consumption in Plant 1258."}
+    ]
+    res_mat_chart = deterministic_warehouse_sql_generator("Show me a graph for this.", history=history_mat)
+    assert res_mat_chart["intent"] == "material_volume_share"
+    assert res_mat_chart["filters"]["plant"] == "1258"
+    assert res_mat_chart["chart_type"] == "bar"
+    assert res_mat_chart["chart_x"] == "Material"
+
+    # 2. Top-N Bins Analysis Flow
+    history_top = [
+        {"role": "user", "content": "Show me the top 10 most utilized bins in Plant 1268."},
+        {"role": "assistant", "content": "Here are the top 10 most utilized bins in Plant 1268."}
+    ]
+    res_top_chart = deterministic_warehouse_sql_generator("Can you visualize this in a chart?", history=history_top)
+    assert res_top_chart["intent"] == "top_utilized_bins"
+    assert res_top_chart["filters"]["plant"] == "1268"
+    assert res_top_chart["chart_type"] == "bar"
+    assert res_top_chart["chart_x"] == "Bin"
+
+    # 3. Storage Location Comparison Flow
+    history_sloc = [
+        {"role": "user", "content": "Compare inventory across storage locations in Plant 7228."},
+        {"role": "assistant", "content": "Here is the comparison table across storage locations."}
+    ]
+    res_sloc_chart = deterministic_warehouse_sql_generator("Give me a chart", history=history_sloc)
+    assert res_sloc_chart["intent"] == "storage_location_comparison"
+    assert res_sloc_chart["filters"]["plant"] == "7228"
+    assert res_sloc_chart["chart_type"] == "bar"
+
+    # 4. Warehouse Plant Utilization Comparison Flow
+    history_plants = [
+        {"role": "user", "content": "How full is the warehouse across plants?"},
+        {"role": "assistant", "content": "Here is the summary of warehouse utilization across all plants."}
+    ]
+    res_plant_chart = deterministic_warehouse_sql_generator("Show graph", history=history_plants)
+    assert res_plant_chart["intent"] == "bin_utilization"
+    assert res_plant_chart["chart_type"] == "bar"
+    assert res_plant_chart["chart_x"] == "Plant"
+
+
 
 
 

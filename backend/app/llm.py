@@ -109,7 +109,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             state["topic"] = "plant_bin_utilization_detail"
             state["condition"] = None
             state["aggregation"] = "summary"
-        elif any(k in uq_lower for k in ["overall warehouse", "warehouse space utilization", "warehouse bin utilization", "overall bin utilization", "warehouse utilization", "space utilization rate"]):
+        elif any(k in uq_lower for k in ["overall warehouse", "warehouse space utilization", "warehouse bin utilization", "overall bin utilization", "warehouse utilization", "space utilization rate", "how full", "across plants", "fill percentage", "storage capacity", "warehouse fullness", "running out of storage"]):
             state["entity"] = "bin"
             state["metric"] = "warehouse_utilization"
             state["topic"] = "warehouse_utilization"
@@ -140,12 +140,32 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             state["condition"] = "missing_dimensions"
             state["topic"] = "data_quality"
             state["aggregation"] = "list"
-        elif any(k in uq_lower for k in ["share of total", "volume consumption", "percentage of total", "footprint"]):
+        elif any(k in uq_lower for k in ["share of total", "volume consumption", "percentage of total", "footprint", "consuming the highest", "largest volume footprint"]):
             state["entity"] = "material"
             state["metric"] = "volume_share"
             state["ranking"] = "highest"
             state["topic"] = "material_volume_share"
             state["aggregation"] = "list"
+        elif any(k in uq_lower for k in ["trend", "history", "timeline", "over time", "monthly"]):
+            state["entity"] = "inventory"
+            state["metric"] = "inventory_trend"
+            state["topic"] = "trend_analysis"
+            state["aggregation"] = "time_series"
+        elif any(k in uq_lower for k in ["division", "material group", "division breakdown"]):
+            state["entity"] = "division"
+            state["metric"] = "division_inventory"
+            state["topic"] = "division_breakdown"
+            state["aggregation"] = "breakdown"
+        elif any(k in uq_lower for k in ["consolidat", "free up", "duplicate bin", "multiple bin"]):
+            state["entity"] = "material"
+            state["metric"] = "consolidation_candidates"
+            state["topic"] = "consolidation"
+            state["aggregation"] = "list"
+        elif any(k in uq_lower for k in ["storage location", "storage locations", "across storage locations", "sloc comparison"]):
+            state["entity"] = "storage_location"
+            state["metric"] = "storage_location_inventory"
+            state["topic"] = "storage_location_comparison"
+            state["aggregation"] = "comparison"
         elif any(k in uq_lower for k in ["materials in plant", "materials of plant", "plant inventory records", "show materials", "list materials"]):
             state["entity"] = "material"
             state["topic"] = "plant_materials"
@@ -239,7 +259,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     )
     
     is_followup_for_detail = (
-        (state.get("topic") in ["plant_bin_utilization_detail", "plant_bin_utilization_summary", "warehouse_utilization"] and is_affirmative_followup) or
+        (state.get("topic") in ["plant_bin_utilization_detail", "plant_bin_utilization_summary"] and is_affirmative_followup) or
         (any(k in q_lower for k in ["generate detailed bin utilization", "detailed bin utilization analysis", "storage location breakdown", "detailed version of this analysis", "sloc breakdown", "detailed version"]) and is_plant_scope)
     )
     is_fresh_plant_bin_util_detail = (
@@ -434,6 +454,16 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             state["resolved_query"] = f"materials with missing dimensions{plant_clause}"
     elif state["topic"] == "material_volume_share":
         state["resolved_query"] = f"top{limit_clause} materials by share of total bin volume{plant_clause}"
+    elif state["topic"] == "warehouse_utilization":
+        state["resolved_query"] = f"warehouse bin utilization across plants{plant_clause}"
+    elif state["topic"] == "trend_analysis":
+        state["resolved_query"] = "inventory trend over time"
+    elif state["topic"] == "division_breakdown":
+        state["resolved_query"] = "inventory distribution by division"
+    elif state["topic"] == "consolidation":
+        state["resolved_query"] = f"materials in multiple bins for consolidation{plant_clause}"
+    elif state["topic"] == "storage_location_comparison":
+        state["resolved_query"] = f"compare inventory across storage locations{plant_clause}"
     elif state["topic"] == "plant_materials":
         state["resolved_query"] = f"show materials{plant_clause}"
     else:
@@ -489,6 +519,12 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
         material_match = None
 
     # 2. BUSINESS METRIC & INTENT RESOLUTION
+    is_explicit_chart = bool(
+        state.get("is_explicit_chart_request") or
+        any(k in q_lower for k in [
+            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart", "histogram"
+        ])
+    )
 
     # A0. SPECIFIC BIN QUESTIONS (Attributes, Utilization, Occupancy, Quantity, Materials)
     if raw_bins:
@@ -984,15 +1020,15 @@ GROUP BY b.BinLocation, b.Plant, b.Volume, b.VolumeUnit
 ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) ASC"""
             return {
                 "sql": sql_bottom,
-                "chart_type": "none",
+                "chart_type": "bar" if is_explicit_chart else "none",
                 "chart_title": f"{n_val} Least Utilized Bins{plant_title_suffix}",
-                "chart_x": None,
-                "chart_y": None,
+                "chart_x": "Bin" if is_explicit_chart else None,
+                "chart_y": "Occupied Volume" if is_explicit_chart else None,
                 "intent": "least_utilized_bins",
                 "metric": "bin_utilization_ranking",
                 "filters": filters,
                 "time_range": "current",
-                "output_type": "table",
+                "output_type": "bar_chart" if is_explicit_chart else "table",
                 "conversation_state": state
             }
 
@@ -1014,15 +1050,15 @@ GROUP BY b.BinLocation, b.Plant, b.Volume, b.VolumeUnit
 ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) DESC"""
             return {
                 "sql": sql_top,
-                "chart_type": "none",
+                "chart_type": "bar" if is_explicit_chart else "none",
                 "chart_title": f"Top {n_val} Most Utilized Bins{plant_title_suffix}",
-                "chart_x": None,
-                "chart_y": None,
+                "chart_x": "Bin" if is_explicit_chart else None,
+                "chart_y": "Occupied Volume" if is_explicit_chart else None,
                 "intent": "top_utilized_bins",
                 "metric": "bin_utilization_ranking",
                 "filters": filters,
                 "time_range": "current",
-                "output_type": "table",
+                "output_type": "bar_chart" if is_explicit_chart else "table",
                 "conversation_state": state
             }
 
