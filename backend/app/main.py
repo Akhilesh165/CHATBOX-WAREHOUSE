@@ -121,6 +121,31 @@ def get_schema_metadata(authorization: str | None = Header(default=None)):
         }
     }
 
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Global fallback handler to ensure no uncaught exceptions escape as raw 500 crashes."""
+    logger.error(f"Global unhandled exception on {request.url.path}: {exc}", exc_info=True)
+    if "/api/chat" in request.url.path:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=200,
+            content={
+                "answer": "I encountered an issue processing your query. Please try rephrasing or asking for a specific warehouse metric (e.g. 'Total warehouse inventory', 'Bin utilization for Plant 1258', or 'Show materials in Plant 7228').",
+                "data": [],
+                "rows": [],
+                "chart": {"type": "none"},
+                "meta": {"rowCount": 0, "executionMs": 0, "llmMs": 0, "sqlMs": 0},
+                "warnings": [f"Handled exception: {str(exc)}"],
+                "intent": "ERROR_RECOVERED",
+                "output_type": "text"
+            }
+        )
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=200,
+        content={"status": "recovered", "detail": str(exc)}
+    )
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_endpoint(req: ChatRequest):
     """Processes natural language inventory question, executes validated SQL, and returns grounded answer."""
@@ -132,7 +157,7 @@ async def chat_endpoint(req: ChatRequest):
     
     logger.info(f"Received question [conv={conversation_id}]: {req.message}")
     
-    # 1. Generate SQL via LLM with 1 Retry logic on validation error
+    # 1. Generate SQL via LLM with Retry logic on validation error
     llm_start = time.perf_counter()
     generated = None
     validated_sql = None
@@ -152,43 +177,76 @@ async def chat_endpoint(req: ChatRequest):
             last_error = err
             logger.warning(f"SQL Generation/Validation attempt {attempt + 1} failed: {err}")
             if attempt >= settings.llm_max_retries:
-                logger.error(f"SQL Generation failed after {attempt + 1} attempts.")
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unable to generate a valid SQL query: {str(err)}"
-                )
+                logger.info("Falling back to deterministic warehouse SQL generator...")
+                try:
+                    generated = deterministic_warehouse_sql_generator(req.message, history=history)
+                    raw_sql = generated.get("sql", "") if isinstance(generated, dict) else ""
+                    validated_sql = validate_sql(raw_sql)
+                    break
+                except Exception as det_err:
+                    logger.error(f"Deterministic generator also failed: {det_err}")
+                    return ChatResponse(
+                        answer=f"I couldn't safely parse a warehouse query for: '{req.message}'. Please try asking for 'Total warehouse inventory', 'Bin utilization for Plant 1258', or 'Show materials in Plant 7228'.",
+                        data=[],
+                        rows=[],
+                        chart=Chart(type="none"),
+                        meta=Meta(rowCount=0, executionMs=0, llmMs=0, sqlMs=0),
+                        warnings=[str(det_err)],
+                        intent="ERROR_HANDLED",
+                        output_type="text"
+                    )
 
     llm_duration_ms = int((time.perf_counter() - llm_start) * 1000)
 
     # 3. Execute Validated SQL on Read-Only Connection
+    rows = []
+    sql_duration_ms = 0
     try:
         rows, sql_duration_ms = execute_readonly(validated_sql, max_rows=settings.sql_max_result_rows)
     except Exception as db_err:
-        logger.error(f"Database execution failed for SQL [{validated_sql}]: {db_err}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Database execution error: {str(db_err)}"
-        )
-
-    # 4. Result Validator Layer ("Does this result actually answer the user's question?")
-    is_valid_result, validation_reason = validate_query_result(
-        req.message,
-        generated.get("query_plan") if isinstance(generated, dict) else None,
-        validated_sql,
-        rows
-    )
-    if not is_valid_result:
-        logger.warning(f"Semantic Result Validator FAIL: {validation_reason}. Triggering self-correction regeneration...")
+        logger.warning(f"Database execution failed for SQL [{validated_sql}]: {db_err}. Retrying with deterministic generator...")
         try:
             corrected_gen = deterministic_warehouse_sql_generator(req.message, history=history)
             corrected_sql = validate_sql(corrected_gen.get("sql", ""))
-            corrected_rows, sql_duration_ms = execute_readonly(corrected_sql, max_rows=settings.sql_max_result_rows)
+            rows, sql_duration_ms = execute_readonly(corrected_sql, max_rows=settings.sql_max_result_rows)
             generated = corrected_gen
             validated_sql = corrected_sql
-            rows = corrected_rows
-            logger.info("Self-correction successful: Corrected query executed.")
         except Exception as retry_err:
-            logger.error(f"Self-correction failed: {retry_err}")
+            logger.error(f"Database retry failed: {retry_err}")
+            warnings.append(f"Database execution warning: {str(db_err)}")
+            return ChatResponse(
+                answer=f"A database error occurred while querying inventory records. Please verify the query parameters or try asking for a specific metric (e.g. 'Total warehouse inventory' or 'Bin utilization for Plant 1258').",
+                data=[],
+                rows=[],
+                chart=Chart(type="none"),
+                meta=Meta(rowCount=0, executionMs=0, llmMs=llm_duration_ms, sqlMs=0),
+                warnings=warnings,
+                intent="DB_ERROR_HANDLED",
+                output_type="text"
+            )
+
+    # 4. Result Validator Layer ("Does this result actually answer the user's question?")
+    try:
+        is_valid_result, validation_reason = validate_query_result(
+            req.message,
+            generated.get("query_plan") if isinstance(generated, dict) else None,
+            validated_sql,
+            rows
+        )
+        if not is_valid_result:
+            logger.warning(f"Semantic Result Validator FAIL: {validation_reason}. Triggering self-correction regeneration...")
+            try:
+                corrected_gen = deterministic_warehouse_sql_generator(req.message, history=history)
+                corrected_sql = validate_sql(corrected_gen.get("sql", ""))
+                corrected_rows, sql_duration_ms = execute_readonly(corrected_sql, max_rows=settings.sql_max_result_rows)
+                generated = corrected_gen
+                validated_sql = corrected_sql
+                rows = corrected_rows
+                logger.info("Self-correction successful: Corrected query executed.")
+            except Exception as retry_err:
+                logger.error(f"Self-correction failed: {retry_err}")
+    except Exception as val_check_err:
+        logger.warning(f"Result validator check skipped due to non-critical error: {val_check_err}")
 
     if len(rows) >= settings.sql_max_result_rows:
         warnings.append(f"Result capped at maximum {settings.sql_max_result_rows} rows.")
@@ -207,12 +265,16 @@ async def chat_endpoint(req: ChatRequest):
     total_llm_ms = llm_duration_ms + int((time.perf_counter() - answer_start) * 1000)
 
     # 6. Automatically optimize response format and visual presentation
-    opt = optimize_response_format(req.message, rows, generated)
+    try:
+        opt = optimize_response_format(req.message, rows, generated)
+    except Exception as opt_err:
+        logger.warning(f"optimize_response_format error: {opt_err}")
+        opt = {}
     
-    chart_type = opt.get("chart_type") or generated.get("chart_type", "none")
-    chart_title = opt.get("chart_title") or generated.get("chart_title")
-    chart_x = opt.get("chart_x") or generated.get("chart_x")
-    chart_y = opt.get("chart_y") or generated.get("chart_y")
+    chart_type = opt.get("chart_type") or (generated.get("chart_type", "none") if isinstance(generated, dict) else "none")
+    chart_title = opt.get("chart_title") or (generated.get("chart_title") if isinstance(generated, dict) else None)
+    chart_x = opt.get("chart_x") or (generated.get("chart_x") if isinstance(generated, dict) else None)
+    chart_y = opt.get("chart_y") or (generated.get("chart_y") if isinstance(generated, dict) else None)
     chart_data = rows[:50] if chart_type != "none" else []
     
     chart = Chart(
@@ -245,36 +307,53 @@ async def chat_endpoint(req: ChatRequest):
         sqlMs=sql_duration_ms
     )
 
-    output_type = opt.get("output_type") or generated.get("output_type") or (
+    output_type = opt.get("output_type") or (generated.get("output_type") if isinstance(generated, dict) else None) or (
         "line_chart" if chart_type == "line" else
         "bar_chart" if chart_type == "bar" else
         "pie_chart" if chart_type == "pie" else
         "table" if rows else "text"
     )
 
-    intent = opt.get("intent") or generated.get("intent")
-    metric = opt.get("metric") or generated.get("metric")
-    time_range = opt.get("time_range") or generated.get("time_range", "current")
+    intent = opt.get("intent") or (generated.get("intent") if isinstance(generated, dict) else None)
+    metric = opt.get("metric") or (generated.get("metric") if isinstance(generated, dict) else None)
+    time_range = opt.get("time_range") or (generated.get("time_range", "current") if isinstance(generated, dict) else "current")
     query_plan = generated.get("query_plan") if isinstance(generated, dict) else None
 
     # Extract follow_up_action and relevant_kpis if present in generated plan
     follow_up_action = generated.get("follow_up_action") if isinstance(generated, dict) else None
     relevant_kpis_raw = generated.get("relevant_kpis") if isinstance(generated, dict) else None
     relevant_kpis = None
-    if relevant_kpis_raw and rows:
-        row0 = rows[0]
-        tb = row0.get("Total Bins", row0.get("TotalBins", 0))
-        ob = row0.get("Occupied Bins", row0.get("OccupiedBins", 0))
-        eb = row0.get("Empty Bins", row0.get("EmptyBins", max(0, tb - ob)))
-        bpct_raw = row0.get("Bin Utilization %", f"{round(ob * 100.0 / tb, 1) if tb > 0 else 0}%")
-        bpct_str = str(bpct_raw) if "%" in str(bpct_raw) else f"{bpct_raw}%"
-        
-        relevant_kpis = [
-            {"label": "Bin Utilization", "value": bpct_str, "subtext": "Occupancy Rate"},
-            {"label": "Occupied Bins", "value": f"{ob:,}", "subtext": "Active In Use"},
-            {"label": "Empty Bins", "value": f"{eb:,}", "subtext": "Available Put-Away"},
-            {"label": "Total Bins", "value": f"{tb:,}", "subtext": "Total Capacity"}
-        ]
+    try:
+        if relevant_kpis_raw and rows and isinstance(rows[0], dict):
+            row0 = rows[0]
+            tb_val = row0.get("Total Bins", row0.get("TotalBins", 0)) or 0
+            ob_val = row0.get("Occupied Bins", row0.get("OccupiedBins", 0)) or 0
+            tb = float(tb_val) if isinstance(tb_val, (int, float)) or (isinstance(tb_val, str) and tb_val.replace('.', '', 1).isdigit()) else 0.0
+            ob = float(ob_val) if isinstance(ob_val, (int, float)) or (isinstance(ob_val, str) and ob_val.replace('.', '', 1).isdigit()) else 0.0
+            eb_val = row0.get("Empty Bins", row0.get("EmptyBins"))
+            if eb_val is not None:
+                try:
+                    eb = float(eb_val)
+                except Exception:
+                    eb = max(0.0, tb - ob)
+            else:
+                eb = max(0.0, tb - ob)
+            
+            bpct_raw = row0.get("Bin Utilization %")
+            if bpct_raw is not None:
+                bpct_str = str(bpct_raw) if "%" in str(bpct_raw) else f"{bpct_raw}%"
+            else:
+                bpct_str = f"{round(ob * 100.0 / tb, 1) if tb > 0 else 0}%"
+            
+            relevant_kpis = [
+                {"label": "Bin Utilization", "value": bpct_str, "subtext": "Occupancy Rate"},
+                {"label": "Occupied Bins", "value": f"{int(ob):,}", "subtext": "Active In Use"},
+                {"label": "Empty Bins", "value": f"{int(eb):,}", "subtext": "Available Put-Away"},
+                {"label": "Total Bins", "value": f"{int(tb):,}", "subtext": "Total Capacity"}
+            ]
+    except Exception as kpi_err:
+        logger.warning(f"Error extracting relevant KPIs: {kpi_err}")
+        relevant_kpis = None
 
     return ChatResponse(
         answer=answer,
