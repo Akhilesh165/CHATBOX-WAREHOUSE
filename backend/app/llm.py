@@ -43,6 +43,58 @@ def clean_llm_json(raw_text: str) -> dict[str, Any]:
     
     return json.loads(text)
 
+def is_elliptical_followup(q_lower: str) -> bool:
+    """Detects if a user question is an elliptical follow-up that relies on prior conversation context.
+    
+    Returns True ONLY for:
+    - Explicit visualization requests (e.g., 'Show me a graph for this', 'Visualize this', 'Give me a chart')
+    - Affirmative expansions / drilldowns (e.g., 'Yes', 'Sure', 'Generate detailed version', 'Expand this')
+    - Anaphora / pronouns referencing previous answer (e.g., 'for this', 'of this', 'these', 'those')
+    - Relative filter adjustments without a new topic (e.g., 'What about Plant 1258?', 'And for 7228?')
+    - Sorting/limit adjustments on prior result (e.g., 'Show top 5 instead', 'Sort by quantity')
+    """
+    q_strip = q_lower.strip()
+    
+    # 1. Visualization triggers
+    if any(k in q_strip for k in [
+        "show me a graph", "show graph", "give me a chart", "visualize this", "show this in graph",
+        "create a chart", "can you graph this", "graph for this", "chart for this", "visualize it",
+        "show chart", "graph of this", "chart of this", "plot this", "draw a chart", "make a chart",
+        "plot a chart", "draw a graph"
+    ]):
+        return True
+    
+    # 2. Affirmative expansions / drilldowns
+    if any(q_strip.startswith(w) for w in ["yes", "yeah", "sure", "please", "expand", "yep"]):
+        return True
+    if any(k in q_strip for k in ["detailed version", "detailed analysis", "generate detail", "show detail", "detailed breakdown", "generate detailed"]):
+        return True
+    
+    # 3. Pronoun / anaphora references
+    if any(p in q_strip for p in ["for this", "of this", "about this", "for that", "of that", "these", "those", "for them", "of them"]):
+        return True
+    
+    # 4. Elliptical questions and conversational pivots
+    if any(q_strip.startswith(p) for p in [
+        "what about", "and what about", "how about", "and how about",
+        "and for", "only for", "only in", "just for", "just in",
+        "and in", "now for", "and the", "what if"
+    ]):
+        return True
+    if re.search(r"^(?:only in|only for|just in|just for|in|for)?\s*(?:plant\s+)?\d{3,5}\.?$", q_strip):
+        return True
+    
+    # 5. Incremental adjustments, polarity shifts, or follow-up counts
+    if any(k in q_strip for k in [
+        "instead", "next 10", "show more", "sort by", "ones",
+        "least utilized ones", "lowest utilized ones", "most utilized ones",
+        "show least utilized", "bottom 10", "top 10",
+        "how many are there", "what is the count", "how many are in there"
+    ]):
+        return True
+    
+    return False
+
 def extract_and_update_conversation_state(question: str, history: list[dict] | None = None) -> dict[str, Any]:
     """Maintains a structured conversation state machine across multi-turn interactions.
     
@@ -58,6 +110,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     - resolved_query (semantic query string)
     """
     q_lower = question.lower().strip()
+    is_followup = is_elliptical_followup(q_lower)
     
     # Extract any explicit plant filter in the current question
     new_plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
@@ -79,110 +132,119 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         "topic": "inventory_summary"
     }
 
-    if not history:
-        user_queries = []
-    else:
+    # Only inherit prior history state if this question is a true conversational follow-up
+    if is_followup and history:
         user_queries = [
             msg.get("content", "").strip()
             for msg in history
             if msg.get("role") == "user" and msg.get("content", "").strip()
         ]
 
-    # Reconstruct prior state by traversing user history in order
-    for uq in user_queries:
-        uq_lower = uq.lower()
-        
-        # Plant filter in history
-        pm = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", uq_lower)
-        if pm and pm.group(1) not in ["2024", "2025", "2026"]:
-            state["filters"]["plant"] = pm.group(1)
+        # Reconstruct prior state by traversing user history in order
+        for uq in user_queries:
+            uq_lower = uq.lower()
+            
+            # Plant filter in history
+            if any(k in uq_lower for k in ["all plants", "across plants", "by plant", "each plant", "every plant", "plants", "compare plants", "across all", "whole warehouse", "entire warehouse", "network", "overall"]):
+                state["filters"].pop("plant", None)
+            else:
+                pm = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", uq_lower)
+                if pm and pm.group(1) not in ["2024", "2025", "2026"]:
+                    state["filters"]["plant"] = pm.group(1)
 
-        # Limit in history
-        lm = re.search(r"\b(?:top|bottom|highest|lowest|first|last|least)?\s*(\d{1,3})\b", uq_lower)
-        if lm and lm.group(1) not in ["100", "2024", "2025", "2026", "1258", "1266", "1268", "7228"]:
-            state["limit"] = int(lm.group(1))
+            # Limit in history
+            lm = re.search(r"\b(?:top|bottom|highest|lowest|first|last|least)?\s*(\d{1,3})\b", uq_lower)
+            if lm and lm.group(1) not in ["100", "2024", "2025", "2026", "1258", "1266", "1268", "7228"]:
+                state["limit"] = int(lm.group(1))
 
-        # Check topic signatures
-        if any(k in uq_lower for k in ["utilization detail", "utilization details", "utilization of plant", "plant utilization", "bin utilization detail"]) or (any(k in uq_lower for k in ["bin utilization", "bin occupancy"]) and ("plant" in uq_lower or state["filters"].get("plant"))):
-            state["entity"] = "bin"
-            state["metric"] = "bin_utilization"
-            state["topic"] = "plant_bin_utilization_detail"
-            state["condition"] = None
-            state["aggregation"] = "summary"
-        elif any(k in uq_lower for k in ["overall warehouse", "warehouse space utilization", "warehouse bin utilization", "overall bin utilization", "warehouse utilization", "space utilization rate", "how full", "across plants", "fill percentage", "storage capacity", "warehouse fullness", "running out of storage"]):
-            state["entity"] = "bin"
-            state["metric"] = "warehouse_utilization"
-            state["topic"] = "warehouse_utilization"
-            state["condition"] = None
-            state["aggregation"] = "summary"
-        elif any(k in uq_lower for k in ["least utilized", "lowest utilized", "emptiest bins", "bottom bins", "least full"]):
-            state["entity"] = "bin"
-            state["metric"] = "utilization"
-            state["ranking"] = "lowest"
-            state["topic"] = "least_utilized_bins"
-            state["condition"] = None
-            state["aggregation"] = "list"
-        elif any(k in uq_lower for k in ["most utilized", "highest utilized", "top utilized", "fullest bins", "top 10 most", "top 5 most", "most capacity"]):
-            state["entity"] = "bin"
-            state["metric"] = "utilization"
-            state["ranking"] = "highest"
-            state["topic"] = "top_utilized_bins"
-            state["condition"] = None
-            state["aggregation"] = "list"
-        elif any(k in uq_lower for k in ["empty bin", "empty bins", "putaway", "put-away", "vacant", "free bin", "available for put-away", "available bin"]):
-            state["entity"] = "bin"
-            state["condition"] = "empty"
-            state["topic"] = "putaway_bins"
-            state["ranking"] = None
-            state["aggregation"] = "list"
-        elif any(k in uq_lower for k in ["dimension", "dimensions", "missing physical", "quality check", "incomplete dimension", "unmaintained"]):
-            state["entity"] = "material"
-            state["condition"] = "missing_dimensions"
-            state["topic"] = "data_quality"
-            state["aggregation"] = "list"
-        elif any(k in uq_lower for k in ["share of total", "volume consumption", "percentage of total", "footprint", "consuming the highest", "largest volume footprint"]):
-            state["entity"] = "material"
-            state["metric"] = "volume_share"
-            state["ranking"] = "highest"
-            state["topic"] = "material_volume_share"
-            state["aggregation"] = "list"
-        elif any(k in uq_lower for k in ["trend", "history", "timeline", "over time", "monthly"]):
-            state["entity"] = "inventory"
-            state["metric"] = "inventory_trend"
-            state["topic"] = "trend_analysis"
-            state["aggregation"] = "time_series"
-        elif any(k in uq_lower for k in ["division", "material group", "division breakdown"]):
-            state["entity"] = "division"
-            state["metric"] = "division_inventory"
-            state["topic"] = "division_breakdown"
-            state["aggregation"] = "breakdown"
-        elif any(k in uq_lower for k in ["consolidat", "free up", "duplicate bin", "multiple bin"]):
-            state["entity"] = "material"
-            state["metric"] = "consolidation_candidates"
-            state["topic"] = "consolidation"
-            state["aggregation"] = "list"
-        elif any(k in uq_lower for k in ["storage location", "storage locations", "across storage locations", "sloc comparison"]):
-            state["entity"] = "storage_location"
-            state["metric"] = "storage_location_inventory"
-            state["topic"] = "storage_location_comparison"
-            state["aggregation"] = "comparison"
-        elif any(k in uq_lower for k in [
-            "total warehouse inventory", "what is the total inventory", "how much inventory is currently in the warehouse",
-            "what is the total inventory quantity", "how many units are currently in inventory", "give me the current warehouse inventory",
-            "how much stock is in the warehouse", "what is the total stock", "total unrestricted inventory", "total units in inventory",
-            "how much total inventory", "total inventory quantity", "what is the total stock quantity", "total unrestricted quantity",
-            "how much stock", "total stock", "total inventory", "how much inventory", "current warehouse inventory", "how many total units",
-            "units are currently in inventory", "how much inventory do we have", "total stock quantity", "total units of inventory"
-        ]) and not any(k in uq_lower for k in ["summary", "overview", "dashboard", "breakdown"]):
-            state["entity"] = "inventory"
-            state["metric"] = "total_inventory_quantity"
-            state["topic"] = "total_inventory_quantity"
-            state["condition"] = None
-            state["aggregation"] = "sum"
-        elif any(k in uq_lower for k in ["materials in plant", "materials of plant", "plant inventory records", "show materials", "list materials"]):
-            state["entity"] = "material"
-            state["topic"] = "plant_materials"
-            state["aggregation"] = "list"
+            # Check topic signatures
+            if any(k in uq_lower for k in ["all plants", "across plants", "by plant", "each plant", "every plant", "plants", "compare plants", "across all", "whole warehouse", "network", "overall"]) and any(k in uq_lower for k in ["utiliz", "occupan"]):
+                state["entity"] = "bin"
+                state["metric"] = "warehouse_utilization"
+                state["topic"] = "warehouse_utilization"
+                state["condition"] = None
+                state["aggregation"] = "summary"
+                state["filters"].pop("plant", None)
+            elif any(k in uq_lower for k in ["utilization detail", "utilization details", "utilization of plant", "plant utilization", "bin utilization detail"]) or (any(k in uq_lower for k in ["bin utilization", "bin occupancy"]) and state["filters"].get("plant")):
+                state["entity"] = "bin"
+                state["metric"] = "bin_utilization"
+                state["topic"] = "plant_bin_utilization_detail"
+                state["condition"] = None
+                state["aggregation"] = "summary"
+            elif any(k in uq_lower for k in ["overall warehouse", "warehouse space utilization", "warehouse bin utilization", "overall bin utilization", "warehouse utilization", "space utilization rate", "how full", "across plants", "fill percentage", "storage capacity", "warehouse fullness", "running out of storage"]):
+                state["entity"] = "bin"
+                state["metric"] = "warehouse_utilization"
+                state["topic"] = "warehouse_utilization"
+                state["condition"] = None
+                state["aggregation"] = "summary"
+            elif any(k in uq_lower for k in ["least utilized", "lowest utilized", "emptiest bins", "bottom bins", "least full"]):
+                state["entity"] = "bin"
+                state["metric"] = "utilization"
+                state["ranking"] = "lowest"
+                state["topic"] = "least_utilized_bins"
+                state["condition"] = None
+                state["aggregation"] = "list"
+            elif any(k in uq_lower for k in ["most utilized", "highest utilized", "top utilized", "fullest bins", "top 10 most", "top 5 most", "most capacity"]):
+                state["entity"] = "bin"
+                state["metric"] = "utilization"
+                state["ranking"] = "highest"
+                state["topic"] = "top_utilized_bins"
+                state["condition"] = None
+                state["aggregation"] = "list"
+            elif any(k in uq_lower for k in ["empty bin", "empty bins", "putaway", "put-away", "vacant", "free bin", "available for put-away", "available bin"]):
+                state["entity"] = "bin"
+                state["condition"] = "empty"
+                state["topic"] = "putaway_bins"
+                state["ranking"] = None
+                state["aggregation"] = "list"
+            elif any(k in uq_lower for k in ["dimension", "dimensions", "missing physical", "quality check", "incomplete dimension", "unmaintained"]):
+                state["entity"] = "material"
+                state["condition"] = "missing_dimensions"
+                state["topic"] = "data_quality"
+                state["aggregation"] = "list"
+            elif any(k in uq_lower for k in ["share of total", "volume consumption", "percentage of total", "footprint", "consuming the highest", "largest volume footprint"]):
+                state["entity"] = "material"
+                state["metric"] = "volume_share"
+                state["ranking"] = "highest"
+                state["topic"] = "material_volume_share"
+                state["aggregation"] = "list"
+            elif any(k in uq_lower for k in ["trend", "history", "timeline", "over time", "monthly"]):
+                state["entity"] = "inventory"
+                state["metric"] = "inventory_trend"
+                state["topic"] = "trend_analysis"
+                state["aggregation"] = "time_series"
+            elif any(k in uq_lower for k in ["division", "material group", "division breakdown"]):
+                state["entity"] = "division"
+                state["metric"] = "division_inventory"
+                state["topic"] = "division_breakdown"
+                state["aggregation"] = "breakdown"
+            elif any(k in uq_lower for k in ["consolidat", "free up", "duplicate bin", "multiple bin"]):
+                state["entity"] = "material"
+                state["metric"] = "consolidation_candidates"
+                state["topic"] = "consolidation"
+                state["aggregation"] = "list"
+            elif any(k in uq_lower for k in ["storage location", "storage locations", "across storage locations", "sloc comparison"]):
+                state["entity"] = "storage_location"
+                state["metric"] = "storage_location_inventory"
+                state["topic"] = "storage_location_comparison"
+                state["aggregation"] = "comparison"
+            elif any(k in uq_lower for k in [
+                "total warehouse inventory", "what is the total inventory", "how much inventory is currently in the warehouse",
+                "what is the total inventory quantity", "how many units are currently in inventory", "give me the current warehouse inventory",
+                "how much stock is in the warehouse", "what is the total stock", "total unrestricted inventory", "total units in inventory",
+                "how much total inventory", "total inventory quantity", "what is the total stock quantity", "total unrestricted quantity",
+                "how much stock", "total stock", "total inventory", "how much inventory", "current warehouse inventory", "how many total units",
+                "units are currently in inventory", "how much inventory do we have", "total stock quantity", "total units of inventory"
+            ]) and not any(k in uq_lower for k in ["summary", "overview", "dashboard", "breakdown"]):
+                state["entity"] = "inventory"
+                state["metric"] = "total_inventory_quantity"
+                state["topic"] = "total_inventory_quantity"
+                state["condition"] = None
+                state["aggregation"] = "sum"
+            elif any(k in uq_lower for k in ["materials in plant", "materials of plant", "plant inventory records", "show materials", "list materials"]):
+                state["entity"] = "material"
+                state["topic"] = "plant_materials"
+                state["aggregation"] = "list"
 
     # Now apply the current query modifiers on top of previous state
     # 1. Check if current query is a new independent top-level topic
@@ -267,7 +329,17 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     is_fresh_diff = any(k in q_lower for k in ["difference", "zws", "unrestrictedqty2"])
     is_fresh_div = any(k in q_lower for k in ["division", "material group"])
     is_fresh_trend = any(k in q_lower for k in ["trend", "history", "timeline", "over time", "monthly"])
-    is_fresh_util = any(k in q_lower for k in ["overall warehouse bin utilization", "facility fill", "fill rate", "overall bin fill", "space utilization rate", "overall bin utilization", "total bin volume is currently occupied", "warehouse space utilization rate", "running out of", "out of storage space"])
+    is_util_keyword = any(k in q_lower for k in ["utiliz", "occupan", "capacity", "how full", "space utilization", "bin fill", "fullness", "fill rate"])
+    is_all_plants_util = (
+        is_util_keyword and
+        any(k in q_lower for k in ["all plants", "across plants", "by plant", "each plant", "every plant", "plants", "compare plants", "across all", "whole warehouse", "entire warehouse", "network", "overall"]) and
+        not new_plant
+    )
+    is_fresh_util = is_all_plants_util or any(k in q_lower for k in [
+        "overall warehouse bin utilization", "facility fill", "fill rate", "overall bin fill", "space utilization rate",
+        "overall bin utilization", "total bin volume is currently occupied", "warehouse space utilization rate",
+        "running out of", "out of storage space"
+    ])
     
     # Specific bin pattern detection (e.g. "Which plant does bin NRJP2124D2 belong to?", "Is bin NRJP2124D2 occupied?", etc.)
     bin_cand_matches = re.findall(r"(?:bin\s*[:#-]?\s*([a-z0-9_-]{2,25})|\b(b\d{3,5})\b)", q_lower, re.IGNORECASE)
@@ -286,12 +358,11 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                 valid_raw_bins.append(b_val.upper())
     is_fresh_specific_bin = len(valid_raw_bins) > 0
 
-    is_overall_network_request = any(k in q_lower for k in ["overall", "network", "all plants", "across all", "facility", "entire warehouse", "whole warehouse", "facility fill", "across the network"])
+    is_overall_network_request = is_all_plants_util or any(k in q_lower for k in ["overall", "network", "all plants", "across all", "facility", "entire warehouse", "whole warehouse", "facility fill", "across the network", "by plant", "across plants"])
     if is_overall_network_request and not new_plant:
         state["filters"].pop("plant", None)
 
-    is_plant_scope = bool(new_plant or state.get("filters", {}).get("plant"))
-    is_util_keyword = any(k in q_lower for k in ["utiliz", "occupan", "capacity", "how full", "space utilization", "bin fill", "fullness"])
+    is_plant_scope = bool(new_plant or (state.get("filters", {}).get("plant") if is_followup else None))
     
     # Visualization Triggers according to Visualization Rules:
     is_explicit_chart_request = any(k in q_lower for k in [
@@ -304,16 +375,17 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     
     is_affirmative_followup = (
         any(w in q_lower.split() for w in ["yes", "yeah", "sure", "please", "expand", "yep", "do"]) or
-        any(k in q_lower for k in ["generate detailed", "detailed version", "detailed analysis", "show detail", "detailed breakdown", "generate detail"]) or
-        is_explicit_chart_request
+        any(k in q_lower for k in ["generate detailed", "detailed version", "detailed analysis", "show detail", "detailed breakdown", "generate detail"])
     )
     
-    is_followup_for_detail = (
-        (state.get("topic") in ["plant_bin_utilization_detail", "plant_bin_utilization_summary"] and is_affirmative_followup) or
+    is_followup_for_detail = is_followup and (
+        (state.get("topic") in ["plant_bin_utilization_detail", "plant_bin_utilization_summary"] and (is_affirmative_followup or is_explicit_chart_request)) or
         (any(k in q_lower for k in ["generate detailed bin utilization", "detailed bin utilization analysis", "storage location breakdown", "detailed version of this analysis", "sloc breakdown", "detailed version"]) and is_plant_scope)
     )
     is_fresh_plant_bin_util_detail = (
-        is_util_keyword and is_plant_scope and not is_fresh_specific_bin and not is_mat_entity and
+        is_util_keyword and (new_plant is not None or (is_plant_scope and is_followup)) and not is_overall_network_request and
+        not any(w in q_lower for w in ["all", "compare", "network", "plants", "overall", "facility", "across", "each", "every", "by plant", "across plants"]) and
+        not is_fresh_specific_bin and not is_mat_entity and
         not is_fresh_top_bins and not is_fresh_least_bins and not is_fresh_both and not is_fresh_empty and not is_followup_for_detail
     )
 
@@ -324,7 +396,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["entity"] = "bin"
         state["metric"] = "storage_location_utilization"
         state["topic"] = "plant_bin_utilization_detailed_analysis"
-        state["filters"]["plant"] = new_plant or state.get("filters", {}).get("plant", "7228")
+        state["filters"]["plant"] = new_plant or state.get("filters", {}).get("plant")
         state["granularity"] = "storage_location"
         state["aggregation"] = "breakdown"
     elif is_fresh_plant_bin_util_detail:
@@ -332,6 +404,12 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["metric"] = "bin_utilization"
         state["topic"] = "plant_bin_utilization_detail"
         state["filters"]["plant"] = new_plant or state.get("filters", {}).get("plant")
+        state["aggregation"] = "summary"
+    elif is_fresh_util:
+        state["entity"] = "bin"
+        state["metric"] = "warehouse_utilization"
+        state["topic"] = "warehouse_utilization"
+        state["filters"] = {}
         state["aggregation"] = "summary"
     elif is_fresh_specific_bin:
 
@@ -487,55 +565,58 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             state["aggregation"] = "list"
 
     # Construct clean resolved query from state
-    plant_clause = f" in plant {state['filters']['plant']}" if state['filters'].get('plant') else ""
-    limit_clause = f" {state['limit']}" if state.get('limit') else " 10"
-
-    if state["topic"] == "plant_bin_utilization_detailed_analysis":
-        state["resolved_query"] = f"detailed bin utilization analysis for plant {state['filters'].get('plant', '7228')}"
-    elif state["topic"] == "plant_bin_utilization_detail":
-        state["resolved_query"] = f"bin utilization detail of plant {state['filters'].get('plant', '7228')}"
-    elif state["topic"] == "top_and_bottom_bins":
-        state["resolved_query"] = f"top{limit_clause} most and bottom{limit_clause} least utilized bins{plant_clause}"
-    elif state["topic"] == "empty_bins_count":
-        state["resolved_query"] = f"how many empty bins{plant_clause}"
-    elif state["topic"] == "putaway_bins":
-        state["resolved_query"] = f"empty bins available for put-away{plant_clause}"
-    elif state["topic"] == "least_utilized_bins":
-        state["resolved_query"] = f"bottom{limit_clause} least utilized bins{plant_clause}"
-    elif state["topic"] == "top_utilized_bins":
-        state["resolved_query"] = f"top{limit_clause} most utilized bins{plant_clause}"
-    elif state["topic"] == "materials_missing_from_volume_master":
-        if state.get("aggregation") == "count":
-            state["resolved_query"] = f"how many materials in inventory are missing from volume master{plant_clause}"
-        else:
-            state["resolved_query"] = f"find materials in inventory missing from volume master{plant_clause}"
-    elif state["topic"] == "data_quality":
-        if state.get("aggregation") == "count":
-            state["resolved_query"] = f"how many materials with missing dimensions{plant_clause}"
-        else:
-            state["resolved_query"] = f"materials with missing dimensions{plant_clause}"
-    elif state["topic"] == "material_volume_share":
-        state["resolved_query"] = f"top{limit_clause} materials by share of total bin volume{plant_clause}"
-    elif state["topic"] == "warehouse_utilization":
-        state["resolved_query"] = f"warehouse bin utilization across plants{plant_clause}"
-    elif state["topic"] == "trend_analysis":
-        state["resolved_query"] = "inventory trend over time"
-    elif state["topic"] == "division_breakdown":
-        state["resolved_query"] = "inventory distribution by division"
-    elif state["topic"] == "consolidation":
-        state["resolved_query"] = f"materials in multiple bins for consolidation{plant_clause}"
-    elif state["topic"] == "storage_location_comparison":
-        state["resolved_query"] = f"compare inventory across storage locations{plant_clause}"
-    elif state["topic"] == "inventory_records_count":
-        state["resolved_query"] = f"how many inventory records{plant_clause}"
-    elif state["topic"] == "unique_materials_count":
-        state["resolved_query"] = f"how many unique materials in inventory{plant_clause}"
-    elif state["topic"] == "total_inventory_quantity":
-        state["resolved_query"] = f"total inventory quantity{plant_clause}"
-    elif state["topic"] == "plant_materials":
-        state["resolved_query"] = f"show materials{plant_clause}"
-    else:
+    if not is_followup:
         state["resolved_query"] = question
+    else:
+        plant_clause = f" in plant {state['filters']['plant']}" if state['filters'].get('plant') else ""
+        limit_clause = f" {state['limit']}" if state.get('limit') else " 10"
+
+        if state["topic"] == "plant_bin_utilization_detailed_analysis":
+            state["resolved_query"] = f"detailed bin utilization analysis for plant {state['filters'].get('plant', '')}".strip()
+        elif state["topic"] == "plant_bin_utilization_detail":
+            state["resolved_query"] = f"bin utilization detail of plant {state['filters'].get('plant', '')}".strip()
+        elif state["topic"] == "top_and_bottom_bins":
+            state["resolved_query"] = f"top{limit_clause} most and bottom{limit_clause} least utilized bins{plant_clause}"
+        elif state["topic"] == "empty_bins_count":
+            state["resolved_query"] = f"how many empty bins{plant_clause}"
+        elif state["topic"] == "putaway_bins":
+            state["resolved_query"] = f"empty bins available for put-away{plant_clause}"
+        elif state["topic"] == "least_utilized_bins":
+            state["resolved_query"] = f"bottom{limit_clause} least utilized bins{plant_clause}"
+        elif state["topic"] == "top_utilized_bins":
+            state["resolved_query"] = f"top{limit_clause} most utilized bins{plant_clause}"
+        elif state["topic"] == "materials_missing_from_volume_master":
+            if state.get("aggregation") == "count":
+                state["resolved_query"] = f"how many materials in inventory are missing from volume master{plant_clause}"
+            else:
+                state["resolved_query"] = f"find materials in inventory missing from volume master{plant_clause}"
+        elif state["topic"] == "data_quality":
+            if state.get("aggregation") == "count":
+                state["resolved_query"] = f"how many materials with missing dimensions{plant_clause}"
+            else:
+                state["resolved_query"] = f"materials with missing dimensions{plant_clause}"
+        elif state["topic"] == "material_volume_share":
+            state["resolved_query"] = f"top{limit_clause} materials by share of total bin volume{plant_clause}"
+        elif state["topic"] == "warehouse_utilization":
+            state["resolved_query"] = f"warehouse bin utilization across plants{plant_clause}"
+        elif state["topic"] == "trend_analysis":
+            state["resolved_query"] = "inventory trend over time"
+        elif state["topic"] == "division_breakdown":
+            state["resolved_query"] = "inventory distribution by division"
+        elif state["topic"] == "consolidation":
+            state["resolved_query"] = f"materials in multiple bins for consolidation{plant_clause}"
+        elif state["topic"] == "storage_location_comparison":
+            state["resolved_query"] = f"compare inventory across storage locations{plant_clause}"
+        elif state["topic"] == "inventory_records_count":
+            state["resolved_query"] = f"how many inventory records{plant_clause}"
+        elif state["topic"] == "unique_materials_count":
+            state["resolved_query"] = f"how many unique materials in inventory{plant_clause}"
+        elif state["topic"] == "total_inventory_quantity":
+            state["resolved_query"] = f"total inventory quantity{plant_clause}"
+        elif state["topic"] == "plant_materials":
+            state["resolved_query"] = f"show materials{plant_clause}"
+        else:
+            state["resolved_query"] = question
 
     return state
 
@@ -1253,10 +1334,10 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
     )
     if is_utilization_intent and not any(m in q_lower for m in ["material", "sku", "item", "product", "consuming", "share of total"]):
         # 1. EXPANSION: Detailed Storage Location Breakdown for Plant (on requested follow-up / detail)
-        if state.get("topic") == "plant_bin_utilization_detailed_analysis" or (
+        if (state.get("topic") == "plant_bin_utilization_detailed_analysis" or (
             any(k in q_lower for k in ["detailed bin utilization", "storage location breakdown", "detailed version", "sloc breakdown", "by storage location"]) and plant_cand
-        ):
-            plant_val = plant_cand or state.get("filters", {}).get("plant", "7228")
+        )) and plant_cand:
+            plant_val = plant_cand
             sql_detailed = f"""SELECT 
     b.Plant AS [Plant], 
     COALESCE(b.StorageLocation, 'Unassigned') AS [Storage Location], 
@@ -1288,8 +1369,9 @@ ORDER BY COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation),
             }
 
         # 2. PLANT BIN UTILIZATION DETAIL TEMPLATE (DEFAULT SUMMARY + RELEVANT KPIS + SUMMARY TABLE + DETAIL OFFER)
-        if (state.get("topic") == "plant_bin_utilization_detail" or plant_cand) and not any(w in q_lower for w in ["all", "compare", "network", "plants", "overall", "facility", "across all", "whole warehouse"]):
-            plant_val = plant_cand or state.get("filters", {}).get("plant", "7228")
+        is_all_plants_request = any(w in q_lower for w in ["all", "compare", "network", "plants", "overall", "facility", "across all", "whole warehouse", "across", "each", "every", "by plant", "across plants"])
+        if plant_cand and not is_all_plants_request:
+            plant_val = plant_cand
             sql_plant_summary = f"""SELECT 
     b.Plant AS [Plant], 
     COUNT(DISTINCT b.BinLocation) AS [Total Bins], 
@@ -1330,11 +1412,12 @@ GROUP BY b.Plant"""
                 "conversation_state": state
             }
 
-        plant_filter = f" WHERE b.Plant = '{plant_cand}'" if plant_cand and not any(w in q_lower for w in ["all", "compare", "network", "plants"]) else ""
+        # 3. MULTI-PLANT OR WAREHOUSE-WIDE BIN UTILIZATION
+        plant_filter = f" WHERE b.Plant = '{plant_cand}'" if (plant_cand and not is_all_plants_request) else ""
         filters = {"plant": plant_cand} if plant_filter else {}
         return {
-            "sql": f"SELECT b.Plant, COUNT(DISTINCT b.BinLocation) AS TotalBins, COUNT(DISTINCT i.BinNo) AS OccupiedBins, (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS EmptyBins, ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / COUNT(DISTINCT b.BinLocation), 2) AS BinUtilizationPct, ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / COUNT(DISTINCT b.BinLocation), 2) AS BinOccupancyPct, ROUND(SUM(b.Volume), 2) AS TotalBinCapacityVolume, ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS OccupiedBinVolume, ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END) * 100.0 / NULLIF(SUM(b.Volume), 0), 2) AS VolumeUtilizationPct FROM dbo.ZWMS_BIN_MASTER b LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant{plant_filter} GROUP BY b.Plant ORDER BY BinUtilizationPct DESC",
-            "chart_type": "bar",
+            "sql": f"SELECT b.Plant, COUNT(DISTINCT b.BinLocation) AS TotalBins, COUNT(DISTINCT i.BinNo) AS OccupiedBins, (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS EmptyBins, ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS BinUtilizationPct, ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS BinOccupancyPct, ROUND(SUM(b.Volume), 2) AS TotalBinCapacityVolume, ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS OccupiedBinVolume, ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END) * 100.0 / NULLIF(SUM(b.Volume), 0), 2) AS VolumeUtilizationPct FROM dbo.ZWMS_BIN_MASTER b LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant{plant_filter} GROUP BY b.Plant ORDER BY BinUtilizationPct DESC",
+            "chart_type": "bar" if is_explicit_chart else "none",
             "chart_title": "Warehouse Bin Utilization by Plant (%)",
             "chart_x": "Plant",
             "chart_y": "BinUtilizationPct",
@@ -1342,7 +1425,8 @@ GROUP BY b.Plant"""
             "metric": "warehouse_utilization",
             "filters": filters,
             "time_range": "current",
-            "output_type": "bar_chart"
+            "output_type": "bar_chart" if is_explicit_chart else "table",
+            "conversation_state": state
         }
 
 
@@ -2213,7 +2297,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
 
     # 4B. Detailed Storage Location Bin Utilization Breakdown
     if "Storage Location" in cols and ("Bin Utilization %" in cols or "UtilizationPct" in cols) and "Plant" in cols:
-        plant_val = rows[0].get("Plant", "7228")
+        plant_val = rows[0].get("Plant", "")
         top_zone = rows[0].get("Storage Location", "N/A")
         top_util = rows[0].get("Bin Utilization %", "0%")
         top_occ = rows[0].get("Occupied Bins", 0)
@@ -2221,8 +2305,8 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         tot_occ_vol = sum(r.get("Occupied Volume (FT3)", 0.0) for r in rows)
         
         lines = [
-            f"### 📊 Plant {plant_val} Detailed Storage Location Breakdown\n",
-            f"Storage location utilization breakdown for **Plant {plant_val}** across **{len(rows)} storage zones**:\n",
+            f"### 📊 Plant {plant_val} Detailed Storage Location Breakdown\n" if plant_val else "### 📊 Detailed Storage Location Breakdown\n",
+            f"Storage location utilization breakdown for **Plant {plant_val}** across **{len(rows)} storage zones**:\n" if plant_val else f"Storage location utilization breakdown across **{len(rows)} storage zones**:\n",
             f"- **Highest Occupancy Zone:** SLoc `{top_zone}` at **{top_util}** ({top_occ:,} occupied bins).",
             f"- **Total Storage Capacity:** **{tot_cap_vol:,.2f} FT³** ({tot_occ_vol:,.2f} FT³ currently occupied).",
             f"\n💡 *The **Storage Location Bar Chart** and itemized **Data Table** below display complete occupancy metrics and volume breakdowns across all zones.*"
@@ -2232,14 +2316,15 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     # 4C. Plant Bin Utilization Summary (Plant Bin Utilization Detail Template - Max 2 lines)
     if ("Total Bins" in cols or "TotalBins" in cols) and ("Occupied Bins" in cols or "OccupiedBins" in cols) and len(rows) == 1:
         plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
-        plant_val = plant_match.group(1) if plant_match else rows[0].get("Plant", "7228")
+        plant_val = plant_match.group(1) if plant_match else rows[0].get("Plant", "")
         tb = rows[0].get("Total Bins", rows[0].get("TotalBins", 0))
         ob = rows[0].get("Occupied Bins", rows[0].get("OccupiedBins", 0))
         eb = rows[0].get("Empty Bins", rows[0].get("EmptyBins", max(0, tb - ob)))
         bpct_raw = rows[0].get("Bin Utilization %", f"{round(ob * 100.0 / tb, 1) if tb > 0 else 0}%")
         bpct = str(bpct_raw) if "%" in str(bpct_raw) else f"{bpct_raw}%"
         
-        return f"The bin utilization for **Plant {plant_val}** is **{bpct}**, with **{ob:,}** of **{tb:,}** total bins currently occupied and **{eb:,}** empty bins available for put-away."
+        plant_prefix = f"for **Plant {plant_val}** " if plant_val else ""
+        return f"The bin utilization {plant_prefix}is **{bpct}**, with **{ob:,}** of **{tb:,}** total bins currently occupied and **{eb:,}** empty bins available for put-away."
 
     # 5. Bin Utilization and Occupancy Percentage
     if "BinUtilizationPct" in cols or "VolumeUtilizationPct" in cols or "BinOccupancyPct" in cols:
