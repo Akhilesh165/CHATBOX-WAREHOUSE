@@ -243,6 +243,54 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
                 "example_warehouse": "There are 2,883 unique materials in inventory.",
                 "example_plant": "There are {count} unique materials in Plant {plant}."
             }
+        },
+        "LOWEST_BIN_UTILIZATION": {
+            "meaning": "Lowest bin utilization identified across facilities/plants or ranked at the bottom of storage bins",
+            "metric": "lowest_bin_utilization",
+            "entity": "plant_or_bin",
+            "aggregation": "MIN_OR_RANK_ASC",
+            "synonyms": [
+                "lowest bin utilization", "minimum bin utilization", "least bin utilization",
+                "plant with the lowest bin utilization", "which plant has the lowest bin utilization",
+                "lowest bin utilization plant", "least utilized plant", "which facility has the lowest bin utilization",
+                "least utilized bin", "lowest utilized bin", "bottom bin utilization"
+            ],
+            "default_response": {
+                "format": "SINGLE_LINE_OR_TABLE",
+                "single_line_rule": "If user asks scalar question (e.g. 'which plant has the lowest bin utilization', 'what is the lowest bin utilization'), return concise single-line answer with facility and percentage.",
+                "detail_rule": "If user requests breakdown, ranking list, or detail, return ordered ranking table.",
+                "show_chart": False
+            }
+        },
+        "HIGHEST_BIN_UTILIZATION": {
+            "meaning": "Highest bin utilization identified across facilities/plants or ranked at the top of storage bins",
+            "metric": "highest_bin_utilization",
+            "entity": "plant_or_bin",
+            "aggregation": "MAX_OR_RANK_DESC",
+            "synonyms": [
+                "highest bin utilization", "maximum bin utilization", "most bin utilization", "top bin utilization",
+                "plant with the highest bin utilization", "which plant has the highest bin utilization",
+                "highest bin utilization plant", "most utilized plant", "which facility has the highest bin utilization",
+                "most utilized bin", "highest utilized bin", "top utilized bin"
+            ],
+            "default_response": {
+                "format": "SINGLE_LINE_OR_TABLE",
+                "single_line_rule": "If user asks scalar question (e.g. 'which plant has the highest bin utilization', 'what is the highest bin utilization'), return concise single-line answer with facility and percentage.",
+                "detail_rule": "If user requests breakdown, ranking list, or detail, return ordered ranking table.",
+                "show_chart": False
+            }
+        },
+        "GENERAL_RANKING_SYSTEM": {
+            "meaning": "Universal ranking system providing top or bottom rank orders across any warehouse domain (bins, plants, materials, storage locations)",
+            "intent": "RANKING",
+            "supported_entities": ["bins", "plants", "materials", "storage_locations"],
+            "default_response": {
+                "format_detection": "If user requests scalar leader/worst ('who is #1', 'top plant', 'single statement'), return single-line summary. If user requests 'ranking', 'list', 'top N', 'bottom N', 'detailed form', return formatted ranking table with Rank, Entity, Metrics.",
+                "show_chart": False
+            },
+            "if_user_requests_chart": {
+                "show": ["summary", "relevant_chart", "supporting_table"]
+            }
         }
     },
 

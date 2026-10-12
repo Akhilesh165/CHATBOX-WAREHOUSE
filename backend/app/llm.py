@@ -674,6 +674,14 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
             "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart", "histogram"
         ])
     )
+    is_single_statement_requested = any(s in q_lower for s in [
+        "single statement", "single line", "one line", "concise", "briefly", "in short",
+        "just the percentage", "just the number", "only the number", "in a single statement"
+    ])
+    is_detail_requested = any(d in q_lower for d in [
+        "detail", "details", "detailed", "in detail", "detail form", "detailed form",
+        "breakdown", "itemized", "full list", "table form", "ranking form"
+    ])
 
     # A0. SPECIFIC BIN QUESTIONS (Attributes, Utilization, Occupancy, Quantity, Materials)
     if raw_bins:
@@ -1092,7 +1100,8 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC"""
     )
     has_top = state.get("ranking") == "highest" or state.get("topic") == "top_utilized_bins" or any(k in q_lower for k in ["top", "most", "highest", "fullest", "most capacity", "capacity usage", "fullest bins", "most full", "most occupied", "highest utilization"])
     has_bottom = state.get("ranking") == "lowest" or state.get("topic") == "least_utilized_bins" or any(k in q_lower for k in ["bottom", "least", "lowest", "emptiest", "unused capacity", "emptiest bins", "least full", "least occupied", "lowest utilization", "least empty", "least utiliz"])
-    is_bin_metric = any(k in q_lower for k in ["bin", "bins", "location", "locations", "racks", "rack", "slot", "slots", "storage position", "ones", "one", "these", "those", "they", "them", "it"]) or (has_top or has_bottom or has_both)
+    is_plant_level_extreme = any(p in q_lower for p in ["plant", "plants", "facility", "facilities"]) and any(k in q_lower for k in ["which plant", "what plant", "plant with", "facility with", "plants by", "compare plants", "across plants", "all plants"])
+    is_bin_metric = (any(k in q_lower for k in ["bin", "bins", "location", "locations", "racks", "rack", "slot", "slots", "storage position", "ones", "one", "these", "those", "they", "them", "it"]) or (has_top or has_bottom or has_both)) and not is_plant_level_extreme
     is_util_metric = any(k in q_lower for k in ["utiliz", "full", "capacit", "occup", "empty", "unused", "space", "occupan"]) or has_both
 
     if is_bin_metric and (is_util_metric or has_both) and (has_top or has_bottom or has_both) and not is_mat_entity:
@@ -1152,7 +1161,9 @@ FROM BottomBins"""
             }
 
         if state.get("ranking") == "lowest" or (has_bottom and not (has_top and state.get("ranking") == "highest")):
-            sql_bottom = f"""SELECT TOP {n_val} 
+            limit_rows = 1 if is_single_statement_requested else n_val
+            top_kw = f"TOP {limit_rows} " if is_single_statement_requested else f"TOP {n_val} "
+            sql_bottom = f"""SELECT {top_kw}
     ROW_NUMBER() OVER (ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) ASC) AS [Rank],
     b.BinLocation AS [Bin],
     b.Plant AS [Plant],
@@ -1177,12 +1188,14 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volum
                 "metric": "bin_utilization_ranking",
                 "filters": filters,
                 "time_range": "current",
-                "output_type": "bar_chart" if is_explicit_chart else "table",
+                "output_type": "text" if is_single_statement_requested else ("bar_chart" if is_explicit_chart else "table"),
                 "conversation_state": state
             }
 
         if state.get("ranking") == "highest" or has_top:
-            sql_top = f"""SELECT TOP {n_val} 
+            limit_rows = 1 if is_single_statement_requested else n_val
+            top_kw = f"TOP {limit_rows} " if is_single_statement_requested else f"TOP {n_val} "
+            sql_top = f"""SELECT {top_kw}
     ROW_NUMBER() OVER (ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) DESC) AS [Rank],
     b.BinLocation AS [Bin],
     b.Plant AS [Plant],
@@ -1207,9 +1220,10 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volum
                 "metric": "bin_utilization_ranking",
                 "filters": filters,
                 "time_range": "current",
-                "output_type": "bar_chart" if is_explicit_chart else "table",
+                "output_type": "text" if is_single_statement_requested else ("bar_chart" if is_explicit_chart else "table"),
                 "conversation_state": state
             }
+
 
     # D. BIN CAPACITY & UTILIZATION THRESHOLD FILTERING
     threshold_match = re.search(r"(?:more\s+than|greater\s+than|over|above|>|>=|at\s+least|exceeding|less\s+than|below|<|<=|under)\s*(\d{1,3})(?:\s*%)?", q_lower)
@@ -1412,7 +1426,53 @@ GROUP BY b.Plant"""
                 "conversation_state": state
             }
 
-        # 3. MULTI-PLANT OR WAREHOUSE-WIDE BIN UTILIZATION
+        # 3. LOWEST / HIGHEST BIN UTILIZATION ACROSS PLANTS (Specific Extremes & Rankings)
+        is_lowest_util_req = any(k in q_lower for k in [
+            "lowest bin utilization", "least bin utilization", "minimum bin utilization",
+            "lowest utilization", "least utilized plant", "lowest utilized plant", "minimum utilization",
+            "which plant has the lowest", "plant with the lowest", "least full plant"
+        ])
+        is_highest_util_req = any(k in q_lower for k in [
+            "highest bin utilization", "most bin utilization", "maximum bin utilization",
+            "top bin utilization", "most utilized plant", "highest utilized plant", "maximum utilization",
+            "which plant has the highest", "plant with the highest", "most full plant"
+        ])
+
+        if (is_lowest_util_req or is_highest_util_req) and not plant_cand:
+            order_dir = "ASC" if is_lowest_util_req else "DESC"
+            rank_label = "Lowest" if is_lowest_util_req else "Highest"
+            limit_n = 1 if is_single_statement_requested or any(k in q_lower for k in ["which plant", "plant with", "what is the lowest", "what is the highest", "who has the lowest", "who has the highest", "the lowest", "the highest"]) else 4
+            top_clause = f"TOP {limit_n} " if limit_n == 1 else ""
+
+            sql_extreme_util = f"""SELECT {top_clause}
+    ROW_NUMBER() OVER (ORDER BY ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) {order_dir}) AS [Rank],
+    b.Plant AS [Plant],
+    ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS [BinUtilizationPct],
+    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1), '%') AS [Bin Utilization %],
+    COUNT(DISTINCT i.BinNo) AS [Occupied Bins],
+    (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS [Empty Bins],
+    COUNT(DISTINCT b.BinLocation) AS [Total Bins]
+FROM dbo.ZWMS_BIN_MASTER b
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+GROUP BY b.Plant
+ORDER BY BinUtilizationPct {order_dir}"""
+
+            intent_name = "lowest_bin_utilization" if is_lowest_util_req else "highest_bin_utilization"
+            return {
+                "sql": sql_extreme_util,
+                "chart_type": "bar" if is_explicit_chart else "none",
+                "chart_title": f"{rank_label} Bin Utilization by Plant",
+                "chart_x": "Plant" if is_explicit_chart else None,
+                "chart_y": "BinUtilizationPct" if is_explicit_chart else None,
+                "intent": intent_name,
+                "metric": "bin_utilization",
+                "filters": {},
+                "time_range": "current",
+                "output_type": "text" if (is_single_statement_requested or limit_n == 1) else ("bar_chart" if is_explicit_chart else "table"),
+                "conversation_state": state
+            }
+
+        # 4. MULTI-PLANT OR WAREHOUSE-WIDE BIN UTILIZATION
         plant_filter = f" WHERE b.Plant = '{plant_cand}'" if (plant_cand and not is_all_plants_request) else ""
         filters = {"plant": plant_cand} if plant_filter else {}
         return {
@@ -1607,6 +1667,80 @@ ORDER BY [Total Inventory Quantity] DESC"""
             "time_range": "current",
             "output_type": "pie_chart"
         }
+
+    # N0_RANK. GENERALIZED RANKING SYSTEM FOR MATERIALS AND STORAGE LOCATIONS
+    is_general_ranking_req = any(k in q_lower for k in [
+        "rank", "ranking", "rankings", "top materials", "highest materials", "lowest materials",
+        "least materials", "most materials", "material ranking", "materials ranking",
+        "top storage locations", "highest storage locations", "storage location ranking"
+    ])
+    if is_general_ranking_req and not is_mat_vol_intent:
+        n_val = state.get("limit") or 10
+        if not state.get("limit"):
+            n_match = re.search(r"\b(?:top|bottom|highest|lowest|first|last|least|most)?\s*(\d{1,3})\b", q_lower)
+            n_val = int(n_match.group(1)) if (n_match and n_match.group(1) not in ["100", "2024", "2025", "2026"]) else 10
+        plant_filter = f" WHERE Plant = '{plant_cand}'" if plant_cand else ""
+        plant_and = f" AND Plant = '{plant_cand}'" if plant_cand else ""
+        filters = {"plant": plant_cand} if plant_cand else {}
+
+        # 1. Materials ranking by total quantity
+        if is_mat_entity or any(k in q_lower for k in ["material", "materials", "sku", "skus", "item", "items", "stock quantity"]):
+            is_least = any(k in q_lower for k in ["least", "lowest", "bottom", "minimum"])
+            order_dir = "ASC" if is_least else "DESC"
+            rank_label = f"Bottom {n_val} Least" if is_least else f"Top {n_val} Highest"
+            sql_mat_rank = f"""SELECT TOP {n_val}
+    ROW_NUMBER() OVER (ORDER BY SUM(UnrestrictedQty) {order_dir}) AS [Rank],
+    Material,
+    MAX(MaterialDescription) AS [Material Description],
+    SUM(UnrestrictedQty) AS [Total Stock Quantity],
+    MAX(BaseUnitOfMeasure) AS [UOM],
+    COUNT(DISTINCT BinNo) AS [Occupied Bins]
+FROM dbo.ZWMS_INVENTORY
+WHERE UnrestrictedQty > 0{plant_and}
+GROUP BY Material
+ORDER BY SUM(UnrestrictedQty) {order_dir}"""
+            return {
+                "sql": sql_mat_rank,
+                "chart_type": "bar" if is_explicit_chart else "none",
+                "chart_title": f"{rank_label} Stocked Materials{f' — Plant {plant_cand}' if plant_cand else ''}",
+                "chart_x": "Material" if is_explicit_chart else None,
+                "chart_y": "Total Stock Quantity" if is_explicit_chart else None,
+                "intent": "material_quantity_ranking",
+                "metric": "material_stock_ranking",
+                "filters": filters,
+                "time_range": "current",
+                "output_type": "bar_chart" if is_explicit_chart else "table",
+                "conversation_state": state
+            }
+
+        # 2. Storage locations ranking by total quantity
+        if any(k in q_lower for k in ["storage location", "storage locations", "sloc", "slocs", "zone", "zones"]):
+            is_least = any(k in q_lower for k in ["least", "lowest", "bottom", "minimum"])
+            order_dir = "ASC" if is_least else "DESC"
+            rank_label = f"Bottom {n_val} Least" if is_least else f"Top {n_val} Highest"
+            sql_sloc_rank = f"""SELECT TOP {n_val}
+    ROW_NUMBER() OVER (ORDER BY SUM(UnrestrictedQty) {order_dir}) AS [Rank],
+    StorageLocation AS [Storage Location],
+    Plant,
+    SUM(UnrestrictedQty) AS [Total Inventory Quantity],
+    COUNT(DISTINCT Material) AS [Active Materials],
+    COUNT(DISTINCT BinNo) AS [Occupied Bins]
+FROM dbo.ZWMS_INVENTORY{plant_filter}
+GROUP BY StorageLocation, Plant
+ORDER BY SUM(UnrestrictedQty) {order_dir}"""
+            return {
+                "sql": sql_sloc_rank,
+                "chart_type": "bar" if is_explicit_chart else "none",
+                "chart_title": f"{rank_label} Storage Locations{f' — Plant {plant_cand}' if plant_cand else ''}",
+                "chart_x": "Storage Location" if is_explicit_chart else None,
+                "chart_y": "Total Inventory Quantity" if is_explicit_chart else None,
+                "intent": "storage_location_ranking",
+                "metric": "storage_location_ranking",
+                "filters": filters,
+                "time_range": "current",
+                "output_type": "bar_chart" if is_explicit_chart else "table",
+                "conversation_state": state
+            }
 
     # N1. OCCUPIED BINS COUNT (Single metric query)
     is_occupied_bins_count = (
@@ -2214,6 +2348,89 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
             f"💡 *The list of available empty bins with storage locations is loaded in the **searchable Data Table** below.*"
         )
 
+    # 2B. Lowest / Highest Plant Bin Utilization & Extremes
+    if ("BinUtilizationPct" in cols or "Bin Utilization %" in cols) and "Plant" in cols and any(k in q_lower for k in ["lowest", "least", "highest", "most", "maximum", "minimum", "top plant", "best plant", "worst plant", "least utilized", "most utilized"]):
+        is_least = any(k in q_lower for k in ["lowest", "least", "minimum", "worst", "bottom"])
+        label = "Lowest" if is_least else "Highest"
+        leader_row = rows[0]
+        lead_plant = leader_row.get("Plant", "N/A")
+        lead_util = leader_row.get("Bin Utilization %", f"{leader_row.get('BinUtilizationPct', 0)}%")
+        lead_occ = leader_row.get("Occupied Bins", 0)
+        lead_tot = leader_row.get("Total Bins", 0)
+        lead_emp = leader_row.get("Empty Bins", max(0, lead_tot - lead_occ))
+
+        single_stmt = f"**Plant {lead_plant}** has the **{label.lower()} bin utilization** across all facilities at **{lead_util}** ({lead_occ:,} occupied of {lead_tot:,} total bins, with {lead_emp:,} empty bins)."
+        if is_single_statement_requested or len(rows) == 1:
+            return single_stmt
+
+        lines = [
+            f"### 🏭 {label} Bin Utilization by Plant\n",
+            single_stmt,
+            f"\n**Plant Utilization Ranking:**"
+        ]
+        for r in rows:
+            rnk = r.get("Rank", "-")
+            p = r.get("Plant", "N/A")
+            u = r.get("Bin Utilization %", f"{r.get('BinUtilizationPct', 0)}%")
+            ob = r.get("Occupied Bins", 0)
+            tb = r.get("Total Bins", 0)
+            lines.append(f"- **Rank {rnk} — Plant {p}**: **{u}** ({ob:,} / {tb:,} bins occupied)")
+        lines.append("\n💡 *The full comparative metrics are displayed in the **Data Table** below.*")
+        return "\n".join(lines)
+
+    # 2C. Generalized Material Stock Quantity Ranking
+    if "Total Stock Quantity" in cols and "Material" in cols:
+        is_least = any(k in q_lower for k in ["least", "lowest", "bottom", "minimum"])
+        label = "Least" if is_least else "Highest"
+        top_mat = rows[0].get("Material", "N/A")
+        top_desc = rows[0].get("Material Description", "")
+        top_qty = rows[0].get("Total Stock Quantity", 0.0)
+        uom = rows[0].get("UOM", "EA")
+
+        single_stmt = f"The material with the **{label.lower()} stock quantity** is **`{top_mat}`** ({top_desc}) with **{top_qty:,.0f} {uom}**."
+        if is_single_statement_requested or len(rows) == 1:
+            return single_stmt
+
+        lines = [
+            f"### 📊 Top {len(rows)} {label} Stocked Materials\n",
+            single_stmt,
+            f"\n**Material Inventory Ranking:**"
+        ]
+        for r in rows[:10]:
+            rnk = r.get("Rank", "-")
+            m = r.get("Material", "N/A")
+            d = r.get("Material Description", "")
+            q = r.get("Total Stock Quantity", 0.0)
+            lines.append(f"- **Rank {rnk} — `{m}`** ({d}): **{q:,.0f} {uom}**")
+        lines.append("\n💡 *The complete ranking is rendered in the **Data Table** below.*")
+        return "\n".join(lines)
+
+    # 2D. Generalized Storage Location Inventory Ranking
+    if "Total Inventory Quantity" in cols and "Storage Location" in cols and "Rank" in cols:
+        is_least = any(k in q_lower for k in ["least", "lowest", "bottom", "minimum"])
+        label = "Least" if is_least else "Highest"
+        top_sloc = rows[0].get("Storage Location", "N/A")
+        top_plant = rows[0].get("Plant", "")
+        top_qty = rows[0].get("Total Inventory Quantity", 0.0)
+
+        single_stmt = f"Storage Location **`{top_sloc}`** (Plant {top_plant}) holds the **{label.lower()} inventory quantity** at **{top_qty:,.0f} units**."
+        if is_single_statement_requested or len(rows) == 1:
+            return single_stmt
+
+        lines = [
+            f"### 📊 Storage Location Inventory Ranking\n",
+            single_stmt,
+            f"\n**Storage Location Ranking:**"
+        ]
+        for r in rows[:10]:
+            rnk = r.get("Rank", "-")
+            sl = r.get("Storage Location", "N/A")
+            p = r.get("Plant", "")
+            q = r.get("Total Inventory Quantity", 0.0)
+            lines.append(f"- **Rank {rnk} — SLoc `{sl}`** (Plant {p}): **{q:,.0f} units**")
+        lines.append("\n💡 *The complete ranking is rendered in the **Data Table** below.*")
+        return "\n".join(lines)
+
     # 3. Top N or Bottom N Utilized Bins Ranking
     if ("Bin Capacity" in cols or "Capacity" in cols) and ("Utilization" in cols or "Utilization %" in cols) and any(k in q_lower for k in ["top", "most", "highest", "bottom", "least", "lowest", "emptiest"]) and not any(k in q_lower for k in ["more than", "greater than", "less than", "above", "below", ">", "<"]):
         is_least = any(k in q_lower for k in ["bottom", "least", "lowest", "emptiest"])
@@ -2616,16 +2833,31 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
         if any(k in cols for k in ["TotalUnrestrictedQuantity", "TotalQuantity", "TotalUniqueMaterials", "TotalBins"]):
             return {"output_type": "kpi", "chart_type": "none", "metric": generated.get("metric", "total_inventory"), "intent": generated.get("intent", "inventory_summary"), "time_range": "current"}
 
-    # 3. Plant / Warehouse Bin Utilization
+    # 3. Plant / Warehouse Bin Utilization & Extremes
     if "BinUtilizationPct" in cols or "VolumeUtilizationPct" in cols:
+        is_single_stmt = any(s in q_lower for s in ["single statement", "single line", "one line", "concise", "briefly", "in short"]) or any(k in q_lower for k in ["which plant", "plant with the lowest", "plant with the highest", "what is the lowest", "what is the highest"])
+        if row_count == 1 or is_single_stmt:
+            return {
+                "output_type": "text",
+                "chart_type": "none",
+                "metric": generated.get("metric", "bin_utilization"),
+                "intent": generated.get("intent", "bin_utilization"),
+                "time_range": "current"
+            }
+        
+        is_explicit_chart = bool(
+            any(k in q_lower for k in ["graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart"])
+        )
+        c_type = "bar" if is_explicit_chart else "none"
+        out_type = "bar_chart" if is_explicit_chart else "table"
         return {
-            "output_type": "bar_chart",
-            "chart_type": "bar",
-            "chart_title": "Warehouse Bin Utilization by Plant (%)",
-            "chart_x": "Plant",
-            "chart_y": "BinUtilizationPct",
-            "metric": "warehouse_utilization",
-            "intent": "bin_utilization",
+            "output_type": out_type,
+            "chart_type": c_type,
+            "chart_title": generated.get("chart_title", "Warehouse Bin Utilization by Plant (%)"),
+            "chart_x": "Plant" if is_explicit_chart else None,
+            "chart_y": "BinUtilizationPct" if is_explicit_chart else None,
+            "metric": generated.get("metric", "warehouse_utilization"),
+            "intent": generated.get("intent", "bin_utilization"),
             "time_range": "current"
         }
 
