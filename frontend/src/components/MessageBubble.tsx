@@ -61,7 +61,8 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     message.intent === 'bin_plant_lookup' ||
     message.intent === 'bin_occupancy_status' ||
     message.intent === 'bin_quantity_lookup' ||
-    message.intent === 'bin_materials_count'
+    message.intent === 'bin_materials_count' ||
+    ((message.intent === 'lowest_bin_utilization' || message.intent === 'highest_bin_utilization') && (rows.length <= 1 || message.output_type === 'text'))
   );
 
 
@@ -226,23 +227,6 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
             </div>
           )}
 
-          {/* 7. Follow-up Action / Detail Offer */}
-          {message.follow_up_action && (
-            <div className="mt-3 p-3.5 bg-gradient-to-r from-sky-50 to-indigo-50 dark:from-slate-800/90 dark:to-sky-950/40 rounded-xl border border-sky-200/80 dark:border-sky-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-              <div className="flex items-center space-x-2.5 text-slate-800 dark:text-slate-200 text-xs font-medium">
-                <Sparkles className="w-4 h-4 text-sky-600 dark:text-sky-400 flex-shrink-0" />
-                <span>{message.follow_up_action.message}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => onFollowUpClick && onFollowUpClick(message.follow_up_action!.action_prompt)}
-                className="flex items-center space-x-1.5 px-3.5 py-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer flex-shrink-0"
-              >
-                <span>{message.follow_up_action.label || 'Generate Detailed Analysis'}</span>
-                <span>→</span>
-              </button>
-            </div>
-          )}
 
 
           {/* Warnings */}

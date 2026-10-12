@@ -2,6 +2,7 @@
 Enforces strict read-only execution, schema allowlisting, and rejection of unsafe SQL constructs.
 """
 
+import re
 import sqlglot
 from sqlglot import exp
 from typing import Set
@@ -205,14 +206,31 @@ def validate_query_result(question: str, query_plan: dict | None, sql: str, rows
             return False, "User requested: Material-level missing-dimension records. Returned: Non-material entity. These do not satisfy the requested analytical task."
 
     # 2. Top / Bottom Bins Ranking
-    is_ranking_req = any(k in q_lower for k in ["top", "bottom", "most utilized", "least utilized", "lowest utilized", "highest utilized", "lowest ones", "least ones", "emptiest bins"]) or (
-        ("most" in q_lower or "least" in q_lower or "top" in q_lower or "bottom" in q_lower or "highest" in q_lower or "lowest" in q_lower) and
-        ("utiliz" in q_lower or "capacit" in q_lower or "occup" in q_lower or "full" in q_lower or "bin" in q_lower or "bins" in q_lower or "ones" in q_lower) and
-        not any(m in q_lower for m in ["material", "sku", "product", "goods"])
-    )
+    is_plant_query = bool(re.search(r"\b(?:plants?|plnts?|facility|facilities)\b", q_lower))
+    is_ranking_req = (
+        any(k in q_lower for k in ["top", "bottom", "most utilized", "least utilized", "lowest utilized", "highest utilized", "lowest ones", "least ones", "emptiest bins"]) or (
+            ("most" in q_lower or "least" in q_lower or "top" in q_lower or "bottom" in q_lower or "highest" in q_lower or "lowest" in q_lower) and
+            ("utiliz" in q_lower or "capacit" in q_lower or "occup" in q_lower or "full" in q_lower or "bin" in q_lower or "bins" in q_lower or "ones" in q_lower) and
+            not any(m in q_lower for m in ["material", "sku", "product", "goods"])
+        )
+    ) and not is_plant_query
     if is_ranking_req:
         if any(c in cols for c in ["TotalUniqueMaterials", "TotalActiveBins", "TotalUnrestrictedQuantity", "TotalBins"]) and "Ranking Group" not in cols and "Bin" not in cols and "BinLocation" not in cols and "BinNo" not in cols:
             return False, "User requested: Bin utilization ranking records. Returned: Plant-level aggregated summary. These do not satisfy the requested ranking task."
+        if not rows:
+            return False, "User requested: Bin utilization ranking/extreme. Returned: 0 records. Rejecting to regenerate with valid bin query."
+        is_single_bin_extreme = any(k in q_lower for k in ["which bin", "whic bin", "what bin", "wat bin", "bin with the lowest", "bin with lowest", "bin with the highest", "bin with highest"])
+        if is_single_bin_extreme and len(rows) > 1 and not any(d in q_lower for d in ["ranking", "table", "list", "top 10", "top 5", "bottom 10", "bottom 5"]):
+            return False, "User requested: Single bin extreme statement. Returned: Multi-row table. Rejecting to regenerate single bin answer."
+
+    # 2B. Plant-Level Lowest / Highest Bin Utilization Validation
+    is_plant_extreme_req = is_plant_query and any(k in q_lower for k in ["lowest", "least", "minimum", "worst", "highest", "most", "maximum", "best"]) and any(k in q_lower for k in ["utiliz", "occupan", "capacity", "fill"])
+    if is_plant_extreme_req:
+        if ("Bin" in cols or "BinLocation" in cols) and "Plant" not in cols:
+            return False, "User requested: Plant-level bin utilization extreme/ranking. Returned: Individual bin rows. Rejecting to re-execute plant-level query."
+        if len(rows) > 1 and not any(d in q_lower for d in ["ranking", "table", "all plants", "compare", "list", "breakdown", "detailed", "detail form"]):
+            if any(k in q_lower for k in ["which plant", "whic plant", "what plant", "wat plant", "single statement", "single line", "one line"]):
+                return False, "User requested: Single plant extreme/statement. Returned: Multi-row table. Rejecting to return single statement scalar answer."
 
     # 3. Available / Empty Put-Away Bins
     is_putaway_req = any(k in q_lower for k in ["empty bin", "empty bins", "putaway", "put-away", "vacant", "unoccupied", "without displacing", "free bin", "free storage"])

@@ -536,7 +536,43 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
         "8. Never show a large table when the user asks only for an aggregate KPI.",
         "9. After query execution, validate that the result matches the user's requested intent, aggregation, scope, and response format. If it does not match, reject the result and regenerate the query.",
         "10. Never invent or assume a Plant, Bin, Material, or other filter."
-    ]
+    ],
+
+    # =========================================================================
+    # 10. BIN UTILIZATION CONTEXT & RESPONSE POLICY (Complete Specification)
+    # =========================================================================
+    "bin_utilization_policy": {
+        "core_pipeline": "USER QUESTION -> INTENT -> METRIC -> FILTERS -> CALCULATION -> OUTPUT TYPE -> RESPONSE (with CONVERSATION CONTEXT)",
+        "concepts": {
+            "bin": "A warehouse storage location (bin, storage bin, storage location, location)",
+            "bin_utilization": "How much of a bin's capacity is occupied (utilization, used %, occupancy, capacity usage)",
+            "occupied_volume": "Volume currently occupied in a bin (used volume, occupied volume, volume used)",
+            "total_capacity": "Maximum volume/capacity available in a bin (bin capacity, total capacity, max capacity)",
+            "available_capacity": "Capacity still available for use: TOTAL BIN CAPACITY - TOTAL OCCUPIED VOLUME (free space, remaining capacity, available space)",
+            "empty_bin": "A bin with zero occupied inventory/volume according to project data definition: UnrestrictedQty = 0 or BinNo IS NULL (empty bin, unused bin, unoccupied bin)",
+            "plant": "A warehouse/organizational plant used as a filter (plant, site, warehouse plant)",
+            "top_utilized": "Highest utilization percentages (most utilized, highest utilization, fullest)",
+            "least_utilized": "Lowest utilization percentages (least utilized, lowest utilization, emptiest by %)"
+        },
+        "calculation_rules": {
+            "bin_utilization_pct": "(TOTAL OCCUPIED VOLUME / TOTAL BIN CAPACITY) * 100",
+            "available_capacity": "TOTAL BIN CAPACITY - TOTAL OCCUPIED VOLUME",
+            "overall_warehouse_utilization": "Calculate from total occupied volume and total bin capacity for the complete filtered dataset. Do NOT calculate overall utilization as the simple average of individual bin percentages.",
+            "plant_specific": "Apply plant filter before calculating the metric.",
+            "rankings": "Calculate/obtain each bin's utilization and sort by the requested direction."
+        },
+        "intent_categories": {
+            "single_metric": {"primary_output": "One number + short explanation (1-3 lines)", "avoid": "Unrequested table or chart"},
+            "count": {"primary_output": "Count + short criterion", "avoid": "Full record list"},
+            "list": {"primary_output": "Compact table/list", "avoid": "Long narrative"},
+            "top_bottom_ranking": {"primary_output": "Ranked table with Rank, Bin, Plant, Utilization %", "avoid": "Unrequested charts"},
+            "comparison": {"primary_output": "Compact comparison + conclusion", "avoid": "Every underlying row"},
+            "capacity_analysis": {"primary_output": "Requested capacity metric(s): Total Capacity, Occupied Volume, Available Capacity", "avoid": "Unrelated inventory details"},
+            "lookup": {"primary_output": "One-bin result", "avoid": "Whole warehouse dataset"},
+            "detail_request": {"primary_output": "When user includes 'detail', 'explain', 'breakdown', or similar context: automatically recognize the detail intent and return detailed summary -> storage location chart -> detailed breakdown table directly (no manual button required). For normal overview: return clean concise summary table.", "avoid": "Unnecessary confirmation buttons or raw DB dumps"}
+        },
+        "master_instruction": "BIN UTILIZATION CONTEXT: Understand bin-utilization questions by semantic meaning, not exact question matching. Map synonyms such as most utilized/highest/fullest, least utilized/lowest/least-used, empty/unoccupied/zero inventory, and free/remaining/available capacity to the correct intent. Extract metric, plant filter, bin filter, threshold, ranking direction, limit, aggregation, and requested output style from the user's wording. When the user asks for 'detail', 'details', 'explain', 'explanation', 'breakdown', or 'elaborate', immediately recognize this analytical depth context and return the detailed breakdown with chart visualization and granular data without prompting for manual buttons. Preserve relevant context across follow-up questions; resolve 'ones', 'them', 'those', 'same', and similar references from the latest applicable query. Do not invent filters. If no plant is specified, do not silently select a plant. For overall utilization, calculate total occupied volume divided by total bin capacity, multiplied by 100, using the complete applicable dataset—not the average of row-level percentages. For available capacity, calculate total capacity minus occupied volume. For rankings, sort the requested bins by utilization in the requested direction and apply the requested N after filtering. Choose the minimum response format that fully answers the question: a single value for a single metric, a count for 'how many', a compact table for lists/rankings, a comparison table for comparisons, and a summary/table for analytical requests. Add a chart only when the user asks for one, when detail/explain is requested, or when a distribution/comparison report clearly benefits from one. Never add unrequested metrics, raw rows, or redundant action buttons. Always prioritize correctness, relevance, and concise presentation."
+    }
 }
 
 

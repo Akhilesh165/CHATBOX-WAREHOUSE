@@ -253,8 +253,9 @@ async def chat_endpoint(req: ChatRequest):
 
     # 5. Generate Grounded Answer from SQL Result
     answer_start = time.perf_counter()
+    resolved_query_for_answer = generated.get("conversation_state", {}).get("resolved_query") or req.message
     try:
-        answer = await generate_answer(req.message, validated_sql, rows)
+        answer = await generate_answer(resolved_query_for_answer, validated_sql, rows)
     except Exception as ans_err:
         logger.warning(f"Answer generation error, falling back to structured summary: {ans_err}")
         if not rows:
@@ -266,7 +267,7 @@ async def chat_endpoint(req: ChatRequest):
 
     # 6. Automatically optimize response format and visual presentation
     try:
-        opt = optimize_response_format(req.message, rows, generated)
+        opt = optimize_response_format(resolved_query_for_answer, rows, generated)
     except Exception as opt_err:
         logger.warning(f"optimize_response_format error: {opt_err}")
         opt = {}
