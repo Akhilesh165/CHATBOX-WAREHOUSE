@@ -22,7 +22,11 @@ STRICT FORMATTING & OUTPUT RULES:
    - DATA QUALITY / EXCEPTION REPORTS:
      State total exception items and affected quantities, categorizing issues (Missing Master vs Incomplete Dimensions), and refer to the Data Table.
    - RANKING:
-     Summarize top/bottom leaders with their exact figures. Do not suggest a chart unless explicitly requested.
+     - Singular Ranking ("Which plant has the highest occupied volume?"): Return strictly ONE crisp executive statement stating the #1 entity and its exact metric value.
+     - Specific Entity Rank Lookup ("What rank is Plant 1258 by occupied volume?"): State the exact rank position, entity, metric value, and total entity count (e.g. "Plant 1258 ranks #3 by total occupied volume at 366,543.00 FT³ across all 4 plants.").
+     - Ranking Explanation ("Why is Plant 1268 ranked #1 by occupied volume?"): Explain why it holds that rank with exact figures and context.
+     - Full or Top/Bottom Ranking: Summarize top/bottom leaders with their exact figures and highlight key takeaways. Point out the full ordered ranking in the Data Table below.
+     - Chart Suppression: Do NOT suggest or generate a chart for ranking queries unless explicitly requested by the user.
    - COMPARISON:
      Provide side-by-side comparison across the requested entities for the specified subject (total inventory, unique materials, bins, utilization, etc.).
 

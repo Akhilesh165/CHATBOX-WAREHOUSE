@@ -345,21 +345,67 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
     },
 
     # =========================================================================
-    # 8. UNIVERSAL RANKING CONTEXT & RULES
+    # 8. UNIVERSAL RANKING CONTEXT & RULES (Master Ranking Pipeline)
     # =========================================================================
     "ranking_rules": {
-        "supported_entities": ["Material", "Bin", "Plant", "StorageLocation"],
-        "supported_metrics": ["UnrestrictedQty", "BinUtilizationPct", "Volume", "ActiveBins"],
+        "description": "Universal analytical ranking system for all warehouse entities, metrics, directions, filters, and formats.",
+        "master_ranking_pipeline": [
+            "1. Identify Ranking Intent (rank, sort, order, highest, lowest, leading, lagging)",
+            "2. Identify Ranking Entity (Plant, Bin, Material, StorageLocation)",
+            "3. Identify Ranking Metric (Occupied Volume, Utilization %, Total Inventory, Bins, Materials, Available Capacity)",
+            "4. Identify Aggregation (SUM, COUNT, COUNT DISTINCT, AVG)",
+            "5. Extract Filters & Scopes (Plant, StorageLocation, Material)",
+            "6. Extract Thresholds / Conditions (> 80%, >= 80%, < 20%, <= 20%, BETWEEN 70 AND 90)",
+            "7. Determine Direction (DESC: top/highest/most; ASC: bottom/lowest/least)",
+            "8. Determine Result Limit (scalar: 1, top N: N, all: complete population without arbitrary limits)",
+            "9. Calculate & Aggregate complete relevant dataset before sorting",
+            "10. Assign Competition Rank & Handle Ties (1, 2, 2, 4)",
+            "11. Choose Response Format (concise for singular, clean ranked table [Rank, Entity, Metric] for full)",
+            "12. Suppress charts unless explicitly requested or required by detail mode"
+        ],
+        "supported_entities": ["Plant", "Bin", "Material", "StorageLocation"],
+        "entity_metric_mappings": {
+            "Plant": {
+                "Total Occupied Volume": "SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END) [Total Occupied Volume (FT3)]",
+                "Bin Utilization %": "ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1) [Bin Utilization %]",
+                "Total Inventory Quantity": "SUM(i.UnrestrictedQty) [Total Inventory Quantity]",
+                "Number of Bins": "COUNT(DISTINCT b.BinLocation) [Number of Bins]",
+                "Number of Materials": "COUNT(DISTINCT i.Material) [Number of Materials]",
+                "Available Capacity": "ROUND(SUM(b.Volume) - SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) [Available Capacity (FT3)]"
+            },
+            "Bin": {
+                "Utilization %": "ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1) [Utilization %]",
+                "Available Capacity": "ROUND(b.Volume - COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) [Available Capacity (FT3)]",
+                "Total Stock Quantity": "SUM(i.UnrestrictedQty) [Total Stock Quantity]"
+            },
+            "Material": {
+                "Inventory Quantity": "SUM(i.UnrestrictedQty) [Total Stock Quantity]",
+                "Occupied Volume Share": "SUM(i.UnrestrictedQty * m.Volume) [Total Material Volume]"
+            },
+            "StorageLocation": {
+                "Total Inventory Quantity": "SUM(i.UnrestrictedQty) [Total Inventory Quantity]",
+                "Bin Utilization %": "ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1) [Bin Utilization %]"
+            }
+        },
+        "critical_distinctions": {
+            "occupied_volume_vs_utilization": "Occupied volume measures actual cubic feet used (FT3). Utilization % measures occupied volume relative to capacity (%). A plant with higher occupied volume can have lower utilization %. NEVER confuse or substitute them.",
+            "total_vs_average": "Total is SUM(). Average is AVG(). Never substitute average for total.",
+            "ranking_vs_filtering": "Ranking orders entities by metric. Filtering restricts dataset by condition. Ranking with threshold filters first, then ranks qualifying entities."
+        },
         "direction_rules": {
-            "DESC": ["top", "highest", "most", "fullest", "maximum", "best"],
-            "ASC": ["bottom", "lowest", "least", "emptiest", "minimum", "worst"]
+            "DESC": ["top", "highest", "greatest", "largest", "most", "fullest", "maximum", "best", "leading", "highest occupied", "most utilized", "largest capacity"],
+            "ASC": ["bottom", "lowest", "least", "emptiest", "minimum", "worst", "lagging", "least utilized", "lowest occupied", "least inventory", "smallest"]
         },
         "limit_rules": {
             "default": 10,
-            "scalar_extreme": "If user asks 'who is #1?', 'what is the highest', 'which plant has the highest' -> limit 1 + concise response.",
-            "explicit_number": "top 10 -> limit 10, top five -> limit 5, bottom 5 -> limit 5"
+            "scalar_extreme": "If user asks 'who is #1?', 'what is the highest', 'which plant has the highest occupied volume', 'which bin is the least utilized' -> limit 1 + concise single-line response.",
+            "explicit_number": "top 10 -> limit 10, top 5 -> limit 5, bottom 10 -> limit 10",
+            "all_entities": "all, every, complete, full ranking -> return all matching entities without arbitrary limit."
         },
-        "visualization_rule": "Do not automatically add a chart to a ranking request. Output format is ranking_table unless explicit chart requested."
+        "tie_handling": "Entities with equal metric values receive identical rank using competition ranking (1, 2, 2, 4) with DENSE_RANK() or RANK().",
+        "specific_entity_lookup": "Questions like 'what rank is Plant 1258?' or 'where does bin NRJP2124D2 stand?' calculate the entity's position within the full ranking population and return concise rank statement.",
+        "explanation_rule": "'Why is Plant X ranked #1?' explains the ranking metric difference compared to the next-ranked entity without unrelated clutter.",
+        "visualization_rule": "Do not automatically add a chart to a ranking request. Output format is table / ranking_table unless explicit visualization requested."
     },
 
     # =========================================================================

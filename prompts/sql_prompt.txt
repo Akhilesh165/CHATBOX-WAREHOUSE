@@ -89,20 +89,42 @@ Query-plan representation:
 The phrase "compare Plant A and Plant B" must NOT automatically mean "compare bin utilization". The subject/metric must be inferred from the rest of the question.
 
 ===================================================================
-6. UNIVERSAL RANKING CONTEXT
+6. UNIVERSAL RANKING CONTEXT (47-Section Master Ranking Pipeline)
 ===================================================================
-Ranking works for bins, materials, plants, storage locations, volume, quantity, utilization, etc.
-Rules:
-- "top / highest / most" -> DESC
-- "bottom / lowest / least" -> ASC
-- "top 10" -> limit 10
-- "top five" -> limit 5
-- "who is #1?" -> limit 1 + concise response
-- "give me the ranking" -> ranking table
-- "rank materials by quantity" -> Material ranking
-- "rank bins by utilization" -> Bin ranking
-- "rank plants by inventory" -> Plant ranking
-Do NOT automatically add a chart to a ranking request!
+Master Pipeline:
+What is being ranked (Entity) → What metric is used (Metric) → How it is calculated (Aggregation) → What filters apply (Scope) → Ranking direction (Direction) → How many results (Limit) → What format (Format)
+
+1. Ranking Entities:
+- Plant, Bin, Material, StorageLocation
+2. Orthogonal Ranking Metrics (NEVER silently substitute):
+- Total Occupied Volume: SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END) (e.g. Plant 1268 #1)
+- Bin Utilization %: COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0) (e.g. Plant 7228 #1)
+- Total Inventory Quantity: SUM(i.UnrestrictedQty)
+- Total Bins Count: COUNT(DISTINCT b.BinLocation)
+- Unique Materials Count: COUNT(DISTINCT i.Material)
+- Available Capacity: Total Capacity - Occupied Volume
+3. Aggregation Rule:
+- When ranking higher-level entities (Plant, StorageLocation), ALWAYS GROUP BY that entity across the complete dataset.
+- Never rank individual database rows when the user asks for a plant-level ranking.
+4. Direction Rules:
+- "top / highest / most / largest / best" -> DESC
+- "bottom / lowest / least / smallest / worst" -> ASC
+- "reverse it / flip the order" -> invert active direction
+5. Limit Rules:
+- "top 10" -> TOP 10
+- "top 5" -> TOP 5
+- "all / every / complete ranking" -> all entities (no arbitrary row limit)
+- "who is #1? / which plant has highest..." -> TOP 1 + concise single-line format
+6. Specific Entity Rank Lookup & Explanation:
+- "What rank is Plant 1258 by occupied volume?" -> Compute ROW_NUMBER() OVER (...) in subquery and filter WHERE Plant = '1258'.
+- "Why is Plant 1268 ranked #1 by occupied volume?" -> Select #1 metrics and total context.
+7. Follow-up Context:
+- "What about the lowest ones?" -> preserves active entity (Plant/Material) and flips direction to ASC.
+- "Show 5 instead" -> updates LIMIT to 5 preserving entity, metric, and direction.
+8. Output Format & Chart Suppression:
+- Default to ranked table [Rank, Entity, Metric] with chart_type: "none".
+- Singular query (Limit 1) or specific entity lookup -> single-line concise text.
+- Do NOT automatically add a chart to a ranking request unless explicitly requested ("chart", "graph", "plot", "visualize").
 
 ===================================================================
 7. SINGLE-LINE RESPONSE CONTEXT
