@@ -1,30 +1,45 @@
 """
-WAREHOUSE AI SEMANTIC CONTEXT & BUSINESS KNOWLEDGE ARCHITECTURE
-===============================================================
-Enforces the Strict 6-Step Priority Hierarchy:
-  1. Schema (Tables, Columns, Data Types)
-  2. Relationships (Joins, Keys, Multi-Table Links)
-  3. Business Definitions (Formulas, Concepts, Calculation Rules)
-  4. Intent (Analytical Task, Action, Aggregation)
-  5. Scope / Filters (Plant, Bin, Material, Storage Location)
-  6. Response Format (Single Line vs Table vs Chart vs KPI Dashboard)
+WAREHOUSE AI SEMANTIC CONTEXT & CANONICAL BUSINESS KNOWLEDGE CONTRACT
+=====================================================================
+Unified structured context contract consumed across all pipeline layers:
+Query Analyzer -> QueryPlan -> SQL Generator -> SQL Validator -> Result Validator -> Response Formatter
+
+Canonical Branches:
+  1. schema
+  2. relationships
+  3. business_definitions
+  4. intents
+  5. scope_rules
+  6. range_rules
+  7. comparison_rules
+  8. ranking_rules
+  9. response_depth_rules
+  10. response_format_rules
+  11. visualization_rules
+  12. conversation_state_rules
 """
 
 from typing import Any, Dict, List
 
 WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
-    # Metadata & Pipeline Priority Sequence
+    # Pipeline Priority Sequence
     "pipeline_priority_order": [
         "1. SCHEMA",
         "2. RELATIONSHIPS",
         "3. BUSINESS_DEFINITIONS",
-        "4. INTENT",
-        "5. SCOPE_FILTERS",
-        "6. RESPONSE_FORMAT"
+        "4. INTENTS",
+        "5. SCOPE_RULES",
+        "6. RANGE_RULES",
+        "7. COMPARISON_RULES",
+        "8. RANKING_RULES",
+        "9. RESPONSE_DEPTH_RULES",
+        "10. RESPONSE_FORMAT_RULES",
+        "11. VISUALIZATION_RULES",
+        "12. CONVERSATION_STATE_RULES"
     ],
 
     # =========================================================================
-    # 1. DATABASE SCHEMA (Exact project tables, columns, and data specifications)
+    # 1. SCHEMA (Exact project tables, columns, and data types)
     # =========================================================================
     "schema": {
         "inventory_master": {
@@ -33,38 +48,56 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
             "columns": {
                 "Material": "Material identifier (SKU)",
                 "MaterialDescription": "Material descriptive name",
-                "Plant": "Facility/Plant code (e.g. 1258, 1266, 1268, 7228)",
-                "StorageLocation": "Storage location code within plant (e.g. B2B, RAW)",
-                "BinNo": "Storage bin location identifier",
-                "UnrestrictedQty": "Unrestricted available stock quantity",
-                "BaseUnitOfMeasure": "Unit of measurement (e.g. EA, KG)",
-                "Batch": "Inventory batch number"
+                "Plant": "4-digit Plant code (e.g. 1258, 1266, 1268, 7228)",
+                "StorageLocation": "Storage location code (e.g. B2B, RAW, FGS)",
+                "Batch": "Batch / lot number",
+                "UnrestrictedQty": "Active unrestricted inventory quantity (DECIMAL)",
+                "UnrestrictedQty2": "Secondary unit quantity (DECIMAL)",
+                "BaseUnitOfMeasure": "Unit of measure (e.g. PC, EA, NOS)",
+                "Mrp": "Maximum Retail Price (DECIMAL)",
+                "FullyVestedOn": "Date inventory fully vested / received (DATETIME)",
+                "ChangedAt": "Timestamp of last status modification (DATETIME)",
+                "BinNo": "Assigned storage bin location code"
             }
         },
         "bin_master": {
             "table_name": "dbo.ZWMS_BIN_MASTER",
-            "description": "Physical storage bins with maximum physical capacity and volume specs",
+            "description": "Physical master definition of all storage bins across plants",
             "columns": {
-                "Plant": "Facility code owning the bin",
-                "BinLocation": "Storage bin identifier (e.g. NRJP2124D2, B001)",
-                "StorageLocation": "Storage location category",
+                "Plant": "Plant code associated with the bin",
+                "BinLocation": "Storage bin unique location coordinate",
+                "StorageLocation": "Associated warehouse storage location",
+                "PalletType": "Compatible pallet type",
+                "Box": "Box classification identifier",
+                "Owner": "Designated bin owner / vendor",
                 "Volume": "Total physical capacity volume of the bin",
-                "VolumeUnit": "Unit of volume (FT3)",
-                "PalletType": "Compatible pallet type"
+                "VolumeUnit": "Unit of bin volume measurement (e.g. FT3, M3)",
+                "Length": "Physical bin length",
+                "Width": "Physical bin width",
+                "Height": "Physical bin height"
             }
         },
-        "volume_master": {
+        "material_master": {
             "table_name": "dbo.ZWMS_MATERIAL_MASTER",
-            "description": "Material physical specs, packaging dimensions, and cubic volume",
+            "description": "Material physical characteristics, volume, packaging and divisional metadata",
             "columns": {
-                "MaterialCode": "Material identifier matching dbo.ZWMS_INVENTORY.Material",
-                "MaterialDescription": "Material name in master",
+                "MaterialCode": "Unique material code matching ZWMS_INVENTORY.Material",
+                "MaterialDescription": "Master material description",
+                "Division": "Material division identifier",
+                "DivisionDescription": "Material division full name",
+                "MaterialGroup": "Material grouping code",
+                "GrossWeight": "Gross weight per unit",
+                "NetWeight": "Net weight per unit",
                 "Length": "Physical unit length",
                 "Width": "Physical unit width",
                 "Height": "Physical unit height",
                 "Volume": "Calculated physical unit volume",
                 "VUom": "Unit of volume"
             }
+        },
+        "inventory_enriched_view": {
+            "view_name": "dbo.vw_WMS_InventoryEnriched",
+            "description": "Enriched reporting view joining Inventory, Bin Master, and Material Master"
         }
     },
 
@@ -72,7 +105,7 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
     # 2. RELATIONSHIPS (Join keys, Multi-Table links, Cardinalities)
     # =========================================================================
     "relationships": {
-        "inventory_to_volume_master": {
+        "inventory_to_material_master": {
             "from_table": "dbo.ZWMS_INVENTORY",
             "to_table": "dbo.ZWMS_MATERIAL_MASTER",
             "join_type": "LEFT JOIN",
@@ -84,14 +117,14 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
             "from_table": "dbo.ZWMS_BIN_MASTER",
             "to_table": "dbo.ZWMS_INVENTORY",
             "join_type": "LEFT JOIN",
-            "condition": "dbo.ZWMS_BIN_MASTER.BinLocation = dbo.ZWMS_INVENTORY.BinNo AND dbo.ZWMS_BIN_MASTER.Plant = dbo.ZWMS_INVENTORY.Plant",
-            "business_key": "BinLocation = BinNo AND Plant = Plant",
+            "condition": "dbo.ZWMS_BIN_MASTER.BinLocation = dbo.ZWMS_INVENTORY.BinNo AND dbo.ZWMS_BIN_MASTER.Plant = dbo.ZWMS_INVENTORY.Plant AND dbo.ZWMS_BIN_MASTER.StorageLocation = dbo.ZWMS_INVENTORY.StorageLocation",
+            "business_key": "BinLocation = BinNo AND Plant = Plant AND StorageLocation = StorageLocation",
             "cardinality": "one_to_many"
         }
     },
 
     # =========================================================================
-    # 3. BUSINESS DEFINITIONS & CALCULATION RULES (Calculation Formulas)
+    # 3. BUSINESS DEFINITIONS & CALCULATION RULES (Authoritative Formulas)
     # =========================================================================
     "business_definitions": {
         "EMPTY_BIN": {
@@ -109,19 +142,24 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
             "synonyms": ["occupied", "active bin", "in use", "filled bin", "currently occupied"]
         },
         "BIN_UTILIZATION": {
-            "meaning": "Percentage of occupied bins out of total bins in facility/network",
+            "meaning": "Occupied bins / total applicable bins * 100",
             "formula": "COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0)",
             "synonyms": [
                 "bin utilization", "bin occupancy", "bin fill rate", "facility fill",
                 "space utilization rate", "bin fill percentage", "how full are bins"
+            ],
+            "rules": [
+                "Overall utilization must use the complete requested scope, not an average of percentages.",
+                "Plant and bin filters must be applied before aggregation.",
+                "Ranking must calculate the metric at bin granularity before sorting."
             ]
         },
         "VOLUME_UTILIZATION": {
-            "meaning": "Percentage of occupied physical volume against total bin capacity volume",
+            "meaning": "Total occupied material volume / total bin capacity * 100",
             "formula": "SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END) * 100.0 / NULLIF(SUM(b.Volume), 0)",
             "synonyms": [
                 "volume utilization", "volumetric utilization", "storage capacity usage",
-                "cubic capacity utilization", "occupied volume percentage"
+                "cubic capacity utilization", "occupied volume percentage", "capacity utilization"
             ]
         },
         "MATERIALS_MISSING_FROM_VOLUME_MASTER": {
@@ -150,166 +188,282 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
             "entity": "inventory",
             "field": "UnrestrictedQty",
             "aggregation": "SUM",
-            "scope": "ALL_WAREHOUSE",
             "formula": "SUM(UnrestrictedQty)",
             "synonyms": [
-                "total warehouse inventory",
-                "what is the total inventory",
-                "how much inventory is currently in the warehouse",
-                "what is the total inventory quantity",
-                "how many units are currently in inventory",
-                "give me the current warehouse inventory",
-                "how much stock is in the warehouse",
-                "what is the total stock",
-                "total unrestricted inventory",
-                "total units in inventory",
-                "how much total inventory",
-                "total stock quantity",
-                "current warehouse inventory",
-                "how many total units",
-                "how much inventory do we have",
-                "total inventory",
-                "total stock"
-            ],
-            "default_response": {
-                "format": "SINGLE_LINE",
-                "show_table": False,
-                "show_chart": False,
-                "example_warehouse": "Total warehouse inventory is 4,464,910 units.",
-                "example_plant": "Total inventory in Plant {plant} is {qty} units."
-            },
-            "if_user_requests_chart": {
-                "show": [
-                    "summary",
-                    "relevant_chart",
-                    "supporting_table"
-                ],
-                "chart_type": "bar",
-                "group_by": "Plant"
-            }
+                "total warehouse inventory", "what is the total inventory",
+                "how much inventory is currently in the warehouse", "total stock",
+                "what is the total inventory quantity", "how many units are currently in inventory",
+                "current warehouse inventory", "total unrestricted inventory", "total units in inventory"
+            ]
         },
         "INVENTORY_RECORDS_COUNT": {
-            "meaning": "Total physical count of rows / records in the inventory master dataset",
+            "meaning": "Total count of records / rows in the inventory dataset",
             "metric": "inventory_records_count",
             "entity": "inventory",
             "field": "rows",
             "aggregation": "COUNT",
-            "scope": "ALL_WAREHOUSE",
             "formula": "COUNT(*)",
             "synonyms": [
-                "how many inventory records are there",
-                "count of inventory records",
-                "total inventory records",
-                "how many inventory rows are there",
-                "number of inventory records",
-                "number of inventory rows",
-                "how many records in inventory",
-                "inventory record count",
-                "total records in inventory",
-                "inventory rows count"
-            ],
-            "default_response": {
-                "format": "SINGLE_LINE",
-                "show_table": False,
-                "show_chart": False,
-                "example_warehouse": "There are 35,419 inventory records.",
-                "example_plant": "There are 5,517 inventory records in Plant {plant}."
-            }
+                "how many inventory records are there", "count of inventory records",
+                "total inventory records", "how many inventory rows are there",
+                "number of inventory records", "number of inventory rows", "inventory record count"
+            ]
         },
         "UNIQUE_MATERIALS_COUNT": {
-            "meaning": "Total count of distinct active material SKUs in the inventory dataset",
+            "meaning": "Total count of distinct active material SKUs in inventory",
             "metric": "unique_materials_count",
             "entity": "material",
             "field": "Material",
             "aggregation": "COUNT_DISTINCT",
-            "scope": "ALL_WAREHOUSE",
             "formula": "COUNT(DISTINCT Material)",
             "synonyms": [
-                "how many materials are in inventory",
-                "how many materials are there",
-                "how many unique materials",
-                "how many distinct materials",
-                "number of materials in inventory",
-                "how many materials do we have",
-                "number of unique skus",
-                "how many skus in inventory",
-                "count of unique materials",
-                "unique materials in warehouse"
-            ],
-            "default_response": {
-                "format": "SINGLE_LINE",
-                "show_table": False,
-                "show_chart": False,
-                "example_warehouse": "There are 2,883 unique materials in inventory.",
-                "example_plant": "There are {count} unique materials in Plant {plant}."
-            }
-        },
-        "LOWEST_BIN_UTILIZATION": {
-            "meaning": "Lowest bin utilization identified across facilities/plants or ranked at the bottom of storage bins",
-            "metric": "lowest_bin_utilization",
-            "entity": "plant_or_bin",
-            "aggregation": "MIN_OR_RANK_ASC",
-            "synonyms": [
-                "lowest bin utilization", "minimum bin utilization", "least bin utilization",
-                "plant with the lowest bin utilization", "which plant has the lowest bin utilization",
-                "lowest bin utilization plant", "least utilized plant", "which facility has the lowest bin utilization",
-                "least utilized bin", "lowest utilized bin", "bottom bin utilization"
-            ],
-            "default_response": {
-                "format": "SINGLE_LINE_OR_TABLE",
-                "single_line_rule": "If user asks scalar question (e.g. 'which plant has the lowest bin utilization', 'what is the lowest bin utilization'), return concise single-line answer with facility and percentage.",
-                "detail_rule": "If user requests breakdown, ranking list, or detail, return ordered ranking table.",
-                "show_chart": False
-            }
-        },
-        "HIGHEST_BIN_UTILIZATION": {
-            "meaning": "Highest bin utilization identified across facilities/plants or ranked at the top of storage bins",
-            "metric": "highest_bin_utilization",
-            "entity": "plant_or_bin",
-            "aggregation": "MAX_OR_RANK_DESC",
-            "synonyms": [
-                "highest bin utilization", "maximum bin utilization", "most bin utilization", "top bin utilization",
-                "plant with the highest bin utilization", "which plant has the highest bin utilization",
-                "highest bin utilization plant", "most utilized plant", "which facility has the highest bin utilization",
-                "most utilized bin", "highest utilized bin", "top utilized bin"
-            ],
-            "default_response": {
-                "format": "SINGLE_LINE_OR_TABLE",
-                "single_line_rule": "If user asks scalar question (e.g. 'which plant has the highest bin utilization', 'what is the highest bin utilization'), return concise single-line answer with facility and percentage.",
-                "detail_rule": "If user requests breakdown, ranking list, or detail, return ordered ranking table.",
-                "show_chart": False
-            }
-        },
-        "GENERAL_RANKING_SYSTEM": {
-            "meaning": "Universal ranking system providing top or bottom rank orders across any warehouse domain (bins, plants, materials, storage locations)",
-            "intent": "RANKING",
-            "supported_entities": ["bins", "plants", "materials", "storage_locations"],
-            "default_response": {
-                "format_detection": "If user requests scalar leader/worst ('who is #1', 'top plant', 'single statement'), return single-line summary. If user requests 'ranking', 'list', 'top N', 'bottom N', 'detailed form', return formatted ranking table with Rank, Entity, Metrics.",
-                "show_chart": False
-            },
-            "if_user_requests_chart": {
-                "show": ["summary", "relevant_chart", "supporting_table"]
-            }
+                "how many materials are in inventory", "how many materials are there",
+                "how many unique materials", "how many distinct materials",
+                "number of materials in inventory", "count of unique materials"
+            ]
         }
     },
 
     # =========================================================================
-    # 4. INTENT & ANALYTICAL TASK (What operation is requested?)
+    # 4. INTENTS & ANALYTICAL TASKS
     # =========================================================================
     "intents": {
-        "COUNT": "Scalar quantity / frequency evaluation (e.g. How many empty bins?, Count materials)",
-        "KPI": "High-level aggregate single value (e.g. Total quantity, Average inventory per bin)",
+        "KPI": "Single high-level scalar metric evaluation (e.g. Total quantity, Average inventory per bin)",
+        "COUNT": "Frequency / row count evaluation (e.g. How many empty bins?, Count materials)",
         "LIST": "Filtered subset of itemized data records without aggregate reduction",
+        "FILTER": "Conditional subset based on attributes or thresholds",
         "RANKING": "Ordered top N or bottom N list based on a metric (e.g. Top 10 most utilized bins)",
-        "COMPARISON": "Multi-entity comparative breakdown across plants or categories",
+        "COMPARISON": "Generic multi-entity comparative breakdown across plants, storage locations, or materials",
+        "AGGREGATION": "Grouped calculation across dimensions (e.g. Inventory grouped by division)",
+        "TREND": "Time-series analysis over dates/months (e.g. Inventory trend over time)",
         "DATA_QUALITY": "Identification of anomalous, missing, or corrupt records (e.g. Missing dimensions)",
         "CROSS_TABLE_VALIDATION": "Multi-master consistency exceptions (e.g. Inventory vs Volume Master)",
+        "LOOKUP": "Specific single-entity lookup (e.g. bin -> material/quantity/plant)",
         "STATUS": "Binary or discrete operational state verification (e.g. Is bin NRJP2124D2 occupied?)"
     },
 
     # =========================================================================
-    # 5. SCOPE & FILTERS (Entity Isolation & Specific Identification)
+    # 5. SCOPE RULES (Levels, Filters, Isolation)
+    # =========================================================================
+    "scope_rules": {
+        "levels": [
+            "warehouse_wide",
+            "plant",
+            "storage_location",
+            "bin",
+            "material",
+            "batch",
+            "multiple_plants",
+            "multiple_bins",
+            "multiple_materials"
+        ],
+        "plant": {
+            "pattern": r"\b(1258|1266|1268|7228|\d{4})\b",
+            "target_column": "Plant",
+            "rule": "Filter query strictly by Plant code. Explicitly mention filtered Plant in response. Never assume Plant 1258 as default."
+        },
+        "bin": {
+            "pattern": r"(?:bin\s*[:#-]?\s*([a-z0-9_-]{2,25})|\b(b\d{3,5})\b)",
+            "target_column": "BinLocation / BinNo",
+            "rule": "Isolate query to specific bin identifier (e.g. NRJP2124D2). Output concise lookup without unrequested full tables."
+        },
+        "material": {
+            "pattern": r"\b(?:material|sku|item|code)\s*[:#-]?\s*([a-z0-9_-]{5,20})\b",
+            "target_column": "Material / MaterialCode",
+            "rule": "Isolate query to specific material SKU code."
+        },
+        "storage_location": {
+            "pattern": r"\b(b2b|raw|fgs|sloc\s*[:#-]?\s*[a-z0-9_-]+)\b",
+            "target_column": "StorageLocation",
+            "rule": "Filter query strictly by specific storage location."
+        }
+    },
+
+    # =========================================================================
+    # 6. RANGE RULES (Numeric, Date, Quantity, Percentage, Ordinal)
+    # =========================================================================
+    "range_rules": {
+        "supported_forms": [
+            "between 100 and 500 units",
+            "100–500 / 100-500",
+            "from 100 to 500",
+            "at least 100",
+            "100 or more",
+            "above 100",
+            "greater than 100",
+            "below 500",
+            "under 500",
+            "no more than 500",
+            "up to 500",
+            "10%–30%",
+            "last 30 days",
+            "from Jan 1 to Mar 31",
+            "this month / last month / current quarter / year to date"
+        ],
+        "field_resolution_rule": "Do not assume the field from a number alone. The entity/metric context must determine whether the range applies to quantity (UnrestrictedQty), utilization (BinUtilizationPct), volume (Volume), date (FullyVestedOn/ChangedAt), or rank.",
+        "plan_schema": {
+            "range_filters": [
+                {
+                    "field": "UnrestrictedQty | BinUtilizationPct | Volume | FullyVestedOn",
+                    "operator": "BETWEEN | GTE | GT | LTE | LT",
+                    "lower": "number | date",
+                    "upper": "number | date",
+                    "inclusive": True
+                }
+            ]
+        }
+    },
+
+    # =========================================================================
+    # 7. GENERAL COMPARISON CONTEXT & RULES
+    # =========================================================================
+    "comparison_rules": {
+        "description": "Comparison must be a generic analytical capability, not a bin-utilization-only shortcut.",
+        "supported_subjects": [
+            "total_inventory",
+            "materials",
+            "unique_materials",
+            "bins",
+            "bin_utilization",
+            "empty_bins",
+            "occupied_bins",
+            "storage_locations",
+            "top_materials",
+            "material_volume"
+        ],
+        "plan_schema": {
+            "intent": "COMPARISON",
+            "comparison_entities": [
+                {"type": "plant", "value": "1258"},
+                {"type": "plant", "value": "7228"}
+            ],
+            "comparison_subject": "materials | total_inventory | unique_materials | bins | bin_utilization | empty_bins | storage_locations",
+            "metrics": ["unique_materials", "inventory_quantity", "occupied_bins"],
+            "group_by": ["Plant"]
+        },
+        "ambiguity_rule": "The phrase 'compare Plant A and Plant B' must not automatically mean 'compare bin utilization'. If no subject is specified and no safe default exists, ask a short clarification."
+    },
+
+    # =========================================================================
+    # 8. UNIVERSAL RANKING CONTEXT & RULES
+    # =========================================================================
+    "ranking_rules": {
+        "supported_entities": ["Material", "Bin", "Plant", "StorageLocation"],
+        "supported_metrics": ["UnrestrictedQty", "BinUtilizationPct", "Volume", "ActiveBins"],
+        "direction_rules": {
+            "DESC": ["top", "highest", "most", "fullest", "maximum", "best"],
+            "ASC": ["bottom", "lowest", "least", "emptiest", "minimum", "worst"]
+        },
+        "limit_rules": {
+            "default": 10,
+            "scalar_extreme": "If user asks 'who is #1?', 'what is the highest', 'which plant has the highest' -> limit 1 + concise response.",
+            "explicit_number": "top 10 -> limit 10, top five -> limit 5, bottom 5 -> limit 5"
+        },
+        "visualization_rule": "Do not automatically add a chart to a ranking request. Output format is ranking_table unless explicit chart requested."
+    },
+
+    # =========================================================================
+    # 9. UNIVERSAL DETAIL / RESPONSE-DEPTH CONTEXT & RULES
+    # =========================================================================
+    "response_depth_rules": {
+        "description": "Detail is a semantic mode, NOT a button.",
+        "triggers": [
+            "detail", "details", "detailed", "explain", "explain in detail",
+            "elaborate", "deep dive", "break it down", "full details",
+            "complete breakdown", "comprehensive view", "in-depth",
+            "drill down", "granular analysis", "itemized breakdown",
+            "show me the details", "give me more detail"
+        ],
+        "behavior": [
+            "Preserve the same intent, scope, and filters.",
+            "Increase response depth to DETAILED.",
+            "Detailed response contains: 1. detailed summary, 2. relevant KPIs, 3. useful breakdown dimension, 4. relevant chart when meaningful, 5. detailed table.",
+            "Do NOT require 'Generate Detailed Analysis' button or manual click."
+        ]
+    },
+
+    # =========================================================================
+    # 10. RESPONSE-FORMAT DECISION ENGINE
+    # =========================================================================
+    "response_format_rules": {
+        "decision_order": [
+            "1. User intent",
+            "2. Requested granularity",
+            "3. Requested depth (concise vs normal vs detailed)",
+            "4. Explicit visualization request",
+            "5. Result shape",
+            "6. Output format mode"
+        ],
+        "output_modes": [
+            "single_line",
+            "kpi",
+            "table",
+            "ranking_table",
+            "comparison_table",
+            "chart_plus_summary",
+            "detail_analysis",
+            "narrative",
+            "status"
+        ],
+        "single_line_candidates": [
+            "total / overall value",
+            "count / how many",
+            "percentage",
+            "average",
+            "minimum / maximum scalar",
+            "yes/no status",
+            "one specific entity lookup",
+            "which plant has the highest...",
+            "what is the utilization of Bin X?"
+        ],
+        "single_line_override_triggers": [
+            "one line", "single line", "single statement",
+            "just the number", "just the percentage", "briefly"
+        ],
+        "single_line_suppression": "Single-line mode must suppress unnecessary tables, charts, KPI cards, raw-row previews, and action buttons."
+    },
+
+    # =========================================================================
+    # 11. VISUALIZATION RULES (Presentation vs Data Intent)
+    # =========================================================================
+    "visualization_rules": {
+        "default": {
+            "show_chart": False,
+            "architecture": "Summary + Relevant Table / KPI (Clean, uncluttered response)"
+        },
+        "explicit_triggers": [
+            "show a graph for this", "show me a graph", "show graph",
+            "visualize the comparison", "give me a chart", "give me a chart of the top 10",
+            "visualize this", "plot the trend", "plot this", "chart for this"
+        ],
+        "chart_suppression_triggers": [
+            "without a chart", "no chart", "without chart", "no graph", "just the table", "plain text"
+        ],
+        "rule": "Graph is a presentation request, NOT a replacement for analytical intent. Default to no chart unless explicitly requested or semantic detail mode explicitly requires it."
+    },
+
+    # =========================================================================
+    # 12. CONVERSATION STATE RULES (Multi-Turn Persistence)
+    # =========================================================================
+    "conversation_state_rules": {
+        "state_dimensions": [
+            "entity",
+            "metric",
+            "aggregation",
+            "filters",
+            "ranking_direction",
+            "limit",
+            "range_filters",
+            "comparison_entities",
+            "time_range",
+            "response_depth",
+            "chart_requested"
+        ],
+        "modification_rule": "Only modify the state dimension mentioned by the user; keep all other dimensions intact."
+    },
+
+    # =========================================================================
+    # BACKWARD COMPATIBILITY ALIASES & POLICIES
     # =========================================================================
     "scope_and_filters": {
         "plant": {
@@ -322,7 +476,7 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
             "type": "filter",
             "pattern": r"(?:bin\s*[:#-]?\s*([a-z0-9_-]{2,25})|\b(b\d{3,5})\b)",
             "target_column": "BinLocation / BinNo",
-            "rule": "Isolate query to specific bin identifier (e.g. NRJP2124D2). Output concise statement for lookups (Plant, Occupancy, Quantity) without rendering full tables/dashboards."
+            "rule": "Isolate query to specific bin identifier (e.g. NRJP2124D2)."
         },
         "material": {
             "type": "filter",
@@ -338,193 +492,43 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
         }
     },
 
-    # =========================================================================
-    # 6. RESPONSE FORMAT (Deterministic presentation logic)
-    # =========================================================================
-    "response_format_rules": {
-        "single_line": {
-            "triggers": [
-                "how many", "what is", "is", "are there", "count",
-                "which plant does bin", "is bin occupied", "quantity in bin"
-            ],
-            "output_type": "text",
-            "suppress_table": True,
-            "suppress_cards": True,
-            "suppress_charts": True,
-            "rule": "Return strictly ONE concise sentence with the unit. Suppress dashboard cards, result tables, and export buttons."
-        },
-        "list": {
-            "triggers": ["which", "show me", "list", "give me the materials", "find materials"],
-            "output_type": "table",
-            "rule": "Render interactive, paginated, searchable Results Data Table with CSV export."
-        },
-        "ranking": {
-            "triggers": ["top", "highest", "lowest", "least", "most", "bottom"],
-            "output_type": "table",
-            "rule": "Render ordered ranking table with exact capacities and percentages."
-        },
-        "comparison": {
-            "triggers": ["compare", "versus", "across plants", "by plant"],
-            "output_type": "bar_chart",
-            "rule": "Render interactive Bar Chart and comparison breakdown."
-        },
-        "summary_dashboard": {
-            "triggers": ["summary", "overview", "dashboard", "kpis", "executive overview"],
-            "output_type": "kpi",
-            "rule": "Render full 4-card Overview Dashboard only when explicitly asked for an overview/summary."
-        }
-    },
-
-    # =========================================================================
-    # 7. RESPONSE TEMPLATES (Specialized Multi-Tiered Response Architectures)
-    # =========================================================================
     "response_templates": {
         "plant_bin_utilization_detail": {
-            "description": "Deterministic multi-tiered template for plant-scoped bin utilization inquiries requesting details",
+            "description": "Multi-tiered template for plant-scoped bin utilization inquiries",
             "trigger": {
                 "intent": "BIN_UTILIZATION",
                 "scope": "PLANT",
                 "detail_request": True
             },
             "default_response": {
-                "sections": [
-                    "summary",
-                    "relevant_kpis",
-                    "summary_table",
-                    "detail_offer"
-                ],
+                "sections": ["summary", "relevant_kpis", "summary_table"],
                 "summary": {
-                    "max_lines": 2,
                     "template": "The bin utilization for **Plant {plant}** is **{bin_utilization}%**, with **{occupied_bins:,}** of **{total_bins:,}** total bins currently occupied and **{empty_bins:,}** empty bins available for put-away."
-                },
-                "relevant_kpis": {
-                    "metrics": [
-                        "bin_utilization",
-                        "occupied_bins",
-                        "empty_bins",
-                        "total_bins"
-                    ]
-                },
-                "table": {
-                    "type": "summary",
-                    "include": [
-                        "Plant",
-                        "Total Bins",
-                        "Occupied Bins",
-                        "Empty Bins",
-                        "Bin Utilization %"
-                    ]
-                },
-                "follow_up": {
-                    "message": "Would you like me to generate a detailed version of this analysis?",
-                    "action": "generate_detail",
-                    "action_prompt": "Generate detailed bin utilization analysis for Plant {plant}",
-                    "label": "Generate Detailed Analysis"
                 }
             },
             "detailed_response": {
-                "sections": [
-                    "detailed_summary",
-                    "chart",
-                    "detailed_table"
-                ],
+                "sections": ["detailed_summary", "chart", "detailed_table"],
                 "granularity": "STORAGE_LOCATION",
                 "chart": {
                     "type": "bar",
                     "title": "Plant {plant} Bin Utilization by Storage Location (%)",
                     "xAxis": "Storage Location",
                     "yAxis": "Bin Utilization %"
-                },
-                "table": {
-                    "type": "detailed",
-                    "include": [
-                        "Plant",
-                        "Storage Location",
-                        "Total Bins",
-                        "Occupied Bins",
-                        "Empty Bins",
-                        "Bin Utilization %",
-                        "Total Capacity Volume (FT3)",
-                        "Occupied Volume (FT3)"
-                    ]
                 }
             }
         }
     },
 
-    # =========================================================================
-    # 8. VISUALIZATION RULES (Generic Explicit Graph Request Architecture)
-    # =========================================================================
-    "visualization_rules": {
-        "description": "Universal 2-tier visualization framework applicable across ALL warehouse analytical domains.",
-        "supported_domains": [
-            "BIN_UTILIZATION",
-            "MATERIAL_ANALYSIS",
-            "PLANT_COMPARISON",
-            "EMPTY_BINS",
-            "TOP_AND_BOTTOM_BINS",
-            "INVENTORY_TRENDS",
-            "DIVISION_BREAKDOWN",
-            "CONSOLIDATION_CANDIDATES",
-            "STORAGE_LOCATION_COMPARISON",
-            "DATA_QUALITY_ANOMALIES"
-        ],
-        "default": {
-            "show_chart": False,
-            "architecture": "Summary + Relevant Table / KPI (Clean, uncluttered response)"
-        },
-        "user_explicitly_requests_chart": {
-            "triggers": [
-                "show me a graph",
-                "show graph",
-                "give me a chart",
-                "visualize this",
-                "show this in graph",
-                "create a chart",
-                "can you graph this",
-                "graph for this",
-                "chart for this",
-                "show this in graphical form",
-                "draw a chart",
-                "plot this",
-                "visualize"
-            ],
-            "action": [
-                "preserve_previous_query_context",
-                "generate_relevant_chart",
-                "show_summary",
-                "show_chart",
-                "show_relevant_table"
-            ]
-        },
-        "follow_up_visualization": {
-            "examples": [
-                "Show me a graph for this",
-                "Can you visualize this?",
-                "Give me a chart",
-                "Show this in graphical form"
-            ],
-            "action": {
-                "reference": "previous_query",
-                "do_not_reask_context": True,
-                "domain_chart_mappings": {
-                    "material_volume_share": {"chart_type": "bar", "x": "Material", "y": "% of Total Bin Volume"},
-                    "warehouse_utilization": {"chart_type": "bar", "x": "Plant", "y": "BinUtilizationPct"},
-                    "plant_bin_utilization_detail": {"chart_type": "bar", "x": "Storage Location", "y": "UtilizationPct"},
-                    "top_utilized_bins": {"chart_type": "bar", "x": "Bin", "y": "Occupied Volume"},
-                    "least_utilized_bins": {"chart_type": "bar", "x": "Bin", "y": "Occupied Volume"},
-                    "trend_analysis": {"chart_type": "line", "x": "Month", "y": "TotalQuantity"},
-                    "division_breakdown": {"chart_type": "pie", "x": "Division", "y": "TotalQuantity"},
-                    "consolidation": {"chart_type": "bar", "x": "Material", "y": "ActiveBinCount"},
-                    "storage_location_comparison": {"chart_type": "bar", "x": "Storage Location", "y": "Total Inventory Quantity"}
-                }
-            }
+    "bin_utilization_policy": {
+        "calculation_rules": {
+            "bin_utilization_pct": "(COUNT(DISTINCT i.BinNo) * 100.0) / NULLIF(COUNT(DISTINCT b.BinLocation), 0)",
+            "volume_utilization_pct": "(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END) * 100.0) / NULLIF(SUM(b.Volume), 0)",
+            "overall_warehouse_utilization": "Calculate from total occupied and total capacity for complete requested scope. Do NOT average percentages.",
+            "plant_specific": "Apply plant filter before calculating the metric.",
+            "rankings": "Calculate metric at bin granularity before sorting."
         }
     },
 
-    # =========================================================================
-    # 9. RESPONSE AND INTENT MASTER RULES
-    # =========================================================================
     "response_and_intent_rules": [
         "1. Never determine the query type from a single keyword. Interpret the complete user request semantically.",
         "2. 'Inventory' does not automatically mean 'inventory records' or 'material list'.",
@@ -534,45 +538,7 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
         "6. If the user asks 'which', 'show me materials', 'list', or requests records, use a detail/list response.",
         "7. Default response format should be determined from user intent: KPI/count/value -> concise single-line statement; List/detail -> table; Ranking -> ranking table; Comparison -> comparison output; Explicit graph/chart request -> summary + relevant chart + table.",
         "8. Never show a large table when the user asks only for an aggregate KPI.",
-        "9. After query execution, validate that the result matches the user's requested intent, aggregation, scope, and response format. If it does not match, reject the result and regenerate the query.",
+        "9. After query execution, validate that the result matches the user's requested intent, aggregation, scope, and response format.",
         "10. Never invent or assume a Plant, Bin, Material, or other filter."
-    ],
-
-    # =========================================================================
-    # 10. BIN UTILIZATION CONTEXT & RESPONSE POLICY (Complete Specification)
-    # =========================================================================
-    "bin_utilization_policy": {
-        "core_pipeline": "USER QUESTION -> INTENT -> METRIC -> FILTERS -> CALCULATION -> OUTPUT TYPE -> RESPONSE (with CONVERSATION CONTEXT)",
-        "concepts": {
-            "bin": "A warehouse storage location (bin, storage bin, storage location, location)",
-            "bin_utilization": "How much of a bin's capacity is occupied (utilization, used %, occupancy, capacity usage)",
-            "occupied_volume": "Volume currently occupied in a bin (used volume, occupied volume, volume used)",
-            "total_capacity": "Maximum volume/capacity available in a bin (bin capacity, total capacity, max capacity)",
-            "available_capacity": "Capacity still available for use: TOTAL BIN CAPACITY - TOTAL OCCUPIED VOLUME (free space, remaining capacity, available space)",
-            "empty_bin": "A bin with zero occupied inventory/volume according to project data definition: UnrestrictedQty = 0 or BinNo IS NULL (empty bin, unused bin, unoccupied bin)",
-            "plant": "A warehouse/organizational plant used as a filter (plant, site, warehouse plant)",
-            "top_utilized": "Highest utilization percentages (most utilized, highest utilization, fullest)",
-            "least_utilized": "Lowest utilization percentages (least utilized, lowest utilization, emptiest by %)"
-        },
-        "calculation_rules": {
-            "bin_utilization_pct": "(TOTAL OCCUPIED VOLUME / TOTAL BIN CAPACITY) * 100",
-            "available_capacity": "TOTAL BIN CAPACITY - TOTAL OCCUPIED VOLUME",
-            "overall_warehouse_utilization": "Calculate from total occupied volume and total bin capacity for the complete filtered dataset. Do NOT calculate overall utilization as the simple average of individual bin percentages.",
-            "plant_specific": "Apply plant filter before calculating the metric.",
-            "rankings": "Calculate/obtain each bin's utilization and sort by the requested direction."
-        },
-        "intent_categories": {
-            "single_metric": {"primary_output": "One number + short explanation (1-3 lines)", "avoid": "Unrequested table or chart"},
-            "count": {"primary_output": "Count + short criterion", "avoid": "Full record list"},
-            "list": {"primary_output": "Compact table/list", "avoid": "Long narrative"},
-            "top_bottom_ranking": {"primary_output": "Ranked table with Rank, Bin, Plant, Utilization %", "avoid": "Unrequested charts"},
-            "comparison": {"primary_output": "Compact comparison + conclusion", "avoid": "Every underlying row"},
-            "capacity_analysis": {"primary_output": "Requested capacity metric(s): Total Capacity, Occupied Volume, Available Capacity", "avoid": "Unrelated inventory details"},
-            "lookup": {"primary_output": "One-bin result", "avoid": "Whole warehouse dataset"},
-            "detail_request": {"primary_output": "When user includes 'detail', 'explain', 'breakdown', or similar context: automatically recognize the detail intent and return detailed summary -> storage location chart -> detailed breakdown table directly (no manual button required). For normal overview: return clean concise summary table.", "avoid": "Unnecessary confirmation buttons or raw DB dumps"}
-        },
-        "master_instruction": "BIN UTILIZATION CONTEXT: Understand bin-utilization questions by semantic meaning, not exact question matching. Map synonyms such as most utilized/highest/fullest, least utilized/lowest/least-used, empty/unoccupied/zero inventory, and free/remaining/available capacity to the correct intent. Extract metric, plant filter, bin filter, threshold, ranking direction, limit, aggregation, and requested output style from the user's wording. When the user asks for 'detail', 'details', 'explain', 'explanation', 'breakdown', or 'elaborate', immediately recognize this analytical depth context and return the detailed breakdown with chart visualization and granular data without prompting for manual buttons. Preserve relevant context across follow-up questions; resolve 'ones', 'them', 'those', 'same', and similar references from the latest applicable query. Do not invent filters. If no plant is specified, do not silently select a plant. For overall utilization, calculate total occupied volume divided by total bin capacity, multiplied by 100, using the complete applicable dataset—not the average of row-level percentages. For available capacity, calculate total capacity minus occupied volume. For rankings, sort the requested bins by utilization in the requested direction and apply the requested N after filtering. Choose the minimum response format that fully answers the question: a single value for a single metric, a count for 'how many', a compact table for lists/rankings, a comparison table for comparisons, and a summary/table for analytical requests. Add a chart only when the user asks for one, when detail/explain is requested, or when a distribution/comparison report clearly benefits from one. Never add unrequested metrics, raw rows, or redundant action buttons. Always prioritize correctness, relevance, and concise presentation."
-    }
+    ]
 }
-
-

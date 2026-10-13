@@ -163,11 +163,61 @@ def validate_query_result(question: str, query_plan: dict | None, sql: str, rows
     """Semantic Result Validator.
     
     Evaluates: Does this SQL result actually answer the user's question and analytical task?
+    Consumes structured query_plan when available, with semantic keyword fallbacks.
     Returns (is_valid, failure_reason).
     """
     q_lower = question.lower()
     cols = list(rows[0].keys()) if rows else []
-    
+
+    # -------------------------------------------------------------------------
+    # A. Plan-driven validation (Priority when query_plan is provided)
+    # -------------------------------------------------------------------------
+    if query_plan and isinstance(query_plan, dict):
+        plan_intent = query_plan.get("intent") or query_plan.get("analytical_task") or ""
+        plan_intent_upper = str(plan_intent).upper()
+
+        # 1. RANKING intent
+        if "RANK" in plan_intent_upper:
+            rank_entity = query_plan.get("rank_entity", "").lower()
+            if not rows:
+                return False, f"Ranking query returned 0 rows for entity {rank_entity}."
+            if "bin" in rank_entity:
+                if not any(c in cols for c in ["Bin", "BinLocation", "BinNo"]):
+                    return False, "User requested Bin ranking, but result does not contain bin location columns."
+            elif "material" in rank_entity:
+                if not any(c in cols for c in ["Material", "MaterialCode"]):
+                    return False, "User requested Material ranking, but result does not contain material columns."
+            elif "plant" in rank_entity:
+                if "Plant" not in cols:
+                    return False, "User requested Plant ranking, but result does not contain Plant column."
+            
+            # Scalar extreme checks
+            limit_val = query_plan.get("limit")
+            if limit_val == 1 and len(rows) > 1 and not any(k in q_lower for k in ["table", "ranking", "list"]):
+                return False, "Scalar ranking extreme requested (#1 / highest / lowest), but multiple rows returned."
+
+        # 2. COMPARISON intent
+        if "COMPAR" in plan_intent_upper:
+            comp_entities = query_plan.get("comparison_entities") or []
+            if len(comp_entities) >= 2 and rows and "Plant" in cols:
+                returned_plants = {str(r.get("Plant")) for r in rows if r.get("Plant") is not None}
+                expected_plants = {str(e.get("value")) for e in comp_entities if isinstance(e, dict) and e.get("type") == "plant"}
+                if expected_plants and not expected_plants.issubset(returned_plants) and not any(p in returned_plants for p in expected_plants):
+                    return False, "Comparison query did not return records for the requested comparison plants."
+
+        # 3. KPI / COUNT / SINGLE_LINE intent
+        if plan_intent_upper in ["KPI", "COUNT"] or query_plan.get("response_format") == "single_line":
+            if len(rows) > 1 and any(c in cols for c in ["Batch", "FileName"]) and not any(c in cols for c in ["TotalQuantity", "Total Inventory Quantity", "Inventory Records Count", "UniqueMaterials"]):
+                return False, "Aggregate scalar / KPI requested, but row-level details returned."
+
+        # 4. DATA_QUALITY intent
+        if "DATA_QUALITY" in plan_intent_upper or "MISSING" in plan_intent_upper:
+            if any(c in cols for c in ["TotalUniqueMaterials", "TotalActiveBins", "TotalUnrestrictedQuantity"]) and "Quality Issue" not in cols and "Material" not in cols:
+                return False, "Data quality exception check requested, but high-level warehouse totals returned."
+
+    # -------------------------------------------------------------------------
+    # B. Semantic keyword-based checks (Fallback & safety verification)
+    # -------------------------------------------------------------------------
     # 0. Materials Missing from Volume Master (Rule DQ-001 - Cross-Table Validation)
     is_missing_master_req = any(k in q_lower for k in [
         "missing from the volume master", "missing from volume master", "not in the volume master",
@@ -199,7 +249,6 @@ def validate_query_result(question: str, query_plan: dict | None, sql: str, rows
     )
     
     if is_missing_dim_req:
-        # Check if result is generic inventory summary instead of material-level missing-dimension records
         if any(c in cols for c in ["TotalUniqueMaterials", "TotalActiveBins", "TotalUnrestrictedQuantity", "PlantCount"]) and "Quality Issue" not in cols and "Length" not in cols:
             return False, "User requested: Material-level missing-dimension records. Returned: Warehouse-level inventory summary. These do not satisfy the requested analytical task."
         if rows and "Material" not in cols and "MaterialCode" not in cols:

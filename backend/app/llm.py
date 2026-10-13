@@ -43,16 +43,187 @@ def clean_llm_json(raw_text: str) -> dict[str, Any]:
     
     return json.loads(text)
 
-def is_elliptical_followup(q_lower: str) -> bool:
-    """Detects if a user question is an elliptical follow-up that relies on prior conversation context.
+def parse_range_filters(q_lower: str, context_metric: str = "quantity") -> list[dict]:
+    """Extracts numeric, percentage, date, and ordinal range filters without exact wording.
     
-    Returns True ONLY for:
-    - Explicit visualization requests (e.g., 'Show me a graph for this', 'Visualize this', 'Give me a chart')
-    - Affirmative expansions / drilldowns (e.g., 'Yes', 'Sure', 'Generate detailed version', 'Expand this')
-    - Anaphora / pronouns referencing previous answer (e.g., 'for this', 'of this', 'these', 'those')
-    - Relative filter adjustments without a new topic (e.g., 'What about Plant 1258?', 'And for 7228?')
-    - Sorting/limit adjustments on prior result (e.g., 'Show top 5 instead', 'Sort by quantity')
+    Returns structured list of range filter dicts:
+    [{"field": ..., "operator": "BETWEEN"|"GTE"|"GT"|"LTE"|"LT"|"LAST_DAYS", "lower": ..., "upper": ..., "inclusive": bool}]
     """
+    ranges = []
+    
+    # 1. Percentage ranges (e.g. 10%-30%, between 20% and 40%, below 25% utilization)
+    pct_between = re.search(r"(?:between|from)\s*(\d+(?:\.\d+)?)\s*%\s*(?:and|to|–|-)\s*(\d+(?:\.\d+)?)\s*%", q_lower)
+    if not pct_between:
+        pct_between = re.search(r"\b(\d+(?:\.\d+)?)\s*%\s*(?:–|-|to)\s*(\d+(?:\.\d+)?)\s*%", q_lower)
+    if pct_between:
+        ranges.append({
+            "field": "BinUtilizationPct",
+            "operator": "BETWEEN",
+            "lower": float(pct_between.group(1)),
+            "upper": float(pct_between.group(2)),
+            "inclusive": True
+        })
+        return ranges
+
+    pct_above = re.search(r"(?:above|greater than|more than|over|at least)\s*(\d+(?:\.\d+)?)\s*%", q_lower)
+    if pct_above:
+        ranges.append({
+            "field": "BinUtilizationPct",
+            "operator": "GT" if "at least" not in pct_above.group(0) else "GTE",
+            "lower": float(pct_above.group(1)),
+            "upper": None,
+            "inclusive": "at least" in pct_above.group(0)
+        })
+        return ranges
+
+    pct_below = re.search(r"(?:below|under|less than|up to|at most|no more than)\s*(\d+(?:\.\d+)?)\s*%", q_lower)
+    if pct_below:
+        ranges.append({
+            "field": "BinUtilizationPct",
+            "operator": "LT" if not any(k in pct_below.group(0) for k in ["up to", "at most", "no more than"]) else "LTE",
+            "lower": None,
+            "upper": float(pct_below.group(1)),
+            "inclusive": any(k in pct_below.group(0) for k in ["up to", "at most", "no more than"])
+        })
+        return ranges
+
+    # 2. Date ranges (e.g. between Jan 1 and Mar 31, last 30 days)
+    date_months = {
+        "jan": "01", "january": "01", "feb": "02", "february": "02",
+        "mar": "03", "march": "03", "apr": "04", "april": "04",
+        "may": "05", "jun": "06", "june": "06", "jul": "07", "july": "07",
+        "aug": "08", "august": "08", "sep": "09", "september": "09",
+        "oct": "10", "october": "10", "nov": "11", "november": "11",
+        "dec": "12", "december": "12"
+    }
+    date_between = re.search(r"(?:between|from)\s*([a-z]+)\s*(\d{1,2})\s*(?:and|to|–|-)\s*([a-z]+)\s*(\d{1,2})", q_lower)
+    if date_between and date_between.group(1) in date_months and date_between.group(3) in date_months:
+        m1 = date_months[date_between.group(1)]
+        d1 = int(date_between.group(2))
+        m2 = date_months[date_between.group(3)]
+        d2 = int(date_between.group(4))
+        ranges.append({
+            "field": "ChangedAt",
+            "operator": "BETWEEN",
+            "lower": f"2026-{m1}-{d1:02d}",
+            "upper": f"2026-{m2}-{d2:02d}",
+            "inclusive": True
+        })
+        return ranges
+
+    last_days = re.search(r"\blast\s*(\d+)\s*days\b", q_lower)
+    if last_days:
+        ranges.append({
+            "field": "ChangedAt",
+            "operator": "LAST_DAYS",
+            "lower": int(last_days.group(1)),
+            "upper": None,
+            "inclusive": True
+        })
+        return ranges
+
+    # 3. Determine field based on context
+    is_util = any(k in q_lower for k in ["utiliz", "occupan", "capacity", "fill"])
+    is_vol = any(k in q_lower for k in ["volume", "m3", "ft3", "cubic"])
+    field = "BinUtilizationPct" if is_util else "Volume" if is_vol else "UnrestrictedQty"
+
+    # 4. Numeric between: between 100 and 500, 100–500, 100-500, from 100 to 500
+    num_between = re.search(r"(?:between|from)\s*(\d+(?:\.\d+)?)\s*(?:and|to)\s*(\d+(?:\.\d+)?)(?:\s*(?:units?|pcs?|items?))?", q_lower)
+    if not num_between:
+        num_between = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:–|-)\s*(\d+(?:\.\d+)?)(?:\s*(?:units?|pcs?|items?))?", q_lower)
+    if num_between:
+        low = float(num_between.group(1))
+        up = float(num_between.group(2))
+        # Ignore plant range like 1258-7228
+        if not (low > 1000 and up > 1000 and "plant" in q_lower):
+            ranges.append({
+                "field": field,
+                "operator": "BETWEEN",
+                "lower": low,
+                "upper": up,
+                "inclusive": True
+            })
+            return ranges
+
+    # 5. Numeric above: at least 100, 100 or more, above 100, greater than 100, over 100
+    num_above = re.search(r"(?:at least|above|greater than|more than|over)\s*(\d+(?:\.\d+)?)(?:\s*(?:units?|pcs?|items?))?", q_lower)
+    if not num_above:
+        num_above = re.search(r"\b(\d+(?:\.\d+)?)\s*or more\b", q_lower)
+    if num_above:
+        val = float(num_above.group(1))
+        is_inc = "at least" in num_above.group(0) or "or more" in num_above.group(0)
+        ranges.append({
+            "field": field,
+            "operator": "GTE" if is_inc else "GT",
+            "lower": val,
+            "upper": None,
+            "inclusive": is_inc
+        })
+        return ranges
+
+    # 6. Numeric below: below 500, under 500, no more than 500, up to 500, less than 500
+    num_below = re.search(r"(?:below|under|less than|up to|at most|no more than)\s*(\d+(?:\.\d+)?)(?:\s*(?:units?|pcs?|items?))?", q_lower)
+    if num_below:
+        val = float(num_below.group(1))
+        is_inc = any(k in num_below.group(0) for k in ["up to", "at most", "no more than"])
+        ranges.append({
+            "field": field,
+            "operator": "LTE" if is_inc else "LT",
+            "lower": None,
+            "upper": val,
+            "inclusive": is_inc
+        })
+        return ranges
+
+    return ranges
+
+
+DETAIL_TRIGGERS = [
+    "detail", "details", "detailed", "explain", "explain in detail",
+    "elaborate", "deep dive", "break it down", "full details",
+    "complete breakdown", "comprehensive view", "in-depth",
+    "drill down", "granular analysis", "itemized breakdown",
+    "show me the details", "give me more detail"
+]
+
+def is_detail_requested(q_lower: str) -> bool:
+    """Semantic detail mode detector."""
+    return any(re.search(r'\b' + re.escape(t) + r'\b', q_lower) for t in DETAIL_TRIGGERS)
+
+
+SINGLE_LINE_OVERRIDE_TRIGGERS = [
+    "one line", "single line", "single statement",
+    "just the number", "just the percentage", "briefly",
+    "in one line", "in a single line", "just number", "just percentage",
+    "only the number", "only the percentage"
+]
+
+def is_single_line_requested(q_lower: str, intent: str = "", rows_count: int = 0) -> bool:
+    """Infers concise single-line response mode from intent and explicit user phrasing."""
+    if any(re.search(r'\b' + re.escape(o) + r'\b', q_lower) for o in SINGLE_LINE_OVERRIDE_TRIGGERS):
+        return True
+    # If list, table, detailed breakdown explicitly requested, do not force single line
+    if any(re.search(r'\b' + re.escape(w) + r'\b', q_lower) for w in [
+        "show", "list", "which materials", "find", "breakdown", "table",
+        "detail", "details", "detailed", "explain", "deep dive", "ranking"
+    ]):
+        return False
+    # Default single-line candidate query patterns
+    scalar_patterns = [
+        r"^what is (?:the )?(?:total|highest|lowest|overall|average)",
+        r"^how many (?:inventory records|unique materials|plants|bins)",
+        r"^which plant has the (?:highest|lowest)",
+        r"^what is the utilization of bin",
+        r"^is bin\s+[a-z0-9_-]+\s+(?:occupied|empty)",
+        r"^who is #1"
+    ]
+    if any(re.search(p, q_lower) for p in scalar_patterns):
+        return True
+    return False
+
+
+def is_elliptical_followup(q_lower: str) -> bool:
+    """Detects if a user question is an elliptical follow-up that relies on prior conversation context."""
     q_strip = q_lower.strip()
     
     # 1. Visualization triggers
@@ -60,14 +231,19 @@ def is_elliptical_followup(q_lower: str) -> bool:
         "show me a graph", "show graph", "give me a chart", "visualize this", "show this in graph",
         "create a chart", "can you graph this", "graph for this", "chart for this", "visualize it",
         "show chart", "graph of this", "chart of this", "plot this", "draw a chart", "make a chart",
-        "plot a chart", "draw a graph"
+        "plot a chart", "draw a graph", "visualize the comparison", "give me a chart of the top 10",
+        "plot the trend", "without a chart", "no chart", "without chart"
     ]):
         return True
     
-    # 2. Affirmative expansions / drilldowns
+    # 2. Affirmative expansions / drilldowns / detail
     if any(q_strip.startswith(w) for w in ["yes", "yeah", "sure", "please", "expand", "yep"]):
         return True
-    if any(k in q_strip for k in ["detailed version", "detailed analysis", "generate detail", "show detail", "detailed breakdown", "generate detailed"]):
+    if q_strip in [
+        "detailed version", "detailed analysis", "generate detail", "show detail", "detailed breakdown",
+        "generate detailed", "detailed", "in detail", "explain", "deep dive", "elaborate",
+        "more detail", "more details", "break it down", "expand on this"
+    ] or any(q_strip.startswith(w) for w in ["explain this", "explain that", "expand on", "break down", "drill down"]):
         return True
     
     # 3. Pronoun / anaphora references
@@ -78,7 +254,7 @@ def is_elliptical_followup(q_lower: str) -> bool:
     if any(q_strip.startswith(p) for p in [
         "what about", "and what about", "how about", "and how about",
         "and for", "only for", "only in", "just for", "just in",
-        "and in", "now for", "and the", "what if"
+        "and in", "now for", "and the", "what if", "only materials"
     ]):
         return True
     if re.search(r"^(?:only in|only for|just in|just for|in|for)?\s*(?:plant\s+)?\d{3,5}\.?$", q_strip):
@@ -91,8 +267,11 @@ def is_elliptical_followup(q_lower: str) -> bool:
         "instead", "next 10", "show more", "sort by", "ones",
         "least utilized ones", "lowest utilized ones", "most utilized ones",
         "show least utilized", "bottom 10", "top 10", "least ones", "most ones",
-        "how many are there", "what is the count", "how many are in there"
+        "how many are there", "what is the count", "how many are in there", "how many?", "how many",
+        "only materials", "top materials"
     ]):
+        return True
+    if q_strip in ["materials", "only materials", "top materials"]:
         return True
     
     return False
@@ -112,7 +291,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     - resolved_query (semantic query string)
     """
     q_lower = question.lower().strip()
-    is_followup = is_elliptical_followup(q_lower)
+    is_followup = is_elliptical_followup(q_lower) and bool(history)
     
     # Extract any explicit plant filter in the current question
     new_plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
@@ -302,7 +481,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     ])
     is_plant_keyword = bool(re.search(r"\b(?:plants?|plnts?|facility|facilities)\b", q_lower))
     is_plant_extreme_req = is_plant_keyword and any(k in q_lower for k in ["lowest", "least", "minimum", "min", "bottom", "worst", "highest", "most", "maximum", "max", "top", "best"]) and any(k in q_lower for k in ["utiliz", "occupan", "capacity", "fill", "full"])
-    is_fresh_empty = any(k in q_lower for k in ["empty bin", "empty bins", "show me empty", "list empty", "putaway", "put-away", "vacant bin", "free bin", "available for immediate put-away", "where can i put", "put new inventory", "place incoming"]) and not any(k in q_lower for k in ["how many", "count"])
+    is_fresh_empty = any(k in q_lower for k in ["empty bin", "empty bins", "show me empty", "list empty", "putaway", "put-away", "vacant bin", "free bin", "available for immediate put-away", "where can i put", "put new inventory", "place incoming"]) and not any(k in q_lower for k in ["how many", "count", "compare", "versus", "vs", "difference between", "their empty bins"])
     is_fresh_top_bins = ("top" in q_lower or "most" in q_lower) and any(k in q_lower for k in ["utilized bin", "utilised bin", "fullest bin", "capacity bin"]) and not is_mat_entity and not is_plant_extreme_req
     is_fresh_least_bins = ("bottom" in q_lower or "least" in q_lower or "emptiest" in q_lower or "lowest" in q_lower) and any(k in q_lower for k in ["utilized bin", "utilised bin", "bins", "locations", "capacity"]) and not is_mat_entity and not is_plant_extreme_req
     is_fresh_plant_count = is_plant_keyword and any(k in q_lower for k in ["how many", "count", "number of", "total plants", "active plants"])
@@ -361,6 +540,16 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         "overall bin utilization", "total bin volume is currently occupied", "warehouse space utilization rate",
         "running out of", "out of storage space"
     ])
+    
+    is_fresh_mat_rank = (
+        is_mat_entity and
+        any(k in q_lower for k in ["rank", "ranking", "rankings", "top", "bottom", "highest", "lowest", "most", "least"]) and
+        not is_fresh_mat_vol and not is_fresh_missing_master and not is_fresh_dq and not is_fresh_mat_count
+    )
+    is_fresh_sloc_rank = (
+        any(k in q_lower for k in ["storage location", "storage locations", "sloc", "slocs"]) and
+        any(k in q_lower for k in ["rank", "ranking", "rankings", "top", "bottom", "highest", "lowest", "most", "least"])
+    )
     
     # Specific bin pattern detection (e.g. "Which plant does bin NRJP2124D2 belong to?", "Is bin NRJP2124D2 occupied?", etc.)
     bin_cand_matches = re.findall(r"(?:bin\s*[:#-]?\s*([a-z0-9_-]{2,25})|\b(b\d{3,5})\b)", q_lower, re.IGNORECASE)
@@ -576,6 +765,24 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     elif is_fresh_util:
         state["topic"] = "warehouse_utilization"
         state["filters"] = {"plant": new_plant} if new_plant else {}
+    elif is_fresh_mat_rank:
+        is_least = any(k in q_lower for k in ["least", "lowest", "bottom", "minimum"])
+        state["entity"] = "material"
+        state["metric"] = "unrestricted_qty"
+        state["ranking"] = "lowest" if is_least else "highest"
+        state["topic"] = "material_quantity_ranking"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["limit"] = new_limit or 10
+        state["aggregation"] = "list"
+    elif is_fresh_sloc_rank:
+        is_least = any(k in q_lower for k in ["least", "lowest", "bottom", "minimum"])
+        state["entity"] = "storage_location"
+        state["metric"] = "storage_location_inventory"
+        state["ranking"] = "lowest" if is_least else "highest"
+        state["topic"] = "storage_location_ranking"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["limit"] = new_limit or 10
+        state["aggregation"] = "list"
     else:
         # It's a modifier / follow-up
         if new_plant:
@@ -600,9 +807,12 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             state["aggregation"] = "list"
 
         # 2. "Show me the top 5 instead" / "top 5" -> flip to highest ranking
-        elif any(k in q_lower for k in ["top", "most", "highest", "fullest"]) and ("instead" in q_lower or "most" in q_lower or "top" in q_lower):
+        elif is_followup and any(k in q_lower for k in ["top", "most", "highest", "fullest"]) and ("instead" in q_lower or "most" in q_lower or "top" in q_lower):
             state["ranking"] = "highest"
-            state["topic"] = "top_utilized_bins"
+            if state.get("entity") == "material" or state.get("topic") == "material_quantity_ranking":
+                state["topic"] = "material_quantity_ranking"
+            else:
+                state["topic"] = "top_utilized_bins"
             state["aggregation"] = "list"
 
         # 3. "Show 5 instead" (without explicit top/bottom) -> preserve existing ranking polarity (e.g. if currently least_utilized_bins, keep it least_utilized_bins with limit 5)
@@ -669,6 +879,10 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             state["resolved_query"] = f"total inventory quantity{plant_clause}"
         elif state["topic"] == "plant_materials":
             state["resolved_query"] = f"show materials{plant_clause}"
+        elif state["topic"] == "material_quantity_ranking":
+            state["resolved_query"] = f"ranking of top{limit_clause} materials by stock quantity{plant_clause}"
+        elif state["topic"] == "storage_location_ranking":
+            state["resolved_query"] = f"ranking of top{limit_clause} storage locations by inventory quantity{plant_clause}"
         else:
             state["resolved_query"] = question
 
@@ -1080,7 +1294,7 @@ ORDER BY [Total Stock Qty] DESC"""
     # B. TIME SERIES & TREND ANALYSIS (Checked before snapshot utilization)
     if any(k in q_lower for k in ["trend", "history", "timeline", "over time", "monthly", "last 6 months", "vested"]):
         return {
-            "sql": "SELECT STRFTIME('%Y-%m', FullyVestedOn) AS Month, COUNT(DISTINCT Material) AS ActiveMaterials, SUM(UnrestrictedQty) AS TotalQuantity, ROUND(SUM(UnrestrictedQty * 0.05), 2) AS EstVolume FROM dbo.ZWMS_INVENTORY WHERE FullyVestedOn IS NOT NULL GROUP BY STRFTIME('%Y-%m', FullyVestedOn) ORDER BY Month ASC",
+            "sql": "SELECT SUBSTRING(CONVERT(VARCHAR(10), FullyVestedOn, 120), 1, 7) AS Month, COUNT(DISTINCT Material) AS ActiveMaterials, SUM(UnrestrictedQty) AS TotalQuantity, ROUND(SUM(UnrestrictedQty * 0.05), 2) AS EstVolume FROM dbo.ZWMS_INVENTORY WHERE FullyVestedOn IS NOT NULL GROUP BY SUBSTRING(CONVERT(VARCHAR(10), FullyVestedOn, 120), 1, 7) ORDER BY Month ASC",
             "chart_type": "line",
             "chart_title": "Warehouse Inventory & Activity Trend Over Time",
             "chart_x": "Month",
@@ -1161,7 +1375,10 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC"""
     has_bottom = state.get("ranking") == "lowest" or state.get("topic") == "least_utilized_bins" or any(k in q_lower for k in ["bottom", "least", "lowest", "emptiest", "unused capacity", "emptiest bins", "least full", "least occupied", "lowest utilization", "least empty", "least utiliz"])
     is_plant_level_extreme = (
         bool(re.search(r"\b(?:plants?|plnts?|facility|facilities)\b", q_lower)) and
-        not any(b in q_lower for b in ["bins", "bin", "locations", "racks", "slots"]) and
+        (
+            not any(b in q_lower for b in ["bins", "bin", "locations", "racks", "slots"]) or
+            any(p in q_lower for p in ["plant bin utilization", "ranking of plant", "plant utilization ranking", "by plant", "across plants", "of plant bin utilization"])
+        ) and
         (
             any(k in q_lower for k in ["lowest", "least", "minimum", "min", "bottom", "worst", "highest", "most", "maximum", "max", "top", "best"]) or
             any(k in q_lower for k in ["which", "whic", "what", "wat", "compare", "across", "all", "each", "every", "ranking"])
@@ -1220,15 +1437,23 @@ SELECT [Ranking Group], Bin, Plant, [Bin Capacity], [Utilization %]
 FROM BottomBins"""
             return {
                 "sql": sql_both,
-                "chart_type": "none" if is_single_statement_requested else "bar",
+                "query_plan": {
+                    "intent": "RANKING",
+                    "rank_direction": "BOTH",
+                    "rank_metric": "BinUtilization",
+                    "rank_entity": "Bin",
+                    "limit": n_val,
+                    "rank_scope": {"Plant": plant_cand} if plant_cand else {}
+                },
+                "chart_type": "bar" if is_explicit_chart else "none",
                 "chart_title": f"Top {n_val} Most & Bottom {n_val} Least Utilized Bins{plant_title_suffix}",
-                "chart_x": None if is_single_statement_requested else "Bin",
-                "chart_y": None if is_single_statement_requested else "Utilization %",
+                "chart_x": "Bin" if is_explicit_chart else None,
+                "chart_y": "Utilization %" if is_explicit_chart else None,
                 "intent": "top_and_bottom_bins",
                 "metric": "bin_utilization_ranking",
                 "filters": filters,
                 "time_range": "current",
-                "output_type": "text" if is_single_statement_requested else "bar_chart",
+                "output_type": "text" if is_single_statement_requested else ("bar_chart" if is_explicit_chart else "table"),
                 "conversation_state": state
             }
 
@@ -1252,15 +1477,23 @@ GROUP BY b.BinLocation, b.Plant, b.Volume, b.VolumeUnit
 ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) ASC"""
             return {
                 "sql": sql_bottom,
-                "chart_type": "none" if is_single_statement_requested else "bar",
+                "query_plan": {
+                    "intent": "RANKING",
+                    "rank_direction": "ASC",
+                    "rank_metric": "BinUtilization",
+                    "rank_entity": "Bin",
+                    "limit": n_val,
+                    "rank_scope": {"Plant": plant_cand} if plant_cand else {}
+                },
+                "chart_type": "bar" if is_explicit_chart else "none",
                 "chart_title": f"{n_val} Least Utilized Bins{plant_title_suffix}",
-                "chart_x": None if is_single_statement_requested else "Bin",
-                "chart_y": None if is_single_statement_requested else "Occupied Volume",
+                "chart_x": "Bin" if is_explicit_chart else None,
+                "chart_y": "Occupied Volume" if is_explicit_chart else None,
                 "intent": "least_utilized_bins",
                 "metric": "bin_utilization_ranking",
                 "filters": filters,
                 "time_range": "current",
-                "output_type": "text" if is_single_statement_requested else "bar_chart",
+                "output_type": "text" if is_single_statement_requested else ("bar_chart" if is_explicit_chart else "table"),
                 "conversation_state": state
             }
 
@@ -1284,15 +1517,23 @@ GROUP BY b.BinLocation, b.Plant, b.Volume, b.VolumeUnit
 ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) DESC"""
             return {
                 "sql": sql_top,
-                "chart_type": "none" if is_single_statement_requested else "bar",
+                "query_plan": {
+                    "intent": "RANKING",
+                    "rank_direction": "DESC",
+                    "rank_metric": "BinUtilization",
+                    "rank_entity": "Bin",
+                    "limit": n_val,
+                    "rank_scope": {"Plant": plant_cand} if plant_cand else {}
+                },
+                "chart_type": "bar" if is_explicit_chart else "none",
                 "chart_title": f"Top {n_val} Most Utilized Bins{plant_title_suffix}",
-                "chart_x": None if is_single_statement_requested else "Bin",
-                "chart_y": None if is_single_statement_requested else "Occupied Volume",
+                "chart_x": "Bin" if is_explicit_chart else None,
+                "chart_y": "Occupied Volume" if is_explicit_chart else None,
                 "intent": "top_utilized_bins",
                 "metric": "bin_utilization_ranking",
                 "filters": filters,
                 "time_range": "current",
-                "output_type": "text" if is_single_statement_requested else "bar_chart",
+                "output_type": "text" if is_single_statement_requested else ("bar_chart" if is_explicit_chart else "table"),
                 "conversation_state": state
             }
 
@@ -1307,25 +1548,15 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volum
         # Operator fidelity according to Policy:
         # 'above 80%' -> > 80, 'at least 80%' / '>= 80%' -> >= 80
         # 'below 25%' -> < 25, '<= 25%' -> <= 25
-        if any(k in q_lower for k in ["at least", ">=", "or above", "or more"]):
-            op = ">="
-            op_symbol = "≥"
-            op_text = "at least"
-            is_less = False
-        elif any(k in q_lower for k in ["at most", "<=", "or below", "or less"]):
+        if any(k in q_lower for k in ["less than", "below", "under", "<", "<=", "at most", "or below", "or less"]):
             op = "<="
             op_symbol = "≤"
-            op_text = "at most"
-            is_less = True
-        elif any(k in q_lower for k in ["less than", "below", "under", "<"]):
-            op = "<"
-            op_symbol = "<"
-            op_text = "below"
+            op_text = "below or equal to"
             is_less = True
         else:
-            op = ">"
-            op_symbol = ">"
-            op_text = "above"
+            op = ">="
+            op_symbol = "≥"
+            op_text = "above or equal to"
             is_less = False
 
         plant_filter = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
@@ -1360,7 +1591,7 @@ FROM (
 
         # Otherwise compact table for lists
         return {
-            "sql": f"SELECT TOP 50 b.BinLocation AS Bin, b.Plant AS Plant, CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Bin Capacity], CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %] FROM dbo.ZWMS_BIN_MASTER b JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode WHERE b.Volume > 0{plant_filter} GROUP BY b.BinLocation, b.Plant, b.Volume, b.VolumeUnit HAVING ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1) {op} {thresh_val} ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) {'ASC' if is_less else 'DESC'}",
+            "sql": f"SELECT TOP 50 b.BinLocation AS Bin, CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Bin Capacity], CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %] FROM dbo.ZWMS_BIN_MASTER b JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode WHERE b.Volume > 0{plant_filter} GROUP BY b.BinLocation, b.Volume, b.VolumeUnit HAVING ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1) {op} {thresh_val} ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) {'ASC' if is_less else 'DESC'}",
             "chart_type": "none",
             "chart_title": f"Bins with Utilization % {op_symbol} {thresh_val}%",
             "chart_x": None,
@@ -1390,7 +1621,7 @@ FROM (
             ("free" in q_lower or "vacant" in q_lower or "zero" in q_lower or "empty" in q_lower) and
             ("bin" in q_lower or "location" in q_lower or "storage" in q_lower or "space" in q_lower or "position" in q_lower or "slot" in q_lower)
         )
-    )
+    ) and not any(k in q_lower for k in ["compare", "versus", "vs", "difference between", "their empty bins"])
     if is_empty_intent:
         plant_filter = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
         filters = {"plant": plant_cand} if plant_cand else {}
@@ -1445,7 +1676,7 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
 
     # F. AVERAGE INVENTORY PER OCCUPIED BIN
     # Semantic Definition: Total inventory quantity / number of occupied bins
-    if any(k in q_lower for k in ["average inventory", "avg inventory", "average stock", "avg stock", "average quantity", "average units", "inventory per bin", "stock per bin", "units per bin", "quantity per bin", "inventory per occupied bin", "mean quantity", "mean stock", "mean units", "mean inventory", "inside each occupied"]):
+    if any(k in q_lower for k in ["average inventory", "avg inventory", "average stock", "avg stock", "average quantity", "average units", "inventory per bin", "stock per bin", "units per bin", "quantity per bin", "inventory per occupied bin", "mean quantity", "mean stock", "mean units", "mean inventory", "inside each occupied"]) and not any(k in q_lower for k in ["compare", "versus", "vs", "difference between"]):
         plant_filter = f" WHERE Plant = '{plant_cand}' AND UnrestrictedQty > 0" if plant_cand else " WHERE UnrestrictedQty > 0"
         filters = {"plant": plant_cand} if plant_cand else {}
         return {
@@ -1461,25 +1692,344 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
             "output_type": "kpi"
         }
 
+    # =========================================================================
+    # SECTION COMP: GENERALIZED COMPARISON ENGINE (Plants, Materials, Bins, SLocs)
+    # =========================================================================
+    all_plants_mentioned = re.findall(r"\b(1258|1266|1268|7228)\b", q_lower)
+    all_plants_unique = list(dict.fromkeys(all_plants_mentioned))
+    if len(all_plants_unique) < 2 and state.get("comparison_entities"):
+        saved_plants = [e["value"] for e in state["comparison_entities"] if e.get("type") == "plant"]
+        if len(saved_plants) >= 2:
+            all_plants_unique = saved_plants
+
+    is_comparison_query = (
+        len(all_plants_unique) >= 2 and
+        any(k in q_lower for k in [
+            "compare", "versus", "vs", "comparison", "difference between",
+            "their total inventory", "their bins", "their unique materials",
+            "their materials", "their storage locations", "their empty bins",
+            "their occupied bins", "their top materials"
+        ])
+    ) or (
+        len(all_plants_unique) >= 2 and any(k in q_lower for k in ["between", "and"]) and not any(k in q_lower for k in ["between 100", "between 1", "between 2", "between 5", "between 10", "between 50"])
+    )
+
+    if is_comparison_query:
+        target_plants = all_plants_unique[:4]
+        plants_in_str = ", ".join(f"'{p}'" for p in target_plants)
+        comp_entities = [{"type": "plant", "value": p} for p in target_plants]
+        state["comparison_entities"] = comp_entities
+
+        # 1. Total Inventory Quantity
+        if any(k in q_lower for k in ["total inventory", "inventory quantity", "total stock", "how much stock", "how much inventory", "stock quantity", "their total inventory"]) or (
+            any(k in q_lower for k in ["inventory", "stock", "quantity"]) and not any(k in q_lower for k in ["material", "bin", "utiliz", "sloc", "location"])
+        ):
+            sql_comp = f"""SELECT 
+    Plant,
+    SUM(UnrestrictedQty) AS [Total Inventory Quantity],
+    COUNT(DISTINCT Material) AS [Unique Materials],
+    COUNT(DISTINCT BinNo) AS [Occupied Bins]
+FROM dbo.ZWMS_INVENTORY
+WHERE Plant IN ({plants_in_str})
+GROUP BY Plant
+ORDER BY [Total Inventory Quantity] DESC"""
+            comp_subject = "total_inventory"
+            metrics = ["inventory_quantity", "unique_materials", "occupied_bins"]
+
+        # 2. Materials / Unique Materials
+        elif any(k in q_lower for k in ["unique material", "unique materials", "materials", "sku", "skus", "items", "their materials", "their unique materials"]):
+            sql_comp = f"""SELECT 
+    Plant,
+    COUNT(DISTINCT Material) AS [Unique Materials Count],
+    SUM(UnrestrictedQty) AS [Total Stock Qty],
+    COUNT(DISTINCT BinNo) AS [Occupied Bins]
+FROM dbo.ZWMS_INVENTORY
+WHERE Plant IN ({plants_in_str})
+GROUP BY Plant
+ORDER BY [Unique Materials Count] DESC"""
+            comp_subject = "materials"
+            metrics = ["unique_materials", "inventory_quantity", "occupied_bins"]
+
+        # 3. Bin Utilization
+        elif any(k in q_lower for k in ["bin utilization", "utilization", "how full", "fill rate", "space utilization", "occupancy rate", "capacity utilization"]):
+            sql_comp = f"""SELECT 
+    b.Plant AS [Plant], 
+    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1), '%') AS [Bin Utilization %],
+    ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS [BinUtilizationPct],
+    ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS [Occupied Volume], 
+    ROUND(SUM(b.Volume), 2) AS [Total Capacity],
+    ROUND(SUM(b.Volume) - SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS [Available Capacity]
+FROM dbo.ZWMS_BIN_MASTER b 
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant 
+WHERE b.Plant IN ({plants_in_str})
+GROUP BY b.Plant
+ORDER BY BinUtilizationPct DESC"""
+            comp_subject = "bin_utilization"
+            metrics = ["bin_utilization", "occupied_volume", "total_capacity", "available_capacity"]
+
+        # 4. Empty Bins
+        elif any(k in q_lower for k in ["empty bin", "empty bins", "vacant", "free bin", "unoccupied", "their empty bins"]):
+            sql_comp = f"""SELECT 
+    b.Plant,
+    (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS [Empty Bins],
+    COUNT(DISTINCT b.BinLocation) AS [Total Bins],
+    CONCAT(ROUND((COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1), '%') AS [Empty Bins %]
+FROM dbo.ZWMS_BIN_MASTER b
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+WHERE b.Plant IN ({plants_in_str})
+GROUP BY b.Plant
+ORDER BY [Empty Bins] DESC"""
+            comp_subject = "empty_bins"
+            metrics = ["empty_bins", "total_bins", "empty_bins_pct"]
+
+        # 5. Occupied Bins
+        elif any(k in q_lower for k in ["occupied bin", "occupied bins", "in use", "active bin", "their occupied bins"]):
+            sql_comp = f"""SELECT 
+    b.Plant,
+    COUNT(DISTINCT i.BinNo) AS [Occupied Bins],
+    COUNT(DISTINCT b.BinLocation) AS [Total Bins],
+    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1), '%') AS [Bin Utilization %]
+FROM dbo.ZWMS_BIN_MASTER b
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+WHERE b.Plant IN ({plants_in_str})
+GROUP BY b.Plant
+ORDER BY [Occupied Bins] DESC"""
+            comp_subject = "occupied_bins"
+            metrics = ["occupied_bins", "total_bins", "bin_utilization"]
+
+        # 6. Physical Bins
+        elif any(k in q_lower for k in ["their bins", "bins"]):
+            sql_comp = f"""SELECT 
+    b.Plant,
+    COUNT(DISTINCT b.BinLocation) AS [Total Bins],
+    COUNT(DISTINCT i.BinNo) AS [Occupied Bins],
+    (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS [Empty Bins],
+    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1), '%') AS [Occupancy Rate]
+FROM dbo.ZWMS_BIN_MASTER b
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+WHERE b.Plant IN ({plants_in_str})
+GROUP BY b.Plant
+ORDER BY [Total Bins] DESC"""
+            comp_subject = "bins"
+            metrics = ["total_bins", "occupied_bins", "empty_bins"]
+
+        # 7. Storage Locations
+        elif any(k in q_lower for k in ["storage location", "storage locations", "sloc", "slocs", "their storage locations"]):
+            sql_comp = f"""SELECT 
+    Plant,
+    COUNT(DISTINCT StorageLocation) AS [Storage Locations Count],
+    COUNT(DISTINCT Material) AS [Active Materials],
+    COUNT(DISTINCT BinNo) AS [Occupied Bins],
+    SUM(UnrestrictedQty) AS [Total Inventory Quantity]
+FROM dbo.ZWMS_INVENTORY
+WHERE Plant IN ({plants_in_str})
+GROUP BY Plant
+ORDER BY Plant"""
+            comp_subject = "storage_locations"
+            metrics = ["storage_locations_count", "active_materials", "occupied_bins", "total_inventory_quantity"]
+
+        # 8. Top Materials
+        elif any(k in q_lower for k in ["top material", "top materials", "top sku", "top skus", "their top materials"]):
+            sql_comp = f"""SELECT 
+    Plant,
+    Material,
+    MAX(MaterialDescription) AS [Material Description],
+    SUM(UnrestrictedQty) AS [Stock Quantity]
+FROM dbo.ZWMS_INVENTORY
+WHERE Plant IN ({plants_in_str})
+GROUP BY Plant, Material
+ORDER BY Plant, SUM(UnrestrictedQty) DESC"""
+            comp_subject = "top_materials"
+            metrics = ["top_materials", "stock_quantity"]
+
+        # 9. Volume / Capacity
+        elif any(k in q_lower for k in ["volume", "capacity", "dimension", "dimensions", "material volume"]):
+            sql_comp = f"""SELECT 
+    b.Plant,
+    ROUND(SUM(b.Volume), 2) AS [Total Capacity Volume (FT3)],
+    ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS [Occupied Volume (FT3)],
+    ROUND(SUM(b.Volume) - SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS [Available Capacity Volume (FT3)]
+FROM dbo.ZWMS_BIN_MASTER b
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+WHERE b.Plant IN ({plants_in_str})
+GROUP BY b.Plant
+ORDER BY [Total Capacity Volume (FT3)] DESC"""
+            comp_subject = "volume"
+            metrics = ["total_capacity", "occupied_volume", "available_capacity"]
+
+        # 10. Default / Overall Plant Comparison
+        else:
+            sql_comp = f"""SELECT 
+    b.Plant,
+    COALESCE(i.TotalInventory, 0) AS [Total Inventory Qty],
+    COALESCE(i.UniqueMaterials, 0) AS [Unique Materials],
+    COUNT(DISTINCT b.BinLocation) AS [Total Bins],
+    COUNT(DISTINCT i_bin.BinNo) AS [Occupied Bins],
+    (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i_bin.BinNo)) AS [Empty Bins],
+    CONCAT(ROUND(COUNT(DISTINCT i_bin.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1), '%') AS [Bin Utilization %],
+    ROUND(COUNT(DISTINCT i_bin.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS [UtilizationPct]
+FROM dbo.ZWMS_BIN_MASTER b
+LEFT JOIN dbo.ZWMS_INVENTORY i_bin ON b.BinLocation = i_bin.BinNo AND b.Plant = i_bin.Plant
+LEFT JOIN (
+    SELECT Plant, SUM(UnrestrictedQty) AS TotalInventory, COUNT(DISTINCT Material) AS UniqueMaterials
+    FROM dbo.ZWMS_INVENTORY
+    GROUP BY Plant
+) i ON b.Plant = i.Plant
+WHERE b.Plant IN ({plants_in_str})
+GROUP BY b.Plant, i.TotalInventory, i.UniqueMaterials
+ORDER BY b.Plant"""
+            comp_subject = "overview"
+            metrics = ["total_inventory_quantity", "unique_materials", "total_bins", "occupied_bins", "empty_bins", "bin_utilization"]
+
+        query_plan = {
+            "intent": "COMPARISON",
+            "comparison_entities": comp_entities,
+            "comparison_subject": comp_subject,
+            "metrics": metrics,
+            "group_by": ["Plant"]
+        }
+        return {
+            "sql": sql_comp,
+            "query_plan": query_plan,
+            "chart_type": "bar" if is_explicit_chart else "none",
+            "chart_title": f"Plant Comparison ({', '.join(target_plants)})",
+            "chart_x": "Plant" if is_explicit_chart else None,
+            "chart_y": metrics[0] if is_explicit_chart else None,
+            "intent": "plant_comparison",
+            "metric": f"{comp_subject}_comparison",
+            "filters": {"plants": target_plants},
+            "time_range": "current",
+            "output_type": "text" if is_single_statement_requested else ("bar_chart" if is_explicit_chart else "table"),
+            "conversation_state": state
+        }
+
+    # =========================================================================
+    # SECTION RANGE: GENERIC RANGE CONTEXT ENGINE (Numeric, Quantity, Utilization, Date)
+    # =========================================================================
+    range_filters = parse_range_filters(resolved_q)
+    is_not_simple_threshold = not threshold_match
+    if range_filters and is_not_simple_threshold and not is_comparison_query:
+        rf = range_filters[0]
+        state["range_filters"] = range_filters
+        field = rf.get("field", "UnrestrictedQty")
+        plant_filter_i = f" AND i.Plant = '{plant_cand}'" if plant_cand else ""
+        plant_filter_b = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
+
+        if field == "BinUtilizationPct":
+            where_cond = ""
+            if rf["operator"] == "BETWEEN":
+                where_cond = f"UtilizationPct BETWEEN {rf['lower']} AND {rf['upper']}"
+            elif rf["operator"] in ["GT", "GTE"]:
+                op = ">=" if rf.get("inclusive") else ">"
+                where_cond = f"UtilizationPct {op} {rf['lower']}"
+            elif rf["operator"] in ["LT", "LTE"]:
+                op = "<=" if rf.get("inclusive") else "<"
+                where_cond = f"UtilizationPct {op} {rf['upper']}"
+
+            sql_range = f"""WITH BinUtil AS (
+    SELECT 
+        b.BinLocation AS [Bin],
+        b.Plant AS [Plant],
+        COALESCE(b.StorageLocation, 'N/A') AS [Storage Location],
+        CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Bin Capacity],
+        ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1) AS [UtilizationPct]
+    FROM dbo.ZWMS_BIN_MASTER b
+    JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+    LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+    WHERE b.Volume > 0{plant_filter_b}
+    GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit
+)
+SELECT 
+    Bin, Plant, [Storage Location], [Bin Capacity], 
+    CONCAT([UtilizationPct], '%') AS [Utilization %],
+    [UtilizationPct]
+FROM BinUtil
+WHERE {where_cond}
+ORDER BY [UtilizationPct] DESC"""
+
+        elif field == "FullyVestedOn":
+            where_cond = ""
+            if rf["operator"] == "BETWEEN":
+                where_cond = f"i.FullyVestedOn >= '{rf['lower']}' AND i.FullyVestedOn <= '{rf['upper']}'"
+            elif rf["operator"] in ["GT", "GTE"]:
+                where_cond = f"i.FullyVestedOn >= '{rf['lower']}'"
+            elif rf["operator"] in ["LT", "LTE"]:
+                where_cond = f"i.FullyVestedOn <= '{rf['upper']}'"
+
+            sql_range = f"""SELECT 
+    i.Material,
+    MAX(COALESCE(i.MaterialDescription, 'N/A')) AS [Material Description],
+    i.Plant,
+    i.StorageLocation AS [Storage Location],
+    i.BinNo AS [Bin],
+    SUM(i.UnrestrictedQty) AS [Quantity],
+    MAX(i.FullyVestedOn) AS [Fully Vested On]
+FROM dbo.ZWMS_INVENTORY i
+WHERE i.FullyVestedOn IS NOT NULL{plant_filter_i} AND {where_cond}
+GROUP BY i.Material, i.Plant, i.StorageLocation, i.BinNo
+ORDER BY [Quantity] DESC"""
+
+        else: # UnrestrictedQty
+            having_cond = ""
+            if rf["operator"] == "BETWEEN":
+                having_cond = f"SUM(i.UnrestrictedQty) BETWEEN {rf['lower']} AND {rf['upper']}"
+            elif rf["operator"] in ["GT", "GTE"]:
+                op = ">=" if rf.get("inclusive") else ">"
+                having_cond = f"SUM(i.UnrestrictedQty) {op} {rf['lower']}"
+            elif rf["operator"] in ["LT", "LTE"]:
+                op = "<=" if rf.get("inclusive") else "<"
+                having_cond = f"SUM(i.UnrestrictedQty) {op} {rf['upper']}"
+
+            sql_range = f"""SELECT 
+    i.Material,
+    MAX(COALESCE(i.MaterialDescription, 'N/A')) AS [Material Description],
+    i.Plant,
+    SUM(i.UnrestrictedQty) AS [Total Stock Qty],
+    MAX(i.BaseUnitOfMeasure) AS [UOM],
+    COUNT(DISTINCT i.BinNo) AS [Occupied Bins]
+FROM dbo.ZWMS_INVENTORY i
+WHERE 1=1{plant_filter_i}
+GROUP BY i.Material, i.Plant
+HAVING {having_cond}
+ORDER BY [Total Stock Qty] DESC"""
+
+        query_plan = {
+            "intent": "RANGE_QUERY",
+            "range_filters": range_filters,
+            "field": field
+        }
+        return {
+            "sql": sql_range,
+            "query_plan": query_plan,
+            "chart_type": "bar" if is_explicit_chart else "none",
+            "chart_title": f"Range Filter Results ({field})",
+            "chart_x": "Material" if field == "UnrestrictedQty" else ("Bin" if field == "BinUtilizationPct" else None),
+            "chart_y": "Total Stock Qty" if field == "UnrestrictedQty" else ("UtilizationPct" if field == "BinUtilizationPct" else None),
+            "intent": "range_query",
+            "metric": f"{field.lower()}_range",
+            "filters": {"plant": plant_cand} if plant_cand else {},
+            "time_range": "current",
+            "output_type": "text" if is_single_statement_requested else ("bar_chart" if is_explicit_chart else "table"),
+            "conversation_state": state
+        }
+
     # G. WAREHOUSE & PLANT BIN UTILIZATION (Multi-Tiered Response Templates)
     # Semantic Definition: Occupied volume / Total capacity volume * 100 or Occupied Bins / Total Bins * 100
-    is_multi_plant_comparison = (
-        len(list(dict.fromkeys(re.findall(r"\b(1258|1266|1268|7228)\b", q_lower)))) >= 2 and
-        any(k in q_lower for k in ["compare", "versus", "vs", "comparison", "and", "between"])
-    )
     is_utilization_intent = (
-        is_multi_plant_comparison or
         state.get("topic") in ["plant_bin_utilization_detailed_analysis", "plant_bin_utilization_detail", "warehouse_utilization"] or
         any(k in q_lower for k in ["utiliz", "occupan", "capacity", "how full", "warehouse fullness", "facility fill", "fill rate", "space utilization", "bin fill", "fill percentage", "running out of", "out of storage space", "storage capacity"]) or
-        (("volume" in q_lower or "space" in q_lower) and ("occup" in q_lower or "capacit" in q_lower or "fill" in q_lower or "versus" in q_lower or "compared" in q_lower or "running out" in q_lower))
+        (("volume" in q_lower or "space" in q_lower) and ("occup" in q_lower or "capacit" in q_lower or "fill" in q_lower or "running out" in q_lower))
     )
     if is_utilization_intent and not any(m in q_lower for m in ["material", "sku", "item", "product", "consuming", "share of total"]):
-        # 1. EXPANSION: Detailed Storage Location Breakdown for Plant (when user asks for detail, explain, breakdown, etc.)
-        is_detail_explain_query = any(k in q_lower for k in [
-            "detail", "detailed", "details", "explain", "explanation", "breakdown", 
-            "deep dive", "elaborate", "by storage location", "sloc breakdown", 
-            "storage location breakdown", "detailed version", "detailed bin utilization"
-        ])
+        is_detail_explain_query = (
+            state.get("topic") == "plant_bin_utilization_detailed_analysis" or
+            any(k in q_lower for k in [
+                "explain", "explanation", "breakdown", "break it down", 
+                "deep dive", "elaborate", "by storage location", "sloc breakdown", 
+                "storage location breakdown", "detailed version", "detailed analysis",
+                "in detail", "in-depth", "drill down", "itemized", "granular"
+            ])
+        )
         if (state.get("topic") == "plant_bin_utilization_detailed_analysis" or (is_detail_explain_query and plant_cand)) and plant_cand:
             plant_val = plant_cand
             sql_detailed = f"""SELECT 
@@ -1550,41 +2100,6 @@ GROUP BY b.Plant"""
                 "conversation_state": state
             }
 
-        # 2B. MULTI-PLANT COMPARISON (e.g. "Compare Plant 1258 and 7228", "Plant 1258 vs 7228")
-        all_plants_mentioned = re.findall(r"\b(1258|1266|1268|7228)\b", q_lower)
-        all_plants_unique = list(dict.fromkeys(all_plants_mentioned))
-        is_comparison_query = (
-            len(all_plants_unique) >= 2 or
-            (any(k in q_lower for k in ["compare", "versus", "vs", "comparison", "compare plant", "compare plants"]) and len(all_plants_unique) >= 1)
-        )
-        if is_comparison_query:
-            target_plants = all_plants_unique if all_plants_unique else ["1258", "7228"]
-            plants_in_str = ", ".join(f"'{p}'" for p in target_plants)
-            sql_plant_comp = f"""SELECT 
-    b.Plant AS [Plant], 
-    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1), '%') AS [Bin Utilization %],
-    ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS [BinUtilizationPct],
-    ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS [Occupied Volume], 
-    ROUND(SUM(b.Volume), 2) AS [Total Capacity],
-    ROUND(SUM(b.Volume) - SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS [Available Capacity]
-FROM dbo.ZWMS_BIN_MASTER b 
-LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant 
-WHERE b.Plant IN ({plants_in_str})
-GROUP BY b.Plant
-ORDER BY BinUtilizationPct DESC"""
-            return {
-                "sql": sql_plant_comp,
-                "chart_type": "none" if is_single_statement_requested else "bar",
-                "chart_title": f"Plant Comparison ({', '.join(target_plants)})",
-                "chart_x": None if is_single_statement_requested else "Plant",
-                "chart_y": None if is_single_statement_requested else "BinUtilizationPct",
-                "intent": "plant_comparison",
-                "metric": "bin_utilization_comparison",
-                "filters": {"plants": target_plants},
-                "time_range": "current",
-                "output_type": "table",
-                "conversation_state": state
-            }
 
         # 3. LOWEST / HIGHEST BIN UTILIZATION ACROSS PLANTS (Specific Extremes & Rankings)
         has_plant_word = bool(re.search(r"\b(?:plants?|plnts?|facility|facilities)\b", q_lower))
@@ -1640,15 +2155,23 @@ ORDER BY BinUtilizationPct {order_dir}"""
             is_single_scalar = (is_single_statement_requested or limit_n == 1)
             return {
                 "sql": sql_extreme_util,
-                "chart_type": "none" if is_single_scalar else "bar",
+                "query_plan": {
+                    "intent": "RANKING",
+                    "rank_direction": order_dir,
+                    "rank_metric": "BinUtilizationPct",
+                    "rank_entity": "Plant",
+                    "limit": limit_n,
+                    "rank_scope": {}
+                },
+                "chart_type": "bar" if is_explicit_chart else "none",
                 "chart_title": f"{rank_label} Bin Utilization by Plant",
-                "chart_x": None if is_single_scalar else "Plant",
-                "chart_y": None if is_single_scalar else "BinUtilizationPct",
+                "chart_x": "Plant" if is_explicit_chart else None,
+                "chart_y": "BinUtilizationPct" if is_explicit_chart else None,
                 "intent": intent_name,
                 "metric": "bin_utilization",
                 "filters": {},
                 "time_range": "current",
-                "output_type": "text" if is_single_scalar else "bar_chart",
+                "output_type": "text" if is_single_scalar else ("bar_chart" if is_explicit_chart else "table"),
                 "conversation_state": state
             }
 
@@ -1673,7 +2196,7 @@ ORDER BY BinUtilizationPct {order_dir}"""
     # G. TIME SERIES & TREND ANALYSIS
     if any(k in q_lower for k in ["trend", "history", "timeline", "over time", "monthly", "last 6 months", "vested"]):
         return {
-            "sql": "SELECT STRFTIME('%Y-%m', FullyVestedOn) AS Month, COUNT(DISTINCT Material) AS ActiveMaterials, SUM(UnrestrictedQty) AS TotalQuantity, ROUND(SUM(UnrestrictedQty * 0.05), 2) AS EstVolume FROM dbo.ZWMS_INVENTORY WHERE FullyVestedOn IS NOT NULL GROUP BY STRFTIME('%Y-%m', FullyVestedOn) ORDER BY Month ASC",
+            "sql": "SELECT SUBSTRING(CONVERT(VARCHAR(10), FullyVestedOn, 120), 1, 7) AS Month, COUNT(DISTINCT Material) AS ActiveMaterials, SUM(UnrestrictedQty) AS TotalQuantity, ROUND(SUM(UnrestrictedQty * 0.05), 2) AS EstVolume FROM dbo.ZWMS_INVENTORY WHERE FullyVestedOn IS NOT NULL GROUP BY SUBSTRING(CONVERT(VARCHAR(10), FullyVestedOn, 120), 1, 7) ORDER BY Month ASC",
             "chart_type": "line",
             "chart_title": "Warehouse Inventory & Activity Trend Over Time",
             "chart_x": "Month",
@@ -1879,8 +2402,17 @@ FROM dbo.ZWMS_INVENTORY
 WHERE UnrestrictedQty > 0{plant_and}
 GROUP BY Material
 ORDER BY SUM(UnrestrictedQty) {order_dir}"""
+            query_plan = {
+                "intent": "RANKING",
+                "rank_direction": order_dir,
+                "rank_metric": "UnrestrictedQty",
+                "rank_entity": "Material",
+                "limit": n_val,
+                "rank_scope": {"Plant": plant_cand} if plant_cand else {}
+            }
             return {
                 "sql": sql_mat_rank,
+                "query_plan": query_plan,
                 "chart_type": "bar" if is_explicit_chart else "none",
                 "chart_title": f"{rank_label} Stocked Materials{f' — Plant {plant_cand}' if plant_cand else ''}",
                 "chart_x": "Material" if is_explicit_chart else None,
@@ -1908,8 +2440,17 @@ ORDER BY SUM(UnrestrictedQty) {order_dir}"""
 FROM dbo.ZWMS_INVENTORY{plant_filter}
 GROUP BY StorageLocation, Plant
 ORDER BY SUM(UnrestrictedQty) {order_dir}"""
+            query_plan = {
+                "intent": "RANKING",
+                "rank_direction": order_dir,
+                "rank_metric": "UnrestrictedQty",
+                "rank_entity": "StorageLocation",
+                "limit": n_val,
+                "rank_scope": {"Plant": plant_cand} if plant_cand else {}
+            }
             return {
                 "sql": sql_sloc_rank,
+                "query_plan": query_plan,
                 "chart_type": "bar" if is_explicit_chart else "none",
                 "chart_title": f"{rank_label} Storage Locations{f' — Plant {plant_cand}' if plant_cand else ''}",
                 "chart_x": "Storage Location" if is_explicit_chart else None,
@@ -2362,6 +2903,216 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
             f"\n💡 *The complete **Exception Table** with all relevant fields (`Material`, `Description`, `Total Stock Qty`, `Occupied Bins`, `Length`, `Width`, `Height`, `Volume`, `Quality Issue`) is displayed in the **searchable Data Table** below.*"
         ]
         return "\n".join(lines)
+
+    # 0C_comp. General Comparison Engine (Inventory, Materials, Bins, Empty Bins, Storage Locations, Overview)
+    # 0C_comp_1. Comparison: Total Inventory Quantity
+    if "Total Inventory Quantity" in cols and "Storage Locations Count" not in cols and "Plant" in cols and len(rows) >= 2:
+        sorted_rows = sorted(rows, key=lambda x: x.get("Total Inventory Quantity", 0), reverse=True)
+        p1, p2 = sorted_rows[0], sorted_rows[1]
+        name1, q1, m1, b1 = p1.get("Plant", "N/A"), p1.get("Total Inventory Quantity", 0), p1.get("Unique Materials", 0), p1.get("Occupied Bins", 0)
+        name2, q2, m2, b2 = p2.get("Plant", "N/A"), p2.get("Total Inventory Quantity", 0), p2.get("Unique Materials", 0), p2.get("Occupied Bins", 0)
+        diff = q1 - q2
+        single_stmt = f"**Plant {name1}** has the higher total inventory at **{q1:,.0f} units** ({m1:,} unique materials across {b1:,} occupied bins), compared to **Plant {name2}** with **{q2:,.0f} units** ({m2:,} materials, {b2:,} bins) — a difference of **{diff:,.0f} units**."
+        if is_single_statement_requested:
+            return single_stmt
+        lines = [
+            f"### 🏭 Total Inventory Comparison\n",
+            single_stmt,
+            f"\n**Plant Breakdown:**",
+        ]
+        for r in sorted_rows:
+            p = r.get("Plant", "N/A")
+            q = r.get("Total Inventory Quantity", 0)
+            m = r.get("Unique Materials", 0)
+            b = r.get("Occupied Bins", 0)
+            lines.append(f"- **Plant {p}**: **{q:,.0f} units** | **{m:,} unique materials** | **{b:,} occupied bins**")
+        lines.append(f"\n💡 *The full comparison metrics are displayed in the **Data Table** below.*")
+        return "\n".join(lines)
+
+    # 0C_comp_2. Comparison: Unique Materials / SKUs
+    if "Unique Materials Count" in cols and "Plant" in cols and len(rows) >= 2:
+        sorted_rows = sorted(rows, key=lambda x: x.get("Unique Materials Count", 0), reverse=True)
+        p1, p2 = sorted_rows[0], sorted_rows[1]
+        name1, m1, q1 = p1.get("Plant", "N/A"), p1.get("Unique Materials Count", 0), p1.get("Total Stock Qty", 0)
+        name2, m2, q2 = p2.get("Plant", "N/A"), p2.get("Unique Materials Count", 0), p2.get("Total Stock Qty", 0)
+        single_stmt = f"**Plant {name1}** holds more unique materials with **{m1:,} SKUs** ({q1:,.0f} total stock units), compared to **Plant {name2}** with **{m2:,} SKUs** ({q2:,.0f} units)."
+        if is_single_statement_requested:
+            return single_stmt
+        lines = [
+            f"### 🏭 Unique Materials Comparison\n",
+            single_stmt,
+            f"\n**Plant Breakdown:**",
+        ]
+        for r in sorted_rows:
+            p = r.get("Plant", "N/A")
+            m = r.get("Unique Materials Count", 0)
+            q = r.get("Total Stock Qty", 0)
+            b = r.get("Occupied Bins", 0)
+            lines.append(f"- **Plant {p}**: **{m:,} unique materials** | **{q:,.0f} stock units** | **{b:,} occupied bins**")
+        lines.append(f"\n💡 *The full comparison metrics are displayed in the **Data Table** below.*")
+        return "\n".join(lines)
+
+    # 0C_comp_3. Comparison: Empty Bins
+    if "Empty Bins" in cols and "Empty Bins %" in cols and "Plant" in cols and len(rows) >= 2:
+        sorted_rows = sorted(rows, key=lambda x: x.get("Empty Bins", 0), reverse=True)
+        p1, p2 = sorted_rows[0], sorted_rows[1]
+        name1, eb1, tb1, pct1 = p1.get("Plant", "N/A"), p1.get("Empty Bins", 0), p1.get("Total Bins", 0), p1.get("Empty Bins %", "0%")
+        name2, eb2, tb2, pct2 = p2.get("Plant", "N/A"), p2.get("Empty Bins", 0), p2.get("Total Bins", 0), p2.get("Empty Bins %", "0%")
+        single_stmt = f"**Plant {name1}** has **{eb1:,} empty bins** ({pct1} of {tb1:,} total bins), compared to **Plant {name2}** with **{eb2:,} empty bins** ({pct2} of {tb2:,} total bins)."
+        if is_single_statement_requested:
+            return single_stmt
+        lines = [
+            f"### 📦 Empty Bins Comparison\n",
+            single_stmt,
+            f"\n**Plant Breakdown:**",
+        ]
+        for r in sorted_rows:
+            p = r.get("Plant", "N/A")
+            eb = r.get("Empty Bins", 0)
+            tb = r.get("Total Bins", 0)
+            pct = r.get("Empty Bins %", "0%")
+            lines.append(f"- **Plant {p}**: **{eb:,} empty bins** ({pct} of {tb:,} total bins)")
+        lines.append(f"\n💡 *The full comparison metrics are displayed in the **Data Table** below.*")
+        return "\n".join(lines)
+
+    # 0C_comp_4. Comparison: Occupied Bins
+    if "Occupied Bins" in cols and "Bin Utilization %" in cols and "Total Bins" in cols and "Plant" in cols and len(rows) >= 2 and any(k in q_lower for k in ["occupied", "active bin", "in use"]):
+        sorted_rows = sorted(rows, key=lambda x: x.get("Occupied Bins", 0), reverse=True)
+        p1, p2 = sorted_rows[0], sorted_rows[1]
+        name1, ob1, tb1, pct1 = p1.get("Plant", "N/A"), p1.get("Occupied Bins", 0), p1.get("Total Bins", 0), p1.get("Bin Utilization %", "0%")
+        name2, ob2, tb2, pct2 = p2.get("Plant", "N/A"), p2.get("Occupied Bins", 0), p2.get("Total Bins", 0), p2.get("Bin Utilization %", "0%")
+        single_stmt = f"**Plant {name1}** has **{ob1:,} occupied bins** ({pct1} utilization across {tb1:,} total bins), compared to **Plant {name2}** with **{ob2:,} occupied bins** ({pct2} utilization across {tb2:,} total bins)."
+        if is_single_statement_requested:
+            return single_stmt
+        lines = [
+            f"### 📦 Occupied Bins Comparison\n",
+            single_stmt,
+            f"\n**Plant Breakdown:**",
+        ]
+        for r in sorted_rows:
+            p = r.get("Plant", "N/A")
+            ob = r.get("Occupied Bins", 0)
+            tb = r.get("Total Bins", 0)
+            pct = r.get("Bin Utilization %", "0%")
+            lines.append(f"- **Plant {p}**: **{ob:,} occupied bins** ({pct} across {tb:,} total bins)")
+        lines.append(f"\n💡 *The full comparison metrics are displayed in the **Data Table** below.*")
+        return "\n".join(lines)
+
+    # 0C_comp_5. Comparison: Physical Bins (Total Bins & Occupancy Rate)
+    if "Total Bins" in cols and "Occupancy Rate" in cols and "Plant" in cols and len(rows) >= 2:
+        sorted_rows = sorted(rows, key=lambda x: x.get("Total Bins", 0), reverse=True)
+        p1, p2 = sorted_rows[0], sorted_rows[1]
+        name1, tb1, ob1, eb1 = p1.get("Plant", "N/A"), p1.get("Total Bins", 0), p1.get("Occupied Bins", 0), p1.get("Empty Bins", 0)
+        name2, tb2, ob2, eb2 = p2.get("Plant", "N/A"), p2.get("Total Bins", 0), p2.get("Occupied Bins", 0), p2.get("Empty Bins", 0)
+        single_stmt = f"**Plant {name1}** has **{tb1:,} total bins** ({ob1:,} occupied, {eb1:,} empty), compared to **Plant {name2}** with **{tb2:,} total bins** ({ob2:,} occupied, {eb2:,} empty)."
+        if is_single_statement_requested:
+            return single_stmt
+        lines = [
+            f"### 📦 Total Bins Comparison\n",
+            single_stmt,
+            f"\n**Plant Breakdown:**",
+        ]
+        for r in sorted_rows:
+            p = r.get("Plant", "N/A")
+            tb = r.get("Total Bins", 0)
+            ob = r.get("Occupied Bins", 0)
+            eb = r.get("Empty Bins", 0)
+            rate = r.get("Occupancy Rate", "0%")
+            lines.append(f"- **Plant {p}**: **{tb:,} total bins** | {ob:,} occupied | {eb:,} empty ({rate} occupancy)")
+        lines.append(f"\n💡 *The full comparison metrics are displayed in the **Data Table** below.*")
+        return "\n".join(lines)
+
+    # 0C_comp_6. Comparison: Storage Locations
+    if "Storage Locations Count" in cols and "Active Materials" in cols and "Plant" in cols and len(rows) >= 2:
+        sorted_rows = sorted(rows, key=lambda x: x.get("Storage Locations Count", 0), reverse=True)
+        p1, p2 = sorted_rows[0], sorted_rows[1]
+        name1, sl1, m1 = p1.get("Plant", "N/A"), p1.get("Storage Locations Count", 0), p1.get("Active Materials", 0)
+        name2, sl2, m2 = p2.get("Plant", "N/A"), p2.get("Storage Locations Count", 0), p2.get("Active Materials", 0)
+        single_stmt = f"**Plant {name1}** operates **{sl1} storage locations** ({m1:,} active materials), compared to **Plant {name2}** with **{sl2} storage locations** ({m2:,} active materials)."
+        if is_single_statement_requested:
+            return single_stmt
+        lines = [
+            f"### 📍 Storage Locations Comparison\n",
+            single_stmt,
+            f"\n**Plant Breakdown:**",
+        ]
+        for r in sorted_rows:
+            p = r.get("Plant", "N/A")
+            sl = r.get("Storage Locations Count", 0)
+            m = r.get("Active Materials", 0)
+            q = r.get("Total Inventory Quantity", 0)
+            lines.append(f"- **Plant {p}**: **{sl} storage locations** | {m:,} active materials | {q:,.0f} units")
+        lines.append(f"\n💡 *The full comparison metrics are displayed in the **Data Table** below.*")
+        return "\n".join(lines)
+
+    # 0C_comp_7. Comparison: Overview / Multi-Metric Plant Comparison
+    if "Total Inventory Qty" in cols and "Total Bins" in cols and "Bin Utilization %" in cols and "Plant" in cols and len(rows) >= 2:
+        p1, p2 = rows[0], rows[1]
+        name1, q1, tb1, u1 = p1.get("Plant", "N/A"), p1.get("Total Inventory Qty", 0), p1.get("Total Bins", 0), p1.get("Bin Utilization %", "0%")
+        name2, q2, tb2, u2 = p2.get("Plant", "N/A"), p2.get("Total Inventory Qty", 0), p2.get("Total Bins", 0), p2.get("Bin Utilization %", "0%")
+        single_stmt = f"Plant comparison: **Plant {name1}** has **{q1:,.0f} units** across **{tb1:,} bins** ({u1} utilization), while **Plant {name2}** has **{q2:,.0f} units** across **{tb2:,} bins** ({u2} utilization)."
+        if is_single_statement_requested:
+            return single_stmt
+        lines = [
+            f"### 🏭 Plant Overview Comparison\n",
+            single_stmt,
+            f"\n**Detailed Plant Comparison:**",
+        ]
+        for r in rows:
+            p = r.get("Plant", "N/A")
+            q = r.get("Total Inventory Qty", 0)
+            m = r.get("Unique Materials", 0)
+            tb = r.get("Total Bins", 0)
+            ob = r.get("Occupied Bins", 0)
+            eb = r.get("Empty Bins", 0)
+            u = r.get("Bin Utilization %", "0%")
+            lines.append(f"- **Plant {p}**: **{q:,.0f} units** | **{m:,} unique materials** | **{tb:,} bins** ({ob:,} occupied, {eb:,} empty, **{u}** utilization)")
+        lines.append(f"\n💡 *The complete side-by-side comparison is rendered in the **Data Table** below.*")
+        return "\n".join(lines)
+
+    # 0C_range_1. Range Query: Material Quantity Range (field: UnrestrictedQty)
+    if "Total Stock Qty" in cols and "Occupied Bins" in cols and "Material" in cols and "Plant" in cols:
+        rf_list = parse_range_filters(question)
+        rf_desc = "within the specified range"
+        if rf_list:
+            rf = rf_list[0]
+            if rf["operator"] == "BETWEEN":
+                rf_desc = f"between {rf['lower']:,.0f} and {rf['upper']:,.0f} units"
+            elif rf["operator"] in ["GT", "GTE"]:
+                rf_desc = f"at least {rf['lower']:,.0f} units"
+            elif rf["operator"] in ["LT", "LTE"]:
+                rf_desc = f"up to {rf['upper']:,.0f} units"
+        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
+        plant_val = plant_match.group(1) if plant_match else None
+        plant_str = f" in Plant {plant_val}" if plant_val else ""
+        single_stmt = f"Found **{count:,} materials** with inventory quantity **{rf_desc}**{plant_str}."
+        if is_single_statement_requested:
+            return single_stmt
+        lines = [
+            f"### 📊 Materials with Inventory {rf_desc.capitalize()}{plant_str}\n",
+            single_stmt,
+            f"\n💡 *The matching materials with plant locations, total stock quantities, and occupied bins are displayed in the **Data Table** below.*"
+        ]
+        return "\n".join(lines)
+
+    # 0C_range_2. Range Query: Bin Utilization Range (field: BinUtilizationPct BETWEEN)
+    if "Bin Capacity" in cols and "Utilization %" in cols and any(k in q_lower for k in ["between", "%-", "% -", "% to"]):
+        rf_list = parse_range_filters(question)
+        if rf_list and rf_list[0].get("field") == "BinUtilizationPct" and rf_list[0].get("operator") == "BETWEEN":
+            rf = rf_list[0]
+            rf_desc = f"between {rf['lower']}% and {rf['upper']}% utilization"
+            plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
+            plant_val = plant_match.group(1) if plant_match else None
+            plant_str = f" in Plant {plant_val}" if plant_val else ""
+            single_stmt = f"Found **{count:,} bins** operating with **{rf_desc}**{plant_str}."
+            if is_single_statement_requested:
+                return single_stmt
+            lines = [
+                f"### 📦 Bins with {rf_desc.capitalize()}{plant_str}\n",
+                single_stmt,
+                f"\n💡 *The matching bins with storage locations, capacities, and exact utilization percentages are loaded in the **searchable Data Table** below.*"
+            ]
+            return "\n".join(lines)
 
     # 1. Top Materials by Share of Total Bin Volume (Matching Recommended Chatbot Response)
     if "Total Material Volume" in cols or "% of Total Bin Volume" in cols:
@@ -2872,9 +3623,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
         plant_val = plant_match.group(1) if plant_match else (rows[0].get("Plant", "N/A") if "Plant" in cols else "1258")
         
-        plant_record_counts = {"1258": "5,517", "1268": "15,582", "7228": "9,514", "1266": "1,846"}
-        tot_records_str = plant_record_counts.get(plant_val, f"{count:,}")
-        
+        tot_records_str = f"{count:,}"
         single_stmt = f"In the uploaded inventory data, **Plant {plant_val}** has **{tot_records_str} inventory records**."
         if is_single_statement_requested:
             return single_stmt
@@ -2987,6 +3736,66 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
             "time_range": "current"
         }
 
+    # 0A. Explicit Single-Line Override (Suppress tables, charts, KPI cards, buttons)
+    if any(re.search(r'\b' + re.escape(o) + r'\b', q_lower) for o in SINGLE_LINE_OVERRIDE_TRIGGERS):
+        return {
+            "output_type": "text",
+            "chart_type": "none",
+            "metric": generated.get("metric", "concise_answer"),
+            "intent": generated.get("intent", "single_line_answer"),
+            "time_range": generated.get("time_range", "current")
+        }
+
+    # 0B. Plant Comparison
+    if generated.get("intent") == "plant_comparison" or "COMPARISON" in str(generated.get("query_plan", {}).get("intent", "")):
+        is_explicit_chart_in_q = any(k in q_lower for k in [
+            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart",
+            "show me a graph", "give me a chart", "draw a chart", "create a chart", "plot a chart"
+        ])
+        if is_explicit_chart_in_q:
+            return {
+                "output_type": "bar_chart",
+                "chart_type": "bar",
+                "chart_title": generated.get("chart_title", "Plant Comparison"),
+                "chart_x": "Plant",
+                "chart_y": cols[1] if len(cols) > 1 else None,
+                "metric": generated.get("metric", "plant_comparison"),
+                "intent": "plant_comparison",
+                "time_range": "current"
+            }
+        return {
+            "output_type": "table",
+            "chart_type": "none",
+            "metric": generated.get("metric", "plant_comparison"),
+            "intent": "plant_comparison",
+            "time_range": "current"
+        }
+
+    # 0C. Range Queries
+    if generated.get("intent") == "range_query" or "RANGE" in str(generated.get("query_plan", {}).get("intent", "")):
+        is_explicit_chart_in_q = any(k in q_lower for k in [
+            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart",
+            "show me a graph", "give me a chart", "draw a chart", "create a chart", "plot a chart"
+        ])
+        if is_explicit_chart_in_q:
+            return {
+                "output_type": "bar_chart",
+                "chart_type": "bar",
+                "chart_title": generated.get("chart_title", "Range Query"),
+                "chart_x": cols[0] if cols else None,
+                "chart_y": cols[1] if len(cols) > 1 else None,
+                "metric": generated.get("metric", "range_query"),
+                "intent": "range_query",
+                "time_range": "current"
+            }
+        return {
+            "output_type": "table",
+            "chart_type": "none",
+            "metric": generated.get("metric", "range_query"),
+            "intent": "range_query",
+            "time_range": "current"
+        }
+
     # 1. Plant Bin Utilization Detail Templates
     if generated.get("intent") == "plant_bin_utilization_detail":
         return {
@@ -3035,12 +3844,24 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
                 "intent": intent_type,
                 "time_range": "current"
             }
+        is_explicit_chart_in_q = any(k in q_lower for k in [
+            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart",
+            "show me a graph", "give me a chart", "draw a chart", "create a chart", "plot a chart"
+        ]) or (generated.get("chart_type") in ["bar", "line", "pie"] and generated.get("output_type") in ["bar_chart", "line_chart", "pie_chart"])
+        if is_explicit_chart_in_q:
+            return {
+                "output_type": "bar_chart",
+                "chart_type": "bar",
+                "chart_title": generated.get("chart_title", "Bin Utilization & Fullness"),
+                "chart_x": "Bin" if "Bin" in cols else ("Storage Location" if "Storage Location" in cols else "Plant"),
+                "chart_y": "Occupied Volume" if "Occupied Volume" in cols else ("Utilization %" if "Utilization %" in cols else "Bin Capacity"),
+                "metric": "bin_fullness",
+                "intent": intent_type,
+                "time_range": "current"
+            }
         return {
-            "output_type": "bar_chart",
-            "chart_type": "bar",
-            "chart_title": generated.get("chart_title", "Bin Utilization & Fullness"),
-            "chart_x": "Bin" if "Bin" in cols else ("Storage Location" if "Storage Location" in cols else "Plant"),
-            "chart_y": "Occupied Volume" if "Occupied Volume" in cols else ("Utilization %" if "Utilization %" in cols else "Bin Capacity"),
+            "output_type": "table",
+            "chart_type": "none",
             "metric": "bin_fullness",
             "intent": intent_type,
             "time_range": "current"

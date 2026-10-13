@@ -1,5 +1,5 @@
 export type ChartType = 'bar' | 'line' | 'pie' | 'none';
-export type OutputType = 'kpi' | 'table' | 'line_chart' | 'bar_chart' | 'pie_chart' | 'list' | 'text' | 'kpi_summary_table';
+export type OutputType = 'kpi' | 'table' | 'line_chart' | 'bar_chart' | 'pie_chart' | 'list' | 'text' | 'single_line' | 'single_value' | 'ranking_table' | 'comparison_table' | 'detail_analysis' | 'chart_plus_summary' | 'kpi_summary_table';
 
 export interface ChartMetadata {
   type: ChartType;

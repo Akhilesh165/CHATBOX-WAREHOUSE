@@ -238,8 +238,7 @@ def test_plant_bin_utilization_detail_template():
     res = deterministic_warehouse_sql_generator("Give me bin utilization details for plant 7228")
     assert res["intent"] == "plant_bin_utilization_detail"
     assert res["filters"]["plant"] == "7228"
-    assert "follow_up_action" in res
-    assert res["follow_up_action"]["action"] == "generate_detail"
+    assert "follow_up_action" not in res
     assert "relevant_kpis" in res
 
     rows = [{

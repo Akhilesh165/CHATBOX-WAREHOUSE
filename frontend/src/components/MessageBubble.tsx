@@ -50,6 +50,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   const isSingleMetricIntent = (
     message.output_type === 'text' ||
     (message.output_type as string) === 'single_value' ||
+    (message.output_type as string) === 'single_line' ||
     message.intent?.endsWith('_count') ||
     message.intent === 'active_plants_count' ||
     message.intent === 'occupied_bins_count' ||
@@ -62,7 +63,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     message.intent === 'bin_occupancy_status' ||
     message.intent === 'bin_quantity_lookup' ||
     message.intent === 'bin_materials_count' ||
-    ((message.intent === 'lowest_bin_utilization' || message.intent === 'highest_bin_utilization') && (rows.length <= 1 || message.output_type === 'text'))
+    ((message.intent === 'lowest_bin_utilization' || message.intent === 'highest_bin_utilization') && rows.length <= 1)
   );
 
 
@@ -75,10 +76,10 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     hasTable ? 'table' : 'text'
   ));
 
-  const showChart = !isSingleMetricIntent && (outputType === 'bar_chart' || outputType === 'line_chart' || outputType === 'pie_chart') && message.chart && message.chart.data && message.chart.data.length > 0;
+  const showChart = !isSingleMetricIntent && (outputType === 'bar_chart' || outputType === 'line_chart' || outputType === 'pie_chart' || outputType === 'chart_plus_summary') && message.chart && message.chart.data && message.chart.data.length > 0;
   const showKpi = !isSingleMetricIntent && outputType === 'kpi' && hasTable && message.intent === 'inventory_summary';
   const showList = !isSingleMetricIntent && outputType === 'list' && hasTable;
-  const showTable = !isSingleMetricIntent && (outputType === 'table' || isPlantBinUtilDetail || showChart || showKpi || showList) && hasTable;
+  const showTable = !isSingleMetricIntent && (outputType === 'table' || outputType === 'ranking_table' || outputType === 'comparison_table' || outputType === 'detail_analysis' || isPlantBinUtilDetail || showChart || showKpi || showList) && hasTable;
 
   if (isUser) {
     return (
