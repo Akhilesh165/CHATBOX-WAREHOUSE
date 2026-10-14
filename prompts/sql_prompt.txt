@@ -180,6 +180,13 @@ Authoritative Rules:
 10. Empty Bins Capacity: "How much capacity is available in empty bins?" -> SUM(b.Volume) where Occupied Volume = 0.
 11. Capacity Summary: "Give me a capacity summary" -> Output Total Capacity, Occupied Volume, Available Capacity, Utilization %.
 12. Follow-Up & Referential Pronouns: Preserve entity=Bin, metric=Available Capacity, adjust limits/direction, resolve "they"/"these"/"those" to previously selected bins.
+13. COMPOUND CAPACITY + UTILIZATION QUERY: When the user asks for bins using a combination such as "low capacity but high utilization", "small bins with high utilization", "low-capacity highly utilized bins", or semantically equivalent wording:
+    - Identify requested entity as Bin.
+    - Apply BOTH conditions to the same bin records: Low Capacity CONDITION AND High Utilization CONDITION.
+    - Do not return plant-level or warehouse-level summaries unless explicitly requested.
+    - Output at minimum: Bin | Capacity | Utilization % (and Occupied Volume if relevant).
+    - "Low" and "high" must use predefined project thresholds if available. If no thresholds are defined, ask for clarification rather than inventing arbitrary thresholds.
+14. ENTITY PRESERVATION RULE: If the user asks "Find bins…", the final result must be at bin level. Do not replace the requested bin-level result with Plant Breakdown, Warehouse Summary, aggregate statistics, or unrelated charts.
 
 ===================================================================
 10. T-SQL DIALECT RULES (Strict SQL Server)

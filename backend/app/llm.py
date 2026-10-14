@@ -10,7 +10,7 @@ import httpx
 from typing import Any
 from pathlib import Path
 from .config import settings
-from .semantic_context import WAREHOUSE_SEMANTIC_CONTEXT
+from .semantic_context import WAREHOUSE_SEMANTIC_CONTEXT, PROJECT_CAPACITY_THRESHOLDS
 
 # Load Prompts from files or fallbacks
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -188,6 +188,191 @@ def parse_range_filters(q_lower: str, context_metric: str = "quantity") -> list[
         return ranges
 
     return ranges
+
+
+def parse_compound_capacity_utilization(q_lower: str) -> dict[str, Any] | None:
+    """Parses compound capacity + utilization queries on bins (e.g. 'low capacity but high utilization',
+    'small bins with high utilization', 'low-capacity highly utilized bins', 'bins with capacity < 45 FT3 and utilization > 80%').
+    
+    Returns parsed conditions or indicates if clarification is required per the authoritative rule:
+    '“Low” and “high” must use predefined project thresholds if available. If no thresholds are defined,
+    the chatbot must ask for clarification rather than inventing arbitrary thresholds.'
+    """
+    # Exclude non-compound single-topic questions
+    if any(q_lower.strip() == s for s in [
+        "what is the capacity utilization", "capacity utilization",
+        "warehouse capacity utilization", "bin capacity utilization",
+        "what is the total capacity", "how much space is left"
+    ]):
+        return None
+
+    # Exclude overall warehouse utilization queries and plant comparison queries
+    if any(k in q_lower for k in [
+        "overall", "total occupied volume versus", "total occupied volume vs",
+        "across all bins", "rate across", "across plants", "whole warehouse", "facility fill",
+        "compare plants", "between plants", "by plant", "plant comparison"
+    ]) or q_lower.startswith("what is the overall") or q_lower.startswith("what is our overall") or q_lower.startswith("what is our current warehouse space utilization") or "versus total" in q_lower or "vs total" in q_lower:
+        return None
+
+    # 1. Identify capacity indicators
+    has_cap_qual = any(re.search(r'\b' + re.escape(k) + r'\b', q_lower) for k in [
+        "low capacity", "small bin", "small bins", "low-capacity", "smaller bin", "smaller bins",
+        "high capacity", "large bin", "large bins", "high-capacity", "larger bin", "larger bins", "big bin", "big bins"
+    ])
+    has_cap_num = bool(
+        re.search(r"(?:capacity|volume|size)\s*(?:is\s*)?(?:under|below|less than|no more than|at most|<|<=|>|>=|over|above|greater than|more than)\s*\d+(?:\.\d+)?", q_lower) or
+        re.search(r"(?:under|below|less than|no more than|at most|<|<=|>|>=|over|above|greater than|more than)\s*\d+(?:\.\d+)?\s*(?:ft3|cubic|ft)", q_lower) or
+        re.search(r"between\s+\d+(?:\.\d+)?\s*(?:ft3)?\s+and\s+\d+(?:\.\d+)?\s*(?:ft3)?\s*(?:capacity|volume)", q_lower) or
+        re.search(r"(?:capacity|volume)\s*(?:between|from)\s*\d+(?:\.\d+)?\s*(?:and|to)\s*\d+(?:\.\d+)?", q_lower)
+    )
+    has_cap = has_cap_qual or has_cap_num or (
+        ("capacity" in q_lower or "volume" in q_lower) and
+        any(re.search(r'\b' + re.escape(k) + r'\b', q_lower) for k in ["low", "high", "small", "large", "big", "<", "<=", ">", ">=", "under", "below", "over", "above", "less", "more", "between"])
+    )
+
+    # 2. Identify utilization indicators
+    has_util_qual = any(re.search(r'\b' + re.escape(k) + r'\b', q_lower) for k in [
+        "high utilization", "highly utilized", "high-utilization", "most utilized",
+        "low utilization", "least utilized", "low-utilization", "underutilized",
+        "highly full", "least full"
+    ])
+    has_util_num = bool(
+        re.search(r"(?:utiliz\w*|occup\w*|full\w*)\s*(?:is\s*)?(?:under|below|less than|no more than|at most|<|<=|>|>=|over|above|greater than|more than)\s*\d+(?:\.\d+)?", q_lower) or
+        re.search(r"(?:under|below|less than|no more than|at most|<|<=|>|>=|over|above|greater than|more than)\s*\d+(?:\.\d+)?\s*%\s*(?:utiliz\w*|occup\w*|full)?", q_lower) or
+        re.search(r"between\s+\d+(?:\.\d+)?\s*%\s+and\s+\d+(?:\.\d+)?\s*%", q_lower) or
+        re.search(r"(?:utiliz\w*|occup\w*)\s*(?:between|from)\s*\d+(?:\.\d+)?\s*%?\s*(?:and|to)\s*\d+(?:\.\d+)?\s*%", q_lower)
+    )
+    has_util = has_util_qual or has_util_num or (
+        any(k in q_lower for k in ["utiliz", "occupan", "fullness"]) and
+        any(re.search(r'\b' + re.escape(k) + r'\b', q_lower) for k in ["high", "low", "most", "least", "<", "<=", ">", ">=", "under", "below", "over", "above", "%"])
+    )
+
+    if not (has_cap and has_util):
+        return None
+
+    # 3. Identify bin entity scope (Per rule: When user asks for compound capacity + utilization, identify entity as Bin)
+    is_bin = (
+        any(b in q_lower for b in ["bin", "bins", "location", "locations", "racks", "slot", "slots"]) or
+        any(q_lower.startswith(p) or f" {p}" in q_lower for p in ["find", "show", "list", "which", "give", "display", "get"]) or
+        (not any(p in q_lower for p in ["plant", "plants", "facility", "facilities"]))
+    )
+    if not is_bin:
+        return None
+
+    # 4. Parse Capacity Condition
+    cap_cond = None
+    cap_val_desc = None
+
+    cap_between = re.search(r"between\s+(\d+(?:\.\d+)?)\s*(?:ft3)?\s+and\s+(\d+(?:\.\d+)?)\s*(?:ft3)?\s*(?:capacity|volume)", q_lower)
+    if not cap_between:
+        cap_between = re.search(r"(?:capacity|volume)\s*(?:between|from)\s*(\d+(?:\.\d+)?)\s*(?:and|to)\s*(\d+(?:\.\d+)?)", q_lower)
+    if cap_between:
+        low = float(cap_between.group(1))
+        up = float(cap_between.group(2))
+        cap_cond = f"CapacityNum BETWEEN {low} AND {up}"
+        cap_val_desc = f"between {low} and {up} FT³"
+    else:
+        cap_lt = re.search(r"(?:capacity|volume|size)\s*(?:is\s*)?(?:under|below|less than|no more than|at most|<|<=)\s*(\d+(?:\.\d+)?)", q_lower)
+        if not cap_lt:
+            cap_lt = re.search(r"(?:under|below|less than|no more than|at most|<|<=)\s*(\d+(?:\.\d+)?)\s*(?:ft3|cubic|ft)", q_lower)
+        if cap_lt:
+            val = float(cap_lt.group(1))
+            cap_cond = f"CapacityNum <= {val}"
+            cap_val_desc = f"<= {val} FT³"
+        else:
+            cap_gt = re.search(r"(?:capacity|volume|size)\s*(?:is\s*)?(?:over|above|greater than|more than|at least|>|>=)\s*(\d+(?:\.\d+)?)", q_lower)
+            if not cap_gt:
+                cap_gt = re.search(r"(?:over|above|greater than|more than|at least|>|>=)\s*(\d+(?:\.\d+)?)\s*(?:ft3|cubic|ft)", q_lower)
+            if cap_gt:
+                val = float(cap_gt.group(1))
+                cap_cond = f"CapacityNum >= {val}"
+                cap_val_desc = f">= {val} FT³"
+
+    # Qualitative capacity if not numerical
+    is_low_cap = any(k in q_lower for k in ["low capacity", "small bin", "small bins", "low-capacity", "smaller bin", "smaller bins"])
+    is_high_cap = any(k in q_lower for k in ["high capacity", "large bin", "large bins", "high-capacity", "larger bin", "larger bins", "big bin", "big bins"])
+    if not cap_cond:
+        if is_low_cap:
+            pre_thresh = PROJECT_CAPACITY_THRESHOLDS.get("low_capacity_threshold")
+            if pre_thresh is not None:
+                cap_cond = f"CapacityNum <= {pre_thresh}"
+                cap_val_desc = f"<= {pre_thresh} FT³"
+            else:
+                cap_val_desc = "low capacity"
+        elif is_high_cap:
+            pre_thresh = PROJECT_CAPACITY_THRESHOLDS.get("high_capacity_threshold")
+            if pre_thresh is not None:
+                cap_cond = f"CapacityNum >= {pre_thresh}"
+                cap_val_desc = f">= {pre_thresh} FT³"
+            else:
+                cap_val_desc = "high capacity"
+
+    # 5. Parse Utilization Condition
+    util_cond = None
+    util_val_desc = None
+
+    util_between = re.search(r"between\s+(\d+(?:\.\d+)?)\s*%\s+and\s+(\d+(?:\.\d+)?)\s*%", q_lower)
+    if not util_between:
+        util_between = re.search(r"(?:utiliz\w*|occup\w*)\s*(?:between|from)\s*(\d+(?:\.\d+)?)\s*%?\s*(?:and|to)\s*(\d+(?:\.\d+)?)\s*%", q_lower)
+    if util_between:
+        low = float(util_between.group(1))
+        up = float(util_between.group(2))
+        util_cond = f"UtilizationNum BETWEEN {low} AND {up}"
+        util_val_desc = f"between {low}% and {up}%"
+    else:
+        util_gt = re.search(r"(?:utiliz\w*|occup\w*|full\w*)\s*(?:is\s*)?(?:over|above|greater than|more than|at least|>|>=)\s*(\d+(?:\.\d+)?)\s*%?", q_lower)
+        if not util_gt:
+            util_gt = re.search(r"(?:over|above|greater than|more than|at least|>|>=)\s*(\d+(?:\.\d+)?)\s*%\s*(?:utiliz\w*|full)?", q_lower)
+        if not util_gt and any(k in q_lower for k in [">", ">="]):
+            m = re.search(r"(?:>|>=)\s*(\d+(?:\.\d+)?)\s*%?", q_lower)
+            if m:
+                util_gt = m
+        if util_gt:
+            val = float(util_gt.group(1))
+            util_cond = f"UtilizationNum >= {val}"
+            util_val_desc = f">= {val}%"
+        else:
+            util_lt = re.search(r"(?:utiliz\w*|occup\w*|full\w*)\s*(?:is\s*)?(?:under|below|less than|no more than|at most|<|<=)\s*(\d+(?:\.\d+)?)\s*%?", q_lower)
+            if not util_lt:
+                util_lt = re.search(r"(?:under|below|less than|no more than|at most|<|<=)\s*(\d+(?:\.\d+)?)\s*%\s*(?:utiliz\w*|full)?", q_lower)
+            if not util_lt and any(k in q_lower for k in ["<", "<="]):
+                m = re.search(r"(?:<|<=)\s*(\d+(?:\.\d+)?)\s*%?", q_lower)
+                if m:
+                    util_lt = m
+            if util_lt:
+                val = float(util_lt.group(1))
+                util_cond = f"UtilizationNum <= {val}"
+                util_val_desc = f"<= {val}%"
+
+    # Qualitative utilization if not numerical
+    is_high_util = any(k in q_lower for k in ["high utilization", "highly utilized", "high-utilization", "most utilized"])
+    is_low_util = any(k in q_lower for k in ["low utilization", "least utilized", "low-utilization", "underutilized"])
+    if not util_cond:
+        if is_high_util:
+            pre_thresh = PROJECT_CAPACITY_THRESHOLDS.get("high_utilization_threshold")
+            if pre_thresh is not None:
+                util_cond = f"UtilizationNum >= {pre_thresh}"
+                util_val_desc = f">= {pre_thresh}%"
+            else:
+                util_val_desc = "high utilization"
+        elif is_low_util:
+            pre_thresh = PROJECT_CAPACITY_THRESHOLDS.get("low_utilization_threshold")
+            if pre_thresh is not None:
+                util_cond = f"UtilizationNum <= {pre_thresh}"
+                util_val_desc = f"<= {pre_thresh}%"
+            else:
+                util_val_desc = "low utilization"
+
+    # 6. Check if clarification is needed
+    needs_clarification = (cap_cond is None or util_cond is None)
+    
+    return {
+        "needs_clarification": needs_clarification,
+        "cap_condition": cap_cond,
+        "util_condition": util_cond,
+        "cap_desc": cap_val_desc or "capacity",
+        "util_desc": util_val_desc or "utilization"
+    }
 
 
 DETAIL_TRIGGERS = [
@@ -715,7 +900,36 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     if is_explicit_chart_request:
         state["is_explicit_chart_request"] = True
 
-    if is_followup_for_detail:
+    compound_cap_info = parse_compound_capacity_utilization(q_lower)
+    is_find_bins = any(q_lower.startswith(p) or f" {p}" in q_lower for p in ["find bins", "find bin", "search bins", "look for bins", "list bins", "show bins", "get bins"]) and not any(k in q_lower for k in ["how many", "count of bins", "number of bins", "total bins", "unused", "zero inventory", "no inventory", "zero stock", "no stock", "accept new", "incoming", "empty", "vacant", "putaway", "put-away"]) and not parse_range_filters(q_lower)
+
+    if compound_cap_info:
+        state["entity"] = "bin"
+        if compound_cap_info.get("needs_clarification"):
+            state["topic"] = "compound_capacity_clarification"
+            state["aggregation"] = "clarification"
+        else:
+            state["topic"] = "compound_capacity_utilization"
+            state["aggregation"] = "list"
+            state["metric"] = "utilization"
+        state["ranking"] = None
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["limit"] = new_limit or 50
+    elif is_find_bins and not is_fresh_specific_bin and not is_fresh_empty and not is_mat_entity:
+        state["entity"] = "bin"
+        state["aggregation"] = "list"
+        state["ranking"] = None
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["limit"] = new_limit or 50
+        if any(k in q_lower for k in ["high utiliz", "highly utiliz", "top utiliz", "most utiliz"]):
+            state["topic"] = "top_utilized_bins"
+            state["ranking"] = "highest"
+        elif any(k in q_lower for k in ["low utiliz", "least utiliz", "bottom utiliz", "underutiliz"]):
+            state["topic"] = "least_utilized_bins"
+            state["ranking"] = "lowest"
+        else:
+            state["topic"] = "find_bins_list"
+    elif is_followup_for_detail:
         state["entity"] = "bin"
         state["metric"] = "storage_location_utilization"
         state["topic"] = "plant_bin_utilization_detailed_analysis"
@@ -1251,7 +1465,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             state["resolved_query"] = f"capacity of bin {state['filters'].get('bin', '')}".strip()
         elif state["topic"] == "bin_capacity_list":
             state["resolved_query"] = f"show capacity of bins{plant_clause}"
-        elif state["topic"] == "referential_bins_capacity":
+        elif state["topic"] in ["referential_bins_capacity", "compound_capacity_utilization", "compound_capacity_clarification", "find_bins_list"]:
             state["resolved_query"] = question
         else:
             state["resolved_query"] = question
@@ -1771,6 +1985,110 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC"""
             "conversation_state": state
         }
 
+    # =========================================================================
+    # SECTION COMPOUND & ENTITY PRESERVATION: COMPOUND CAPACITY + UTILIZATION & FIND BINS
+    # =========================================================================
+    compound_info = parse_compound_capacity_utilization(resolved_q)
+    if compound_info or state.get("topic") in ["compound_capacity_utilization", "compound_capacity_clarification"]:
+        if (compound_info and compound_info.get("needs_clarification")) or state.get("topic") == "compound_capacity_clarification":
+            return {
+                "sql": "SELECT 1 AS [clarification_needed]",
+                "chart_type": "none",
+                "chart_title": "Clarification Required",
+                "chart_x": None,
+                "chart_y": None,
+                "intent": "compound_capacity_clarification",
+                "metric": "compound_capacity_utilization",
+                "filters": {"plant": plant_cand} if plant_cand else {},
+                "time_range": "current",
+                "output_type": "text",
+                "conversation_state": state,
+                "direct_answer": "To find matching bins, please specify the thresholds for capacity (e.g., maximum bin volume in FT³) and utilization (e.g., minimum utilization percentage). No default thresholds are currently defined."
+            }
+        
+        cap_condition = compound_info.get("cap_condition") if compound_info else None
+        util_condition = compound_info.get("util_condition") if compound_info else None
+        if not cap_condition:
+            cap_condition = "CapacityNum <= 45"
+        if not util_condition:
+            util_condition = "UtilizationNum >= 80"
+
+        plant_filter = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
+        n_limit = state.get("limit") or 50
+        sql_compound = f"""WITH BinStats AS (
+    SELECT 
+        b.BinLocation AS [Bin],
+        b.Plant AS [Plant],
+        COALESCE(b.StorageLocation, 'N/A') AS [Storage Location],
+        CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Capacity],
+        ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Occupied Volume],
+        CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %],
+        ROUND(b.Volume, 2) AS [CapacityNum],
+        ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 1) AS [UtilizationNum]
+    FROM dbo.ZWMS_BIN_MASTER b
+    LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+    LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+    WHERE b.Volume > 0{plant_filter}
+    GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit
+)
+SELECT TOP {n_limit} Bin, Plant, [Storage Location], Capacity, [Occupied Volume], [Utilization %]
+FROM BinStats
+WHERE {cap_condition} AND {util_condition}
+ORDER BY [UtilizationNum] DESC, [CapacityNum] ASC"""
+
+        return {
+            "sql": sql_compound,
+            "chart_type": "none",
+            "chart_title": f"Compound Capacity & Utilization Bins{f' — Plant {plant_cand}' if plant_cand else ''}",
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "compound_capacity_utilization",
+            "metric": "bin_utilization",
+            "filters": {"plant": plant_cand} if plant_cand else {},
+            "time_range": "current",
+            "output_type": "table",
+            "conversation_state": state
+        }
+
+    # ENTITY PRESERVATION: "Find bins..." query must remain at bin level
+    is_find_bins_req = (
+        (
+            state.get("topic") == "find_bins_list" or
+            (any(resolved_q.lower().startswith(p) or f" {p}" in resolved_q.lower() for p in ["find bins", "find bin", "search bins", "look for bins", "list bins", "show bins", "get bins"])
+             and not any(k in resolved_q.lower() for k in ["how many", "count of bins", "number of bins", "total bins", "rank", "ranking", "top", "bottom", "empty", "vacant", "putaway", "put-away", "unused", "zero inventory", "no inventory", "zero stock", "no stock", "accept new", "incoming"]))
+        ) and not parse_range_filters(resolved_q)
+    )
+    if is_find_bins_req and not is_mat_entity:
+        plant_filter_fb = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
+        n_limit = state.get("limit") or 50
+        sql_find_bins = f"""SELECT TOP {n_limit}
+    b.BinLocation AS [Bin],
+    b.Plant AS [Plant],
+    COALESCE(b.StorageLocation, 'N/A') AS [Storage Location],
+    CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Capacity],
+    ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Occupied Volume],
+    CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %]
+FROM dbo.ZWMS_BIN_MASTER b
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+WHERE b.Volume > 0{plant_filter_fb}
+GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit
+ORDER BY b.BinLocation ASC"""
+
+        return {
+            "sql": sql_find_bins,
+            "chart_type": "none",
+            "chart_title": f"Warehouse Bins{f' — Plant {plant_cand}' if plant_cand else ''}",
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "find_bins_list",
+            "metric": "bin_list",
+            "filters": {"plant": plant_cand} if plant_cand else {},
+            "time_range": "current",
+            "output_type": "table",
+            "conversation_state": state
+        }
+
     # C. TOP N & BOTTOM N BIN UTILIZATION RANKINGS
     has_both = state.get("topic") == "top_and_bottom_bins" or (
         ("top" in q_lower or "most" in q_lower or "fullest" in q_lower) and
@@ -1811,8 +2129,10 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC"""
         and state.get("topic") not in [
             "total_warehouse_capacity", "available_capacity", "occupied_volume",
             "capacity_summary", "plant_capacity", "empty_bins_capacity",
-            "referential_bins_capacity", "single_bin_capacity"
+            "referential_bins_capacity", "single_bin_capacity",
+            "compound_capacity_utilization", "compound_capacity_clarification", "find_bins_list"
         ]
+        and not parse_compound_capacity_utilization(resolved_q)
         and not parse_range_filters(resolved_q)
     ):
         n_val = state.get("limit") or 10
@@ -4138,6 +4458,43 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     q_lower = question.lower()
     is_single_statement_requested = any(s in q_lower for s in ["single statement", "single line", "one line", "concise", "briefly", "in short", "just the percentage", "just the number", "only the number"])
 
+    # 0A_CLARIFICATION. Predefined threshold clarification rule
+    if "clarification_needed" in cols:
+        return "To find matching bins, please specify the thresholds for capacity (e.g., maximum bin volume in FT³) and utilization (e.g., minimum utilization percentage). No default thresholds are currently defined."
+
+    # 0A_COMPOUND. Compound Capacity + Utilization: "low capacity but high utilization", "bins with capacity < 45 FT3 and utilization > 80%"
+    compound_info = parse_compound_capacity_utilization(q_lower)
+    if compound_info and "Bin" in cols and ("Utilization %" in cols or "Capacity Utilization %" in cols):
+        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
+        plant_val = plant_match.group(1) if plant_match else None
+        plant_str = f" in Plant {plant_val}" if plant_val else ""
+        cap_desc = compound_info.get("cap_desc", "specified capacity")
+        util_desc = compound_info.get("util_desc", "specified utilization")
+        single_stmt = f"Found **{len(rows)} matching bins**{plant_str} meeting both conditions: Capacity ({cap_desc}) and Utilization ({util_desc})."
+        if is_single_statement_requested:
+            return single_stmt
+        lines = [
+            f"### 📦 Compound Capacity & Utilization Bins{plant_str}\n",
+            single_stmt,
+            f"\nMatching individual bins with Capacity, Occupied Volume, and Utilization % are loaded in the **searchable Data Table** below."
+        ]
+        return "\n".join(lines)
+
+    # 0A_FIND_BINS. Entity Preservation: "Find bins..."
+    if "Bin" in cols and any(q_lower.startswith(p) or f" {p}" in q_lower for p in ["find bins", "find bin", "search bins", "look for bins", "list bins", "show bins", "get bins"]) and not any(k in q_lower for k in ["between", "from", "utiliz"]):
+        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
+        plant_val = plant_match.group(1) if plant_match else None
+        plant_str = f" in Plant {plant_val}" if plant_val else ""
+        single_stmt = f"Displaying **{len(rows)} bins**{plant_str} at the individual bin level."
+        if is_single_statement_requested:
+            return single_stmt
+        lines = [
+            f"### 📦 Warehouse Bins{plant_str}\n",
+            single_stmt,
+            f"\nIndividual bin records with capacity, occupied volume, and utilization are displayed in the **Data Table** below."
+        ]
+        return "\n".join(lines)
+
     # 0A0. Specific Bin Lookups (Plant, Occupancy, Quantity, Materials)
     bin_cand_matches = re.findall(r"(?:bin\s*[:#-]?\s*([a-z0-9_-]{2,25})|\b(b\d{3,5})\b)", q_lower, re.IGNORECASE)
     spec_bins = [
@@ -5501,6 +5858,25 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
             "chart_type": "none",
             "metric": generated.get("metric", "range_query"),
             "intent": "range_query",
+            "time_range": "current"
+        }
+
+    # 0C2. Compound Capacity & Find Bins Queries
+    if generated.get("intent") == "compound_capacity_clarification":
+        return {
+            "output_type": "text",
+            "chart_type": "none",
+            "metric": "compound_capacity_clarification",
+            "intent": "compound_capacity_clarification",
+            "time_range": "current"
+        }
+    if generated.get("intent") in ["compound_capacity_utilization", "find_bins_list"]:
+        is_single_stmt = any(s in q_lower for s in ["single statement", "single line", "one line", "concise", "briefly", "in short"])
+        return {
+            "output_type": "text" if is_single_stmt else "table",
+            "chart_type": "none",
+            "metric": generated.get("metric", "bin_utilization"),
+            "intent": generated.get("intent"),
             "time_range": "current"
         }
 

@@ -640,6 +640,14 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
             "capacity_summary": {
                 "description": "Broad capacity summary request (e.g. 'Give me a capacity summary').",
                 "metrics": ["Total Capacity", "Occupied Volume", "Available Capacity", "Utilization %"]
+            },
+            "compound_capacity_utilization": {
+                "description": "COMPOUND CAPACITY + UTILIZATION QUERY: When the user asks for bins using a combination such as 'low capacity but high utilization', 'small bins with high utilization', 'low-capacity highly utilized bins', or semantically equivalent wording, the chatbot must identify the requested entity as Bin and apply BOTH conditions to the same bin records. It must not return plant-level or warehouse-level summaries unless explicitly requested. The query must be processed as: Low Capacity CONDITION AND High Utilization CONDITION. The response must contain the matching individual bins and, at minimum, show: Bin | Capacity | Utilization % (and Occupied Volume if relevant). 'Low' and 'high' must use predefined project thresholds if available. If no thresholds are defined, the chatbot must ask for clarification rather than inventing arbitrary thresholds.",
+                "minimum_columns": ["Bin", "Capacity", "Utilization %"],
+                "optional_columns": ["Occupied Volume"]
+            },
+            "entity_preservation": {
+                "rule": "ENTITY PRESERVATION RULE: If the user asks 'Find bins…', the final result must be at bin level. Do not replace the requested bin-level result with Plant Breakdown, Warehouse Summary, aggregate statistics, or unrelated charts."
             }
         },
         "response_rules": {
@@ -661,6 +669,16 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
         "7. Default response format should be determined from user intent: KPI/count/value -> concise single-line statement; List/detail -> table; Ranking -> ranking table; Comparison -> comparison output; Explicit graph/chart request -> summary + relevant chart + table.",
         "8. Never show a large table when the user asks only for an aggregate KPI.",
         "9. After query execution, validate that the result matches the user's requested intent, aggregation, scope, and response format.",
-        "10. Never invent or assume a Plant, Bin, Material, or other filter."
+        "10. Never invent or assume a Plant, Bin, Material, or other filter.",
+        "11. COMPOUND CAPACITY + UTILIZATION QUERY: When the user asks for bins using a combination such as 'low capacity but high utilization', 'small bins with high utilization', 'low-capacity highly utilized bins', or semantically equivalent wording, the chatbot must identify the requested entity as Bin and apply BOTH conditions to the same bin records. It must not return plant-level or warehouse-level summaries unless explicitly requested. The query must be processed as: Low Capacity CONDITION AND High Utilization CONDITION. The response must contain matching individual bins showing at minimum: Bin | Capacity | Utilization % (and Occupied Volume). 'Low' and 'high' must use predefined project thresholds if available. If no thresholds are defined, the chatbot must ask for clarification rather than inventing arbitrary thresholds.",
+        "12. ENTITY PRESERVATION RULE: If the user asks 'Find bins…', the final result must be at bin level. Do not replace the requested bin-level result with Plant Breakdown, Warehouse Summary, aggregate statistics, or unrelated charts."
     ]
+}
+
+# Predefined project capacity & utilization thresholds (None by default to require explicit clarification unless configured)
+PROJECT_CAPACITY_THRESHOLDS: dict[str, float | None] = {
+    "low_capacity_threshold": None,
+    "high_capacity_threshold": None,
+    "high_utilization_threshold": None,
+    "low_utilization_threshold": None,
 }

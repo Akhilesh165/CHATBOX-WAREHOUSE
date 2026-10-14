@@ -6,6 +6,7 @@ from backend.app.llm import (
 )
 from backend.app.validator import validate_sql
 from backend.app.db import execute_readonly
+from backend.app.semantic_context import PROJECT_CAPACITY_THRESHOLDS
 
 def test_total_warehouse_capacity():
     """Rule 4: Total capacity queries (e.g. 'What is the total capacity?', 'Show total bin capacity', 'How much capacity does this warehouse have?')
@@ -235,3 +236,113 @@ def test_capacity_referential_followup():
     assert "5 referenced bins" in ans
     assert "total capacity" in ans
     assert "occupied" in ans
+
+
+def test_compound_capacity_utilization_numerical():
+    """Rule: COMPOUND CAPACITY + UTILIZATION QUERY:
+    When user asks for bins with capacity < 45 FT3 and utilization > 80%:
+    - Entity must be identified as Bin
+    - Apply BOTH conditions to the same bin records
+    - Result must show Bin, Capacity, Utilization %, and Occupied Volume
+    - Must NOT return plant or warehouse level summaries
+    """
+    q = "bins with capacity < 45 FT3 and utilization > 80%"
+    plan = deterministic_warehouse_sql_generator(q)
+    assert plan["intent"] == "compound_capacity_utilization"
+    assert plan["output_type"] == "table"
+    assert plan["chart_type"] == "none"
+    assert "BinStats" in plan["sql"]
+    assert "CapacityNum <= 45" in plan["sql"]
+    assert "UtilizationNum >= 80" in plan["sql"]
+
+    sql = validate_sql(plan["sql"])
+    rows, _ = execute_readonly(sql)
+    assert len(rows) > 0
+    first_row = rows[0]
+    assert "Bin" in first_row
+    assert "Capacity" in first_row
+    assert "Utilization %" in first_row
+    assert "Occupied Volume" in first_row
+
+    ans = format_deterministic_answer(q, rows)
+    assert "matching bins" in ans.lower()
+    assert "capacity" in ans.lower()
+    assert "utilization" in ans.lower()
+
+
+def test_compound_capacity_clarification_qualitative():
+    """Rule: COMPOUND CAPACITY + UTILIZATION QUERY:
+    'Low' and 'high' must use predefined project thresholds if available.
+    If no thresholds are defined, the chatbot must ask for clarification rather than inventing arbitrary thresholds.
+    """
+    # Ensure thresholds are undefined
+    PROJECT_CAPACITY_THRESHOLDS["low_capacity_threshold"] = None
+    PROJECT_CAPACITY_THRESHOLDS["high_capacity_threshold"] = None
+    PROJECT_CAPACITY_THRESHOLDS["high_utilization_threshold"] = None
+    PROJECT_CAPACITY_THRESHOLDS["low_utilization_threshold"] = None
+
+    q = "low capacity but high utilization"
+    plan = deterministic_warehouse_sql_generator(q)
+    assert plan["intent"] == "compound_capacity_clarification"
+    assert plan["output_type"] == "text"
+    assert plan["chart_type"] == "none"
+
+    ans = format_deterministic_answer(q, [{"clarification_needed": 1}])
+    assert "specify the thresholds" in ans.lower()
+    assert "no default thresholds" in ans.lower()
+
+
+def test_compound_capacity_with_predefined_thresholds():
+    """Rule: COMPOUND CAPACITY + UTILIZATION QUERY:
+    When predefined thresholds are configured in PROJECT_CAPACITY_THRESHOLDS,
+    qualitative queries use them directly without asking for clarification.
+    """
+    try:
+        PROJECT_CAPACITY_THRESHOLDS["low_capacity_threshold"] = 40.0
+        PROJECT_CAPACITY_THRESHOLDS["high_utilization_threshold"] = 75.0
+
+        q = "small bins with high utilization"
+        plan = deterministic_warehouse_sql_generator(q)
+        assert plan["intent"] == "compound_capacity_utilization"
+        assert "CapacityNum <= 40" in plan["sql"]
+        assert "UtilizationNum >= 75" in plan["sql"]
+
+        sql = validate_sql(plan["sql"])
+        rows, _ = execute_readonly(sql)
+        assert len(rows) > 0
+        for r in rows:
+            assert "Bin" in r
+            assert "Capacity" in r
+            assert "Utilization %" in r
+    finally:
+        PROJECT_CAPACITY_THRESHOLDS["low_capacity_threshold"] = None
+        PROJECT_CAPACITY_THRESHOLDS["high_utilization_threshold"] = None
+
+
+def test_entity_preservation_find_bins():
+    """Rule: ENTITY PRESERVATION RULE:
+    If the user asks 'Find bins…', the final result must be at bin level.
+    Do not replace the requested bin-level result with Plant Breakdown,
+    Warehouse Summary, aggregate statistics, or unrelated charts.
+    """
+    q = "Find bins in Plant 1258"
+    plan = deterministic_warehouse_sql_generator(q)
+    assert plan["intent"] == "find_bins_list"
+    assert plan["output_type"] == "table"
+    assert plan["chart_type"] == "none"
+    assert plan["filters"]["plant"] == "1258"
+
+    sql = validate_sql(plan["sql"])
+    rows, _ = execute_readonly(sql)
+    assert len(rows) > 0
+    # Every row must be an individual bin in plant 1258
+    for r in rows:
+        assert "Bin" in r
+        assert str(r.get("Plant")) == "1258"
+        assert "Capacity" in r
+        assert "Utilization %" in r
+
+    ans = format_deterministic_answer(q, rows)
+    assert "bins in plant 1258" in ans.lower()
+    assert "individual bin level" in ans.lower()
+
