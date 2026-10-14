@@ -363,8 +363,12 @@ def validate_and_filter_range_rows(rows: list[dict], range_filters: list[dict]) 
             candidate_cols = [c for c in ["UtilizationPct", "Utilization %", "Bin Utilization %", "BinOccupancyPct", "BinUtilization"] if c in filtered_rows[0]]
         elif field in ["UnrestrictedQty", "Quantity", "TotalQuantity"]:
             candidate_cols = [c for c in ["Total Stock Qty", "UnrestrictedQty", "Quantity", "TotalQuantity", "Inventory Qty"] if c in filtered_rows[0]]
-        elif field in ["Volume", "ConsumedMaterialVolume", "OccupiedBinVolume"]:
-            candidate_cols = [c for c in ["Volume", "Total Material Volume", "Occupied Volume", "ConsumedMaterialVolume"] if c in filtered_rows[0]]
+        elif field in ["TotalCapacity"]:
+            candidate_cols = [c for c in ["Total Capacity", "Total Capacity (FT3)", "Total Capacity (FT³)", "Volume", "Total Bin Capacity", "Capacity"] if c in filtered_rows[0]]
+        elif field in ["AvailableCapacity", "FreeCapacity"]:
+            candidate_cols = [c for c in ["Available Capacity", "Available Capacity (FT3)", "Available Capacity (FT³)", "Free Capacity", "Remaining Capacity", "Available Space"] if c in filtered_rows[0]]
+        elif field in ["Volume", "ConsumedMaterialVolume", "OccupiedBinVolume", "OccupiedVolume"]:
+            candidate_cols = [c for c in ["Occupied Volume", "Occupied Volume (FT3)", "Occupied Volume (FT³)", "Volume", "Total Material Volume", "ConsumedMaterialVolume"] if c in filtered_rows[0]]
         elif field in ["FullyVestedOn", "ChangedAt"]:
             candidate_cols = [c for c in ["Fully Vested On", "FullyVestedOn", "ChangedAt"] if c in filtered_rows[0]]
 

@@ -35,7 +35,8 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
         "9. RESPONSE_DEPTH_RULES",
         "10. RESPONSE_FORMAT_RULES",
         "11. VISUALIZATION_RULES",
-        "12. CONVERSATION_STATE_RULES"
+        "12. CONVERSATION_STATE_RULES",
+        "13. CAPACITY_RULES"
     ],
 
     # =========================================================================
@@ -574,6 +575,79 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
             "overall_warehouse_utilization": "Calculate from total occupied and total capacity for complete requested scope. Do NOT average percentages.",
             "plant_specific": "Apply plant filter before calculating the metric.",
             "rankings": "Calculate metric at bin granularity before sorting."
+        }
+    },
+
+    # =========================================================================
+    # 13. CAPACITY RULES (Capacity-Based Query Context)
+    # =========================================================================
+    "capacity_rules": {
+        "purpose": "Understand and answer all natural-language questions related to warehouse/bin capacity based on the meaning of the query without depending on exact predefined questions.",
+        "domain": {
+            "total_bin_capacity": "Total physical storage volume assigned to a bin (b.Volume) or warehouse (SUM(b.Volume)).",
+            "occupied_volume": "Amount of storage volume currently occupied by inventory (SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0))).",
+            "available_capacity": "Unused capacity remaining in a bin or warehouse (Total Capacity - Occupied Volume).",
+            "capacity_utilization_pct": "Percentage of capacity currently occupied ((Occupied Volume / Total Capacity) * 100)."
+        },
+        "query_types": {
+            "total_capacity": {
+                "description": "Total warehouse or plant capacity requests (e.g. 'What is the total capacity?', 'Show total bin capacity', 'How much capacity does this warehouse have?').",
+                "formula": "SUM(b.Volume)",
+                "note": "Do NOT confuse total capacity with available capacity. For warehouse: aggregate all bins across all plants without limits."
+            },
+            "available_capacity": {
+                "description": "Available/free/remaining/unused space requests (e.g. 'How much space is left?', 'How much capacity is still available?', 'Which bins have free space?', 'How much unused capacity is there?').",
+                "formula": "SUM(b.Volume) - SUM(Occupied Volume)",
+                "note": "Words such as unused capacity, free capacity, free space, remaining capacity, spare capacity, available space map to Available Capacity."
+            },
+            "occupied_volume": {
+                "description": "Occupied storage volume requests (e.g. 'How much space is occupied?', 'Show occupied volume', 'How much warehouse capacity is being used?').",
+                "formula": "SUM(Occupied Volume)",
+                "note": "Interpret as Occupied Volume, not Total Capacity. Do not substitute utilization percentage unless requested."
+            },
+            "capacity_utilization": {
+                "description": "Percentage of capacity used (e.g. 'What percentage of capacity is being used?', 'What is the capacity utilization?').",
+                "formula": "(Occupied Volume / Total Capacity) * 100",
+                "note": "Overall warehouse/plant utilization must be SUM(Occupied Volume) / SUM(Total Capacity) * 100. Never average percentages."
+            },
+            "single_bin_capacity": {
+                "description": "Specific bin capacity lookup (e.g. 'What is the capacity of bin NRJP2124D2?').",
+                "output_fields": ["Bin", "Total Capacity", "Occupied Volume", "Available Capacity", "Utilization %"]
+            },
+            "capacity_by_plant": {
+                "description": "Capacity for a specific plant (e.g. 'Show capacity for Plant 1258', 'What is the storage capacity of Plant 1258?').",
+                "table_format": ["Plant", "Total Capacity", "Occupied Volume", "Available Capacity", "Utilization %"]
+            },
+            "capacity_comparison": {
+                "description": "Capacity comparison between plants (e.g. 'Compare capacity between Plant 1258 and Plant 7228', 'Which plant has more available capacity?').",
+                "table_format": ["Plant", "Total Capacity", "Occupied Volume", "Available Capacity", "Utilization %"],
+                "rule": "Only compare requested plants and provide a concise conclusion."
+            },
+            "capacity_ranking": {
+                "description": "Ranking bins or plants by capacity metrics (e.g. 'Rank bins by available capacity', 'Top 10 bins with most free capacity', 'Show bins with least available capacity').",
+                "rule": "Available capacity: most -> DESC, least -> ASC. Total capacity: lowest -> ASC on Total Capacity. Never interchange metrics."
+            },
+            "capacity_ranges": {
+                "description": "Capacity range filtering.",
+                "total_capacity_range": "e.g. 'Bins between 400 and 600 FT³' -> 400 <= Total Capacity <= 600 FT³.",
+                "available_capacity_range": "e.g. 'Bins with 100 to 300 FT³ free space' -> 100 <= Available Capacity <= 300 FT³.",
+                "utilization_range": "e.g. 'Bins between 50% and 80% utilization' -> 50% <= Utilization % <= 80%."
+            },
+            "empty_bins_capacity": {
+                "description": "Capacity of empty bins (e.g. 'How much capacity is available in empty bins?').",
+                "formula": "SUM(Total Capacity of empty bins where Occupied Volume = 0)."
+            },
+            "capacity_summary": {
+                "description": "Broad capacity summary request (e.g. 'Give me a capacity summary').",
+                "metrics": ["Total Capacity", "Occupied Volume", "Available Capacity", "Utilization %"]
+            }
+        },
+        "response_rules": {
+            "single_line": "If user asks for one simple capacity value (e.g. 'What is the total capacity of Plant 1258?'), respond with a crisp single statement.",
+            "compact_table": "For multi-entity bin capacity, use compact table [Bin, Total Capacity, Occupied Volume, Available Capacity] without unrelated fields.",
+            "chart_rule": "No chart by default unless requested or required by detail mode.",
+            "detail_mode": "If user includes detail triggers, automatically activate detail mode with summary, formulas, metrics, breakdown, and chart.",
+            "conversation_followup": "Preserve entity=Bin, metric=Available Capacity, adjust limit, adjust direction, add plant filter, resolve pronouns ('they', 'these', 'those')."
         }
     },
 

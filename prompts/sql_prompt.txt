@@ -156,7 +156,33 @@ Detailed response contains:
 Do NOT require any "Generate Detailed Analysis" button.
 
 ===================================================================
-9. T-SQL DIALECT RULES (Strict SQL Server)
+9. CAPACITY-BASED QUERY CONTEXT (Authoritative Capacity Engine)
+===================================================================
+The chatbot must understand all capacity questions based on semantic meaning:
+- Total Bin Capacity: Maximum storage capacity of bin (b.Volume) or warehouse (SUM(b.Volume)).
+- Occupied Volume: Volume occupied by inventory (SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0))).
+- Available / Free / Remaining / Unused Capacity: Total Capacity - Occupied Volume.
+- Capacity Utilization %: (Occupied Volume / Total Capacity) * 100. Overall warehouse/plant utilization is SUM(Occupied Volume) / NULLIF(SUM(Total Capacity), 0) * 100. Never average percentages.
+
+Authoritative Rules:
+1. Total Capacity: "What is the total capacity?", "Show total bin capacity", "What is the total warehouse capacity?", "How much capacity does this warehouse have?" -> SUM(b.Volume). Aggregate all bins across all plants. Do not confuse total capacity with available capacity.
+2. Available Capacity: "How much space is left?", "Show available capacity", "Which bins have free space?", "How much unused capacity is there?", "Show remaining storage capacity" -> Total Capacity - Occupied Volume.
+3. Occupied Volume: "How much space is occupied?", "Show occupied volume", "How much warehouse capacity is being used?" -> SUM(Occupied Volume). Do not substitute utilization %.
+4. Unused / Free / Remaining / Empty Space: Map directly to Available Capacity. E.g. "Which bins have the most unused capacity?" -> Rank bins by Available Capacity DESCENDING.
+5. Capacity Ranking: "Rank bins by available capacity" -> Rank by Available Capacity DESC (most) or ASC (least). Distinguish from ranking by Total Capacity!
+6. Single Bin Capacity: "What is the capacity of bin NRJP2124D2?" -> Return Bin, Total Capacity, Occupied Volume, Available Capacity, Utilization %. If single-value requested, respond concisely.
+7. Capacity by Plant: "Show capacity for Plant 1258" -> Plant, Total Capacity, Occupied Volume, Available Capacity, Utilization %.
+8. Capacity Comparison: "Compare capacity between Plant 1258 and Plant 7228" -> Filter strictly requested plants, compare Total Capacity, Occupied Volume, Available Capacity, Utilization %, and provide concise conclusion.
+9. Capacity Ranges:
+   - "Bins between 400 and 600 FT³" -> Total Capacity filter (400 <= Total Capacity <= 600).
+   - "Bins with 100 to 300 FT³ free space" -> Available Capacity filter (100 <= Available Capacity <= 300).
+   - "Bins between 50% and 80% utilization" -> Utilization % filter (50% <= Utilization % <= 80%).
+10. Empty Bins Capacity: "How much capacity is available in empty bins?" -> SUM(b.Volume) where Occupied Volume = 0.
+11. Capacity Summary: "Give me a capacity summary" -> Output Total Capacity, Occupied Volume, Available Capacity, Utilization %.
+12. Follow-Up & Referential Pronouns: Preserve entity=Bin, metric=Available Capacity, adjust limits/direction, resolve "they"/"these"/"those" to previously selected bins.
+
+===================================================================
+10. T-SQL DIALECT RULES (Strict SQL Server)
 ===================================================================
 - Never use SQLite `STRFTIME`.
 - For monthly aggregation in SQL Server, use:
@@ -165,7 +191,7 @@ Do NOT require any "Generate Detailed Analysis" button.
 - Never invent tables, columns, or values.
 
 ===================================================================
-10. OUTPUT TYPE SELECTION RULES
+11. OUTPUT TYPE SELECTION RULES
 ===================================================================
 - If user asks for ONE KPI / single metric / count / "how many" or single line → `output_type`: "kpi" or "text", `chart_type`: "none"
 - If user asks "show / list / find / get / give me" or Data Quality reports → `output_type`: "table", `chart_type`: "none"
@@ -175,7 +201,7 @@ Do NOT require any "Generate Detailed Analysis" button.
 - If user asks to compare plants/categories with chart requested → `output_type`: "bar_chart", `chart_type`: "bar"
 
 ===================================================================
-11. JSON RESPONSE FORMAT WITH STRUCTURED QUERY PLAN
+12. JSON RESPONSE FORMAT WITH STRUCTURED QUERY PLAN
 ===================================================================
 Format response strictly as JSON:
 {

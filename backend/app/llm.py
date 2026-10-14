@@ -123,9 +123,21 @@ def parse_range_filters(q_lower: str, context_metric: str = "quantity") -> list[
         return ranges
 
     # 3. Determine field based on context
-    is_util = any(k in q_lower for k in ["utiliz", "occupan", "capacity", "fill"])
-    is_vol = any(k in q_lower for k in ["volume", "m3", "ft3", "cubic"])
-    field = "BinUtilizationPct" if is_util else "Volume" if is_vol else "UnrestrictedQty"
+    is_util = any(k in q_lower for k in ["utiliz", "occupan", "capacity utilization", "fullness", "fill"]) or "%" in q_lower
+    is_avail_cap = any(k in q_lower for k in ["available capacity", "free capacity", "remaining capacity", "unused capacity", "free space", "available space", "spare capacity"])
+    is_tot_cap = any(k in q_lower for k in ["total capacity", "bin capacity", "storage capacity"]) or ("capacity" in q_lower and not is_util and not is_avail_cap)
+    is_vol = any(k in q_lower for k in ["volume", "m3", "ft3", "cubic"]) and not is_avail_cap
+
+    if is_util:
+        field = "BinUtilizationPct"
+    elif is_avail_cap:
+        field = "AvailableCapacity"
+    elif is_tot_cap:
+        field = "TotalCapacity"
+    elif is_vol:
+        field = "Volume"
+    else:
+        field = "UnrestrictedQty"
 
     # 4. Numeric between: between 100 and 500, 100–500, 100-500, from 100 to 500
     num_between = re.search(r"(?:between|from)\s*(\d+(?:\.\d+)?)\s*(?:and|to)\s*(\d+(?:\.\d+)?)(?:\s*(?:units?|pcs?|items?))?", q_lower)
@@ -247,7 +259,7 @@ def is_elliptical_followup(q_lower: str) -> bool:
         return True
     
     # 3. Pronoun / anaphora references
-    if any(p in q_strip for p in ["for this", "of this", "about this", "for that", "of that", "these", "those", "for them", "of them"]):
+    if any(p in q_strip for p in ["for this", "of this", "about this", "for that", "of that", "these", "those", "for them", "of them", "do they", "they have", "do these", "these have", "do those", "those have", "their total"]):
         return True
     
     # 4. Elliptical questions and conversational pivots
@@ -401,12 +413,37 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                 state["topic"] = "plant_bin_utilization_detail"
                 state["condition"] = None
                 state["aggregation"] = "summary"
-            elif any(k in uq_lower for k in ["overall warehouse", "warehouse space utilization", "warehouse bin utilization", "overall bin utilization", "warehouse utilization", "space utilization rate", "how full", "across plants", "fill percentage", "storage capacity", "warehouse fullness", "running out of storage"]):
+            elif any(k in uq_lower for k in ["overall warehouse", "warehouse space utilization", "warehouse bin utilization", "overall bin utilization", "warehouse utilization", "space utilization rate", "how full", "across plants", "fill percentage", "warehouse fullness", "running out of storage"]):
                 state["entity"] = "bin"
                 state["metric"] = "warehouse_utilization"
                 state["topic"] = "warehouse_utilization"
                 state["condition"] = None
                 state["aggregation"] = "summary"
+            elif any(k in uq_lower for k in ["capacity summary", "warehouse capacity summary", "overall capacity summary"]):
+                state["entity"] = "bin"
+                state["metric"] = "capacity_summary"
+                state["topic"] = "capacity_summary"
+                state["condition"] = None
+                state["aggregation"] = "summary"
+            elif any(k in uq_lower for k in ["total capacity", "total warehouse capacity", "total bin capacity", "total storage capacity", "how much capacity does this warehouse have", "show total bin capacity", "how much storage capacity does this warehouse have"]):
+                state["entity"] = "bin"
+                state["metric"] = "total_capacity"
+                state["topic"] = "total_warehouse_capacity"
+                state["condition"] = None
+                state["aggregation"] = "sum"
+            elif any(k in uq_lower for k in ["how much space is left", "available capacity", "remaining capacity", "unused capacity", "free space", "remaining storage capacity", "how much capacity is still available"]):
+                state["entity"] = "bin"
+                state["metric"] = "available_capacity"
+                state["topic"] = "available_capacity"
+                state["condition"] = None
+                state["aggregation"] = "sum"
+            elif any(k in uq_lower for k in ["empty bin", "empty bins", "vacant bin", "vacant bins"]) and any(k in uq_lower for k in ["capacity", "available capacity", "space", "volume", "how much capacity", "how much space", "how much volume"]):
+                state["entity"] = "bin"
+                state["metric"] = "empty_bins_capacity"
+                state["topic"] = "empty_bins_capacity"
+                state["condition"] = None
+                state["aggregation"] = "sum"
+                state["ranking"] = None
             elif any(k in uq_lower for k in ["least utilized", "lowest utilized", "emptiest bins", "bottom bins", "least full"]):
                 state["entity"] = "bin"
                 state["metric"] = "utilization"
@@ -421,7 +458,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                 state["topic"] = "top_utilized_bins"
                 state["condition"] = None
                 state["aggregation"] = "list"
-            elif any(k in uq_lower for k in ["empty bin", "empty bins", "putaway", "put-away", "vacant", "free bin", "available for put-away", "available bin"]):
+            elif any(k in uq_lower for k in ["empty bin", "empty bins", "putaway", "put-away", "vacant", "free bin", "available for put-away", "available bin"]) and not any(k in uq_lower for k in ["capacity", "volume", "space"]):
                 state["entity"] = "bin"
                 state["condition"] = "empty"
                 state["topic"] = "putaway_bins"
@@ -552,7 +589,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     ])
     is_plant_keyword = bool(re.search(r"\b(?:plants?|plnts?|facility|facilities)\b", q_lower))
     is_plant_extreme_req = is_plant_keyword and any(k in q_lower for k in ["lowest", "least", "minimum", "min", "bottom", "worst", "highest", "most", "maximum", "max", "top", "best"]) and any(k in q_lower for k in ["utiliz", "occupan", "capacity", "fill", "full"])
-    is_fresh_empty = any(k in q_lower for k in ["empty bin", "empty bins", "show me empty", "list empty", "putaway", "put-away", "vacant bin", "free bin", "available for immediate put-away", "where can i put", "put new inventory", "place incoming"]) and not any(k in q_lower for k in ["how many", "count", "compare", "versus", "vs", "difference between", "their empty bins"])
+    is_fresh_empty = any(k in q_lower for k in ["empty bin", "empty bins", "show me empty", "list empty", "putaway", "put-away", "vacant bin", "free bin", "available for immediate put-away", "where can i put", "put new inventory", "place incoming"]) and not any(k in q_lower for k in ["how many", "count", "compare", "versus", "vs", "difference between", "their empty bins", "how much capacity", "how much space", "how much volume", "available capacity", "total capacity"])
     is_fresh_top_bins = ("top" in q_lower or "most" in q_lower) and any(k in q_lower for k in ["utilized bin", "utilised bin", "fullest bin", "capacity bin"]) and not is_mat_entity and not is_plant_extreme_req
     is_fresh_least_bins = ("bottom" in q_lower or "least" in q_lower or "emptiest" in q_lower or "lowest" in q_lower) and any(k in q_lower for k in ["utilized bin", "utilised bin", "bins", "locations", "capacity"]) and not is_mat_entity and not is_plant_extreme_req
     is_fresh_plant_count = is_plant_keyword and any(k in q_lower for k in ["how many", "count", "number of", "total plants", "active plants"])
@@ -710,6 +747,8 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             state["topic"] = "bin_quantity_lookup"
         elif any(k in q_lower for k in ["how many materials", "how many skus", "how many items", "number of materials", "count of materials"]) and any(b in q_lower for b in ["in bin", "stored in bin", "inside bin", "for bin"]):
             state["topic"] = "bin_materials_count"
+        elif any(k in q_lower for k in ["capacity", "available capacity", "free space", "remaining capacity", "how much capacity", "what is the capacity", "total capacity"]):
+            state["topic"] = "single_bin_capacity"
         else:
             state["topic"] = "single_bin_utilization"
     elif is_fresh_missing_master:
@@ -931,6 +970,90 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     elif is_fresh_trend:
         state["topic"] = "trend_analysis"
         state["filters"] = {}
+    elif bool(history) and any(k in q_lower for k in [
+        "they have", "do they", "these have", "do these", "those have", "do those",
+        "their capacity", "their volume", "their occupied", "their available", "of them", "of these"
+    ]) and any(k in q_lower for k in ["capacity", "volume", "space", "occupied", "available", "how much"]):
+        state["entity"] = "bin"
+        state["metric"] = "referential_bins_capacity"
+        state["topic"] = "referential_bins_capacity"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["aggregation"] = "sum"
+        state["ranking"] = None
+    elif any(k in q_lower for k in ["capacity summary", "warehouse capacity summary", "overall capacity summary", "storage capacity summary"]) or q_lower.strip() in ["capacity summary", "capacity overview"]:
+        state["entity"] = "bin"
+        state["metric"] = "capacity_summary"
+        state["topic"] = "capacity_summary"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["aggregation"] = "summary"
+        state["ranking"] = None
+    elif any(k in q_lower for k in ["empty bin", "empty bins", "vacant bin", "vacant bins"]) and any(k in q_lower for k in ["capacity", "available capacity", "space", "volume", "how much capacity", "how much space", "how much volume"]):
+        state["entity"] = "bin"
+        state["metric"] = "empty_bins_capacity"
+        state["topic"] = "empty_bins_capacity"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["aggregation"] = "sum"
+        state["ranking"] = None
+    elif is_plant_scope and (
+        any(k in q_lower for k in ["capacity for plant", "storage capacity of plant", "capacity of plant", "how much capacity does plant", "plant storage capacity", "capacity of this plant", "storage capacity for plant"]) or
+        (any(k in q_lower for k in ["storage capacity", "total capacity", "bin capacity", "how much capacity"]) and not any(k in q_lower for k in ["utiliz", "occupan", "%", "rank", "ranking", "compare", "between"]))
+    ):
+        state["entity"] = "plant"
+        state["metric"] = "plant_capacity"
+        state["topic"] = "plant_capacity"
+        state["filters"] = {"plant": new_plant or state.get("filters", {}).get("plant")}
+        state["aggregation"] = "summary"
+        state["ranking"] = None
+    elif not new_plant and (
+        any(k in q_lower for k in [
+            "what is the total capacity", "what is the total warehouse capacity", "total warehouse capacity",
+            "show total bin capacity", "how much capacity does this warehouse have", "how much capacity do these bins have",
+            "show me the total capacity of all bins", "total bin capacity", "total storage capacity",
+            "what is the warehouse capacity", "how much storage capacity do we have", "what is our total storage capacity",
+            "how much storage capacity does this warehouse have", "how much capacity does the warehouse have"
+        ]) or q_lower.strip() in ["total capacity", "total bin capacity", "total storage capacity", "warehouse capacity"]
+    ) and not is_fresh_util and not any(k in q_lower for k in ["utiliz", "occupan", "%", "available", "left", "free", "remaining", "unused", "rank", "ranking", "compared to", "versus", "vs", "compare"]):
+        state["entity"] = "bin"
+        state["metric"] = "total_warehouse_capacity"
+        state["topic"] = "total_warehouse_capacity"
+        state["filters"] = {}
+        state["aggregation"] = "sum"
+        state["ranking"] = None
+    elif (
+        any(k in q_lower for k in [
+            "how much space is left", "how much capacity is still available", "show available capacity",
+            "how much unused capacity is there", "show remaining storage capacity", "how much storage space is left",
+            "how much free space do we have", "how much capacity is available", "available storage capacity",
+            "remaining storage capacity", "unused storage capacity", "total available capacity",
+            "free storage capacity", "available warehouse capacity"
+        ]) or q_lower.strip() in ["available capacity", "free capacity", "remaining capacity", "unused capacity"]
+    ) and not is_fresh_util and not any(k in q_lower for k in ["utiliz", "occupan", "%", "rank", "ranking", "bins by", "plants by", "compared to", "versus", "vs", "compare", "occupied compared"]):
+        state["entity"] = "bin"
+        state["metric"] = "available_capacity"
+        state["topic"] = "available_capacity"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["aggregation"] = "sum"
+        state["ranking"] = None
+    elif (
+        any(k in q_lower for k in [
+            "how much space is occupied", "show occupied volume", "how much warehouse capacity is being used",
+            "what is the occupied storage volume", "how much inventory space is currently occupied",
+            "total occupied volume", "occupied storage volume", "how much volume is occupied"
+        ]) or q_lower.strip() in ["occupied volume", "storage volume occupied"]
+    ) and not is_fresh_util and not any(k in q_lower for k in ["utiliz", "occupan", "%", "rank", "ranking", "share of total", "materials by", "plants by", "compared to", "versus", "vs", "compare", "available capacity"]):
+        state["entity"] = "bin"
+        state["metric"] = "occupied_volume"
+        state["topic"] = "occupied_volume"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["aggregation"] = "sum"
+        state["ranking"] = None
+    elif any(k in q_lower for k in ["capacity for each bin", "capacity of all bins", "capacity of each bin", "show capacity of bins", "show capacity for bins", "bin capacity list", "list bin capacity"]) and not any(k in q_lower for k in ["rank", "ranking", "top", "bottom"]):
+        state["entity"] = "bin"
+        state["metric"] = "bin_capacity_list"
+        state["topic"] = "bin_capacity_list"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["aggregation"] = "list"
+        state["ranking"] = None
     elif is_fresh_util:
         state["topic"] = "warehouse_utilization"
         state["filters"] = {"plant": new_plant} if new_plant else {}
@@ -1112,6 +1235,24 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             state["resolved_query"] = f"ranking of {direction_word}{limit_clause} materials by stock quantity{plant_clause}"
         elif state["topic"] == "storage_location_ranking":
             state["resolved_query"] = f"ranking of top{limit_clause} storage locations by inventory quantity{plant_clause}"
+        elif state["topic"] == "capacity_summary":
+            state["resolved_query"] = f"capacity summary{plant_clause}"
+        elif state["topic"] == "total_warehouse_capacity":
+            state["resolved_query"] = "what is the total warehouse storage capacity"
+        elif state["topic"] == "available_capacity":
+            state["resolved_query"] = f"how much available storage capacity is left{plant_clause}"
+        elif state["topic"] == "occupied_volume":
+            state["resolved_query"] = f"how much occupied storage volume{plant_clause}"
+        elif state["topic"] == "plant_capacity":
+            state["resolved_query"] = f"storage capacity of plant {state['filters'].get('plant', '')}".strip()
+        elif state["topic"] == "empty_bins_capacity":
+            state["resolved_query"] = f"how much capacity is available in empty bins{plant_clause}"
+        elif state["topic"] == "single_bin_capacity":
+            state["resolved_query"] = f"capacity of bin {state['filters'].get('bin', '')}".strip()
+        elif state["topic"] == "bin_capacity_list":
+            state["resolved_query"] = f"show capacity of bins{plant_clause}"
+        elif state["topic"] == "referential_bins_capacity":
+            state["resolved_query"] = question
         else:
             state["resolved_query"] = question
 
@@ -1132,6 +1273,7 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
     state = extract_and_update_conversation_state(question, history)
     resolved_q = state.get("resolved_query", question)
     q_lower = resolved_q.lower()
+    is_followup = is_elliptical_followup(question.lower()) and bool(history)
 
     # 1. ENTITY & SCOPE EXTRACTION (Context-driven)
     is_mat_entity = any(m in q_lower for m in ["material", "materials", "sku", "skus", "item", "items", "product", "products", "goods", "stock item", "stock items"])
@@ -1258,6 +1400,39 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
                 "output_type": "text"
             }
 
+        # 4B. Single Bin Capacity Lookup: "What is the capacity of bin NRJP2124D2?", "How much capacity does bin NRJP2124D2 have?"
+        if (
+            state.get("topic") == "single_bin_capacity" or
+            (any(k in q_lower for k in ["capacity", "available capacity", "free space", "remaining capacity", "how much capacity", "what is the capacity", "total capacity"]) and not any(k in q_lower for k in ["utiliz", "occupan", "%"]))
+        ) and len(raw_bins) == 1:
+            where_bin_clause = f"(b.BinLocation = '{raw_bins[0]}' OR b.BinLocation LIKE '{raw_bins[0]}%')"
+            sql_bin_cap = f"""SELECT 
+    b.BinLocation AS [Bin],
+    b.Plant AS [Plant],
+    COALESCE(b.StorageLocation, 'N/A') AS [Storage Location],
+    ROUND(b.Volume, 2) AS [Total Capacity (FT3)],
+    ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Occupied Volume (FT3)],
+    ROUND(b.Volume - COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Available Capacity (FT3)],
+    CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Capacity Utilization %]
+FROM dbo.ZWMS_BIN_MASTER b
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+WHERE {where_bin_clause}{plant_filter}
+GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume"""
+            return {
+                "sql": sql_bin_cap,
+                "chart_type": "none",
+                "chart_title": f"Capacity of Bin {raw_bins[0]}",
+                "chart_x": None,
+                "chart_y": None,
+                "intent": "single_bin_capacity",
+                "metric": "bin_capacity",
+                "filters": filters,
+                "time_range": "current",
+                "output_type": "text",
+                "conversation_state": state
+            }
+
         # 5. Bin Utilization: "What is the utilization of bin NRJP2124D2?" (Single or Multi)
         if any(k in q_lower for k in ["utiliz", "occupan", "capacity", "how full", "space", "compare", "fullness", "fill rate"]) and not any(k in q_lower for k in ["top", "bottom", "least utilized ones", "most utilized ones"]):
             if len(raw_bins) == 1:
@@ -1275,6 +1450,7 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
     b.StorageLocation AS [Storage Location],
     CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Bin Capacity],
     ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Occupied Volume],
+    ROUND(b.Volume - COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Available Capacity],
     CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %]
 FROM dbo.ZWMS_BIN_MASTER b
 LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
@@ -1632,6 +1808,12 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC"""
         is_bin_metric and (is_util_metric or has_both) and (has_top or has_bottom or has_both) and not is_mat_entity
         and not (state.get("entity") == "plant" and not any(b in q_lower for b in ["bin", "bins"]))
         and not (bool(re.search(r"\b(?:plants?|plnts?|facility|facilities)\b", q_lower)) and any(k in q_lower for k in ["occupied volume", "storage volume", "space occupied", "total bins", "unique materials", "inventory quantity", "available capacity", "warehouse space"]) and not any(b in q_lower for b in ["bin", "bins"]))
+        and state.get("topic") not in [
+            "total_warehouse_capacity", "available_capacity", "occupied_volume",
+            "capacity_summary", "plant_capacity", "empty_bins_capacity",
+            "referential_bins_capacity", "single_bin_capacity"
+        ]
+        and not parse_range_filters(resolved_q)
     ):
         n_val = state.get("limit") or 10
         if not state.get("limit"):
@@ -1646,7 +1828,9 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC"""
         plant_title_suffix = f" — Plant {plant_cand}" if plant_cand else ""
 
         # Bin Available Capacity Ranking: "Rank bins by available capacity", "Which bin has the most available capacity?"
-        is_bin_avail_cap = any(k in q_lower for k in ["available capacity", "available space", "free capacity", "remaining capacity", "free space", "available volume", "unused capacity", "most available", "least available"]) or state.get("topic") == "bin_available_capacity_ranking"
+        is_bin_avail_cap = (
+            any(k in q_lower for k in ["available capacity", "available space", "free capacity", "remaining capacity", "free space", "available volume", "unused capacity", "most available", "least available"]) or state.get("topic") == "bin_available_capacity_ranking"
+        ) and not parse_range_filters(resolved_q)
         if is_bin_avail_cap:
             is_least = state.get("ranking") == "lowest" or any(k in q_lower for k in ["least", "lowest", "bottom", "minimum", "smallest"])
             order_dir = "ASC" if is_least else "DESC"
@@ -1898,11 +2082,11 @@ FROM (
 
     # E. EMPTY BINS / AVAILABLE FOR PUT-AWAY & COUNT SCALARS
     # Semantic Definition: Bin inventory quantity = 0 (UnrestrictedQty = 0 or BinNo IS NULL)
-    is_empty_intent = state.get("topic") in ["putaway_bins", "empty_bins_count"] or (
+    is_empty_intent = (state.get("topic") in ["putaway_bins", "empty_bins_count"] or (
         any(k in q_lower for k in [
             "empty", "putaway", "put-away", "put away", "vacant", "unoccupied",
-            "unused", "free bin", "free space", "free location", "free storage", "completely free",
-            "available bin", "available storage", "available space", "free right now", "freight",
+            "unused", "free bin", "free location", "free storage", "completely free",
+            "available bin", "available storage", "free right now", "freight",
             "zero inventory", "no inventory", "zero stock", "no stock", "no current stock",
             "zero occupied", "balance is zero", "quantity equals zero", "quantity is zero",
             "stock level is zero", "nothing is stored", "nothing is currently stored",
@@ -1911,9 +2095,13 @@ FROM (
             "where can i put", "where to put", "put new inventory", "place incoming", "where do we have free"
         ]) or (
             ("free" in q_lower or "vacant" in q_lower or "zero" in q_lower or "empty" in q_lower) and
-            ("bin" in q_lower or "location" in q_lower or "storage" in q_lower or "space" in q_lower or "position" in q_lower or "slot" in q_lower)
+            ("bin" in q_lower or "location" in q_lower or "storage" in q_lower or "position" in q_lower or "slot" in q_lower)
         )
-    ) and not any(k in q_lower for k in ["compare", "versus", "vs", "difference between", "their empty bins"])
+    )) and not any(k in q_lower for k in [
+        "compare", "versus", "vs", "difference between", "their empty bins",
+        "how much capacity", "capacity is available", "capacity in empty", "capacity of empty",
+        "available capacity in empty", "available capacity of empty"
+    ]) and state.get("topic") != "empty_bins_capacity"
     if is_empty_intent:
         plant_filter = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
         filters = {"plant": plant_cand} if plant_cand else {}
@@ -2138,18 +2326,30 @@ ORDER BY Plant, SUM(UnrestrictedQty) DESC"""
             metrics = ["top_materials", "stock_quantity"]
 
         # 9. Volume / Capacity
-        elif any(k in q_lower for k in ["volume", "capacity", "dimension", "dimensions", "material volume"]):
-            sql_comp = f"""SELECT 
-    b.Plant,
-    ROUND(SUM(b.Volume), 2) AS [Total Capacity Volume (FT3)],
-    ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS [Occupied Volume (FT3)],
-    ROUND(SUM(b.Volume) - SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS [Available Capacity Volume (FT3)]
-FROM dbo.ZWMS_BIN_MASTER b
-LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
-WHERE b.Plant IN ({plants_in_str})
-GROUP BY b.Plant
-ORDER BY [Total Capacity Volume (FT3)] DESC"""
-            comp_subject = "volume"
+        elif any(k in q_lower for k in ["volume", "capacity", "available capacity", "free space", "remaining capacity", "dimension", "dimensions", "material volume"]):
+            sql_comp = f"""WITH PlantCap AS (
+    SELECT 
+        b.BinLocation,
+        b.Plant,
+        b.Volume AS BinVol,
+        COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) AS OccVol
+    FROM dbo.ZWMS_BIN_MASTER b
+    LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+    LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+    WHERE b.Plant IN ({plants_in_str}) AND b.Volume > 0
+    GROUP BY b.BinLocation, b.Plant, b.Volume
+)
+SELECT 
+    Plant,
+    ROUND(SUM(BinVol), 2) AS [Total Capacity (FT3)],
+    ROUND(SUM(OccVol), 2) AS [Occupied Volume (FT3)],
+    ROUND(SUM(BinVol) - SUM(OccVol), 2) AS [Available Capacity (FT3)],
+    CONCAT(ROUND(SUM(OccVol) * 100.0 / NULLIF(SUM(BinVol), 0), 1), '%') AS [Capacity Utilization %],
+    ROUND(SUM(OccVol) * 100.0 / NULLIF(SUM(BinVol), 0), 2) AS [UtilizationPct]
+FROM PlantCap
+GROUP BY Plant
+ORDER BY [Total Capacity (FT3)] DESC"""
+            comp_subject = "capacity"
             metrics = ["total_capacity", "occupied_volume", "available_capacity"]
 
         # 10. Default / Overall Plant Comparison
@@ -2264,6 +2464,95 @@ WHERE i.FullyVestedOn IS NOT NULL{plant_filter_i} AND {where_cond}
 GROUP BY i.Material, i.Plant, i.StorageLocation, i.BinNo
 ORDER BY [Quantity] DESC"""
 
+        elif field == "TotalCapacity":
+            having_cond = ""
+            if rf["operator"] == "BETWEEN":
+                having_cond = f"b.Volume BETWEEN {rf['lower']} AND {rf['upper']}"
+            elif rf["operator"] in ["GT", "GTE"]:
+                op = ">=" if rf.get("inclusive") else ">"
+                having_cond = f"b.Volume {op} {rf['lower']}"
+            elif rf["operator"] in ["LT", "LTE"]:
+                op = "<=" if rf.get("inclusive") else "<"
+                having_cond = f"b.Volume {op} {rf['upper']}"
+
+            sql_range = f"""SELECT 
+    b.BinLocation AS [Bin],
+    b.Plant AS [Plant],
+    COALESCE(b.StorageLocation, 'N/A') AS [Storage Location],
+    ROUND(b.Volume, 2) AS [Total Capacity (FT3)],
+    ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Occupied Volume (FT3)],
+    ROUND(b.Volume - COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Available Capacity (FT3)],
+    CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Capacity Utilization %]
+FROM dbo.ZWMS_BIN_MASTER b
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+WHERE b.Volume > 0{plant_filter_b}
+GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume
+HAVING {having_cond}
+ORDER BY [Total Capacity (FT3)] DESC"""
+
+        elif field == "AvailableCapacity":
+            where_cond = ""
+            if rf["operator"] == "BETWEEN":
+                where_cond = f"[Available Capacity (FT3)] BETWEEN {rf['lower']} AND {rf['upper']}"
+            elif rf["operator"] in ["GT", "GTE"]:
+                op = ">=" if rf.get("inclusive") else ">"
+                where_cond = f"[Available Capacity (FT3)] {op} {rf['lower']}"
+            elif rf["operator"] in ["LT", "LTE"]:
+                op = "<=" if rf.get("inclusive") else "<"
+                where_cond = f"[Available Capacity (FT3)] {op} {rf['upper']}"
+
+            sql_range = f"""WITH BinCap AS (
+    SELECT 
+        b.BinLocation AS [Bin],
+        b.Plant AS [Plant],
+        COALESCE(b.StorageLocation, 'N/A') AS [Storage Location],
+        ROUND(b.Volume, 2) AS [Total Capacity (FT3)],
+        ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Occupied Volume (FT3)],
+        ROUND(b.Volume - COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Available Capacity (FT3)],
+        CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Capacity Utilization %]
+    FROM dbo.ZWMS_BIN_MASTER b
+    LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+    LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+    WHERE b.Volume > 0{plant_filter_b}
+    GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume
+)
+SELECT Bin, Plant, [Storage Location], [Total Capacity (FT3)], [Occupied Volume (FT3)], [Available Capacity (FT3)], [Capacity Utilization %]
+FROM BinCap
+WHERE {where_cond}
+ORDER BY [Available Capacity (FT3)] DESC"""
+
+        elif field == "Volume":
+            where_cond = ""
+            if rf["operator"] == "BETWEEN":
+                where_cond = f"[Occupied Volume (FT3)] BETWEEN {rf['lower']} AND {rf['upper']}"
+            elif rf["operator"] in ["GT", "GTE"]:
+                op = ">=" if rf.get("inclusive") else ">"
+                where_cond = f"[Occupied Volume (FT3)] {op} {rf['lower']}"
+            elif rf["operator"] in ["LT", "LTE"]:
+                op = "<=" if rf.get("inclusive") else "<"
+                where_cond = f"[Occupied Volume (FT3)] {op} {rf['upper']}"
+
+            sql_range = f"""WITH BinOcc AS (
+    SELECT 
+        b.BinLocation AS [Bin],
+        b.Plant AS [Plant],
+        COALESCE(b.StorageLocation, 'N/A') AS [Storage Location],
+        ROUND(b.Volume, 2) AS [Total Capacity (FT3)],
+        ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Occupied Volume (FT3)],
+        ROUND(b.Volume - COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Available Capacity (FT3)],
+        CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Capacity Utilization %]
+    FROM dbo.ZWMS_BIN_MASTER b
+    LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+    LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+    WHERE b.Volume > 0{plant_filter_b}
+    GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume
+)
+SELECT Bin, Plant, [Storage Location], [Total Capacity (FT3)], [Occupied Volume (FT3)], [Available Capacity (FT3)], [Capacity Utilization %]
+FROM BinOcc
+WHERE {where_cond}
+ORDER BY [Occupied Volume (FT3)] DESC"""
+
         else: # UnrestrictedQty
             having_cond = ""
             if rf["operator"] == "BETWEEN":
@@ -2298,8 +2587,8 @@ ORDER BY [Total Stock Qty] DESC"""
             "query_plan": query_plan,
             "chart_type": "bar" if is_explicit_chart else "none",
             "chart_title": f"Range Filter Results ({field})",
-            "chart_x": "Material" if field == "UnrestrictedQty" else ("Bin" if field == "BinUtilizationPct" else None),
-            "chart_y": "Total Stock Qty" if field == "UnrestrictedQty" else ("UtilizationPct" if field == "BinUtilizationPct" else None),
+            "chart_x": "Material" if field == "UnrestrictedQty" else ("Bin" if field in ["BinUtilizationPct", "TotalCapacity", "AvailableCapacity", "Volume"] else None),
+            "chart_y": "Total Stock Qty" if field == "UnrestrictedQty" else ("UtilizationPct" if field == "BinUtilizationPct" else (f"{field} (FT3)" if "Capacity" in field or field == "Volume" else None)),
             "intent": "range_query",
             "metric": f"{field.lower()}_range",
             "filters": {"plant": plant_cand} if plant_cand else {},
@@ -2704,6 +2993,347 @@ ORDER BY [Total Inventory Quantity] {order_dir}"""
                 "output_type": "text" if is_singular else ("bar_chart" if is_explicit_chart else "table"),
                 "conversation_state": state
             }
+
+    # =========================================================================
+    # SECTION CAP: AUTHORITATIVE CAPACITY-BASED QUERY ENGINE (Context Rules 1-46)
+    # =========================================================================
+    # Covers: Total Capacity, Available Capacity, Occupied Volume, Capacity by Plant,
+    # Empty Bins Capacity, Capacity Summary, Capacity Detail Mode, and Referential Follow-ups.
+
+    # 1. REFERENTIAL PRONOUN FOLLOW-UPS ("how much total occupied volume do they have?", "how much space do they have?", "what is their capacity?")
+    is_referential_followup = (
+        state.get("topic") == "referential_bins_capacity" or
+        (bool(history) and any(k in q_lower for k in ["they have", "do they", "these have", "do these", "those have", "do those", "their capacity", "their volume", "their occupied", "their available"]))
+    )
+    if is_referential_followup:
+        # Find previous user query in history to understand what "they" refers to
+        prev_user_queries = [
+            m.get("content", "").strip() for m in history if m.get("role") == "user" and m.get("content", "").strip()
+        ]
+        prev_q = prev_user_queries[-1].lower() if prev_user_queries else ""
+        prev_limit_match = re.search(r"\b(?:top|bottom|highest|lowest)?\s*(\d{1,3})\b", prev_q)
+        prev_limit = int(prev_limit_match.group(1)) if prev_limit_match else (state.get("limit") or 10)
+        prev_is_least = any(k in prev_q for k in ["bottom", "least", "lowest", "emptiest"])
+        prev_order_dir = "ASC" if prev_is_least else "DESC"
+        prev_plant_filter = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
+
+        sql_referential_cap = f"""WITH PriorBins AS (
+    SELECT TOP {prev_limit}
+        b.BinLocation,
+        b.Plant,
+        b.Volume AS BinVol,
+        COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) AS OccVol
+    FROM dbo.ZWMS_BIN_MASTER b
+    JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+    LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+    WHERE b.Volume > 0{prev_plant_filter}
+    GROUP BY b.BinLocation, b.Plant, b.Volume
+    ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) {prev_order_dir}
+)
+SELECT 
+    COUNT(*) AS [Referenced Bins Count],
+    ROUND(SUM(BinVol), 2) AS [Total Capacity (FT3)],
+    ROUND(SUM(OccVol), 2) AS [Total Occupied Volume (FT3)],
+    ROUND(SUM(BinVol) - SUM(OccVol), 2) AS [Total Available Capacity (FT3)],
+    CONCAT(ROUND(SUM(OccVol) * 100.0 / NULLIF(SUM(BinVol), 0), 1), '%') AS [Capacity Utilization %]
+FROM PriorBins"""
+        return {
+            "sql": sql_referential_cap,
+            "chart_type": "none",
+            "chart_title": f"Combined Capacity of Referenced {prev_limit} Bins",
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "referential_bins_capacity",
+            "metric": "bin_capacity_aggregate",
+            "filters": {"plant": plant_cand} if plant_cand else {},
+            "time_range": "current",
+            "output_type": "text",
+            "conversation_state": state
+        }
+
+    # 2. CAPACITY SUMMARY: "give me a capacity summary", "warehouse capacity summary", "overall capacity summary"
+    is_cap_summary = (
+        state.get("topic") == "capacity_summary" or
+        any(k in q_lower for k in ["capacity summary", "warehouse capacity summary", "overall capacity summary", "storage capacity summary"]) or
+        q_lower.strip() in ["capacity summary", "capacity overview"]
+    )
+    if is_cap_summary:
+        sql_cap_summary = """WITH PlantCap AS (
+    SELECT 
+        b.BinLocation,
+        b.Plant,
+        b.Volume AS BinVol,
+        COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) AS OccVol
+    FROM dbo.ZWMS_BIN_MASTER b
+    LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+    LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+    WHERE b.Volume > 0
+    GROUP BY b.BinLocation, b.Plant, b.Volume
+)
+SELECT 
+    Plant,
+    COUNT(DISTINCT BinLocation) AS [Total Bins],
+    ROUND(SUM(BinVol), 2) AS [Total Capacity (FT3)],
+    ROUND(SUM(OccVol), 2) AS [Occupied Volume (FT3)],
+    ROUND(SUM(BinVol) - SUM(OccVol), 2) AS [Available Capacity (FT3)],
+    CONCAT(ROUND(SUM(OccVol) * 100.0 / NULLIF(SUM(BinVol), 0), 1), '%') AS [Capacity Utilization %],
+    ROUND(SUM(OccVol) * 100.0 / NULLIF(SUM(BinVol), 0), 2) AS [UtilizationPct]
+FROM PlantCap
+GROUP BY Plant
+ORDER BY [Total Capacity (FT3)] DESC"""
+        return {
+            "sql": sql_cap_summary,
+            "chart_type": "bar" if is_explicit_chart else "none",
+            "chart_title": "Warehouse Capacity Summary by Plant",
+            "chart_x": "Plant" if is_explicit_chart else None,
+            "chart_y": "Total Capacity (FT3)" if is_explicit_chart else None,
+            "intent": "capacity_summary",
+            "metric": "capacity_summary",
+            "filters": {},
+            "time_range": "current",
+            "output_type": "table",
+            "conversation_state": state
+        }
+
+    # 3. CAPACITY IN EMPTY BINS: "How much capacity is available in empty bins?", "Available capacity in empty bins"
+    is_empty_bins_cap = (
+        state.get("topic") == "empty_bins_capacity" or
+        (
+            any(k in q_lower for k in ["empty bin", "empty bins", "vacant bin", "vacant bins"]) and
+            any(k in q_lower for k in ["capacity", "available capacity", "space", "volume", "how much capacity", "how much space", "how much volume"])
+        )
+    )
+    if is_empty_bins_cap:
+        plant_filter_b = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
+        sql_empty_cap = f"""SELECT 
+    COUNT(DISTINCT b.BinLocation) AS [Empty Bins Count],
+    ROUND(SUM(b.Volume), 2) AS [Empty Bins Available Capacity (FT3)]
+FROM dbo.ZWMS_BIN_MASTER b
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+WHERE i.BinNo IS NULL AND b.Volume > 0{plant_filter_b}"""
+        return {
+            "sql": sql_empty_cap,
+            "chart_type": "none",
+            "chart_title": f"Available Capacity in Empty Bins{f' — Plant {plant_cand}' if plant_cand else ''}",
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "empty_bins_capacity",
+            "metric": "empty_bins_capacity",
+            "filters": {"plant": plant_cand} if plant_cand else {},
+            "time_range": "current",
+            "output_type": "text",
+            "conversation_state": state
+        }
+
+    # 4. CAPACITY BY SPECIFIC PLANT: "Show capacity for Plant 1258", "What is the storage capacity of Plant 1258?"
+    is_plant_cap_inquiry = (
+        bool(plant_cand) and
+        (
+            state.get("topic") == "plant_capacity" or
+            any(k in q_lower for k in [
+                "capacity for plant", "storage capacity of plant", "capacity of plant",
+                "how much capacity does plant", "plant storage capacity", "capacity of this plant",
+                "storage capacity for plant", "how much storage space is left in plant"
+            ]) or
+            (
+                any(k in q_lower for k in ["storage capacity", "total capacity", "bin capacity", "how much capacity", "capacity"]) and
+                not any(k in q_lower for k in ["utiliz", "occupan", "%", "rank", "ranking", "compare", "versus", "vs", "between"])
+            )
+        )
+    )
+    if is_plant_cap_inquiry:
+        p_val = plant_cand
+        sql_p_cap = f"""WITH PlantCap AS (
+    SELECT 
+        b.BinLocation,
+        b.Plant,
+        b.Volume AS BinVol,
+        COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) AS OccVol
+    FROM dbo.ZWMS_BIN_MASTER b
+    LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+    LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+    WHERE b.Plant = '{p_val}' AND b.Volume > 0
+    GROUP BY b.BinLocation, b.Plant, b.Volume
+)
+SELECT 
+    Plant,
+    ROUND(SUM(BinVol), 2) AS [Total Capacity (FT3)],
+    ROUND(SUM(OccVol), 2) AS [Total Occupied Volume (FT3)],
+    ROUND(SUM(BinVol) - SUM(OccVol), 2) AS [Available Capacity (FT3)],
+    CONCAT(ROUND(SUM(OccVol) * 100.0 / NULLIF(SUM(BinVol), 0), 1), '%') AS [Capacity Utilization %],
+    COUNT(DISTINCT BinLocation) AS [Total Bins]
+FROM PlantCap
+GROUP BY Plant"""
+        return {
+            "sql": sql_p_cap,
+            "chart_type": "none",
+            "chart_title": f"Storage Capacity of Plant {p_val}",
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "plant_capacity",
+            "metric": "plant_capacity",
+            "filters": {"plant": p_val},
+            "time_range": "current",
+            "output_type": "text",
+            "conversation_state": state
+        }
+
+    # 5. TOTAL WAREHOUSE CAPACITY (Scalar warehouse-wide sum of Volume): "What is the total capacity?", "How much capacity does this warehouse have?"
+    is_tot_warehouse_cap = (
+        not plant_cand and
+        (
+            state.get("topic") == "total_warehouse_capacity" or
+            any(k in q_lower for k in [
+                "what is the total capacity", "what is the total warehouse capacity", "total warehouse capacity",
+                "show total bin capacity", "how much capacity does this warehouse have", "how much capacity do these bins have",
+                "show me the total capacity of all bins", "total bin capacity", "total storage capacity",
+                "what is the warehouse capacity", "how much storage capacity do we have", "what is our total storage capacity",
+                "how much storage capacity does this warehouse have", "how much capacity does the warehouse have"
+            ]) or
+            q_lower.strip() in ["total capacity", "total bin capacity", "total storage capacity", "warehouse capacity"]
+        ) and
+        not any(k in q_lower for k in ["utiliz", "occupan", "%", "available", "left", "free", "remaining", "unused", "rank", "ranking", "compared to", "versus", "vs", "compare"])
+    )
+    if is_tot_warehouse_cap:
+        sql_tot_cap = """SELECT 
+    ROUND(SUM(Volume), 2) AS [Total Capacity (FT3)],
+    COUNT(DISTINCT BinLocation) AS [Total Bins]
+FROM dbo.ZWMS_BIN_MASTER
+WHERE Volume > 0"""
+        return {
+            "sql": sql_tot_cap,
+            "chart_type": "none",
+            "chart_title": "Total Warehouse Storage Capacity",
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "total_warehouse_capacity",
+            "metric": "total_capacity",
+            "filters": {},
+            "time_range": "current",
+            "output_type": "text",
+            "conversation_state": state
+        }
+
+    # 6. TOTAL AVAILABLE CAPACITY (Total Capacity - Occupied Volume): "How much space is left?", "How much capacity is still available?", "Show available capacity"
+    is_avail_cap_req = (
+        state.get("topic") == "available_capacity" or
+        (
+            any(k in q_lower for k in [
+                "how much space is left", "how much capacity is still available", "show available capacity",
+                "how much unused capacity is there", "show remaining storage capacity", "how much storage space is left",
+                "how much free space do we have", "how much capacity is available", "available storage capacity",
+                "remaining storage capacity", "unused storage capacity", "total available capacity",
+                "free storage capacity", "available warehouse capacity"
+            ]) or
+            q_lower.strip() in ["available capacity", "free capacity", "remaining capacity", "unused capacity"]
+        ) and
+        not any(k in q_lower for k in ["utiliz", "occupan", "%", "rank", "ranking", "bins by", "plants by", "compared to", "versus", "vs", "compare", "occupied compared"])
+    )
+    if is_avail_cap_req:
+        plant_filter_cap = f" WHERE b.Plant = '{plant_cand}'" if plant_cand else ""
+        sql_avail_cap = f"""WITH Cap AS (
+    SELECT 
+        b.Plant,
+        b.Volume AS BinVol,
+        COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) AS OccVol
+    FROM dbo.ZWMS_BIN_MASTER b
+    LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+    LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+    WHERE b.Volume > 0
+    GROUP BY b.BinLocation, b.Plant, b.Volume
+)
+SELECT 
+    ROUND(SUM(BinVol) - SUM(OccVol), 2) AS [Total Available Capacity (FT3)],
+    ROUND(SUM(BinVol), 2) AS [Total Capacity (FT3)],
+    ROUND(SUM(OccVol), 2) AS [Total Occupied Volume (FT3)]
+FROM Cap{plant_filter_cap}"""
+        return {
+            "sql": sql_avail_cap,
+            "chart_type": "none",
+            "chart_title": f"Available Storage Capacity{f' — Plant {plant_cand}' if plant_cand else ''}",
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "available_capacity",
+            "metric": "available_capacity",
+            "filters": {"plant": plant_cand} if plant_cand else {},
+            "time_range": "current",
+            "output_type": "text",
+            "conversation_state": state
+        }
+
+    # 7. OCCUPIED VOLUME QUERIES (Total Occupied Volume): "How much space is occupied?", "Show occupied volume"
+    is_occ_vol_req = (
+        state.get("topic") == "occupied_volume" or
+        (
+            any(k in q_lower for k in [
+                "how much space is occupied", "show occupied volume", "how much warehouse capacity is being used",
+                "what is the occupied storage volume", "how much inventory space is currently occupied",
+                "total occupied volume", "occupied storage volume", "how much volume is occupied"
+            ]) or
+            q_lower.strip() in ["occupied volume", "storage volume occupied"]
+        ) and
+        not any(k in q_lower for k in ["utiliz", "occupan", "%", "rank", "ranking", "share of total", "materials by", "plants by", "compared to", "versus", "vs", "compare", "available capacity"])
+    )
+    if is_occ_vol_req:
+        plant_filter_occ = f" AND i.Plant = '{plant_cand}'" if plant_cand else ""
+        sql_occ_vol = f"""SELECT 
+    ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 2) AS [Total Occupied Volume (FT3)],
+    COUNT(DISTINCT i.BinNo) AS [Occupied Bins],
+    SUM(i.UnrestrictedQty) AS [Total Inventory Quantity]
+FROM dbo.ZWMS_INVENTORY i
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+WHERE i.UnrestrictedQty > 0{plant_filter_occ}"""
+        return {
+            "sql": sql_occ_vol,
+            "chart_type": "none",
+            "chart_title": f"Occupied Storage Volume{f' — Plant {plant_cand}' if plant_cand else ''}",
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "occupied_volume",
+            "metric": "occupied_volume",
+            "filters": {"plant": plant_cand} if plant_cand else {},
+            "time_range": "current",
+            "output_type": "text",
+            "conversation_state": state
+        }
+
+    # 8. BIN CAPACITY LIST: "Show capacity for each bin", "Show capacity of all bins in Plant 1258"
+    is_bin_cap_list_req = (
+        state.get("topic") == "bin_capacity_list" or
+        (
+            any(k in q_lower for k in ["capacity for each bin", "capacity of all bins", "capacity of each bin", "show capacity of bins", "show capacity for bins", "bin capacity list", "list bin capacity"]) and
+            not any(k in q_lower for k in ["rank", "ranking", "top", "bottom"])
+        )
+    )
+    if is_bin_cap_list_req:
+        plant_filter_bin = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
+        sql_bin_cap_list = f"""SELECT TOP 100
+    b.BinLocation AS [Bin],
+    b.Plant AS [Plant],
+    COALESCE(b.StorageLocation, 'N/A') AS [Storage Location],
+    ROUND(b.Volume, 2) AS [Total Capacity (FT3)],
+    ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Occupied Volume (FT3)],
+    ROUND(b.Volume - COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Available Capacity (FT3)],
+    CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Capacity Utilization %]
+FROM dbo.ZWMS_BIN_MASTER b
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+WHERE b.Volume > 0{plant_filter_bin}
+GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume
+ORDER BY [Total Capacity (FT3)] DESC"""
+        return {
+            "sql": sql_bin_cap_list,
+            "chart_type": "none",
+            "chart_title": f"Bin Capacity Specifications{f' — Plant {plant_cand}' if plant_cand else ''}",
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "bin_capacity_list",
+            "metric": "bin_capacity",
+            "filters": {"plant": plant_cand} if plant_cand else {},
+            "time_range": "current",
+            "output_type": "table",
+            "conversation_state": state
+        }
 
     # G. WAREHOUSE & PLANT BIN UTILIZATION (Multi-Tiered Response Templates)
     # Semantic Definition: Occupied volume / Total capacity volume * 100 or Occupied Bins / Total Bins * 100
@@ -3542,6 +4172,174 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         if "Stored Materials Count" in cols or (any(k in q_lower for k in ["how many materials", "how many skus", "how many items", "number of materials", "count of materials"]) and any(b in q_lower for b in ["in bin", "stored in bin", "inside bin", "for bin"])):
             m_cnt = rows[0].get("Stored Materials Count", rows[0].get("MaterialCount", 0)) if rows else 0
             return f"Bin **{b_code}** stores **{m_cnt} unique material{'s' if m_cnt != 1 else ''}**."
+
+        # Capacity of Bin: "What is the capacity of bin NRJP2124D2?"
+        if "Total Capacity (FT3)" in cols and "Available Capacity (FT3)" in cols:
+            p_val = rows[0].get("Plant", "N/A")
+            sloc_val = rows[0].get("Storage Location", rows[0].get("StorageLocation", "N/A"))
+            tot_cap = rows[0].get("Total Capacity (FT3)", 0.0)
+            occ_vol = rows[0].get("Occupied Volume (FT3)", 0.0)
+            avail_cap = rows[0].get("Available Capacity (FT3)", 0.0)
+            util_pct = rows[0].get("Capacity Utilization %", "0%")
+            return f"Bin **`{b_code}`** (Plant {p_val}, Storage Location: `{sloc_val}`) has a total capacity of **{tot_cap:,.2f} FT³**, with **{occ_vol:,.2f} FT³** occupied ({util_pct} utilization) and **{avail_cap:,.2f} FT³** available capacity remaining."
+
+    # 0A_CAP_1. Referential Bins Combined Capacity: "How much total occupied volume do they have?"
+    if "Referenced Bins Count" in cols:
+        cnt = rows[0].get("Referenced Bins Count", 0)
+        tot_cap = rows[0].get("Total Capacity (FT3)", 0.0)
+        occ_vol = rows[0].get("Total Occupied Volume (FT3)", 0.0)
+        avail_cap = rows[0].get("Total Available Capacity (FT3)", 0.0)
+        util_pct = rows[0].get("Capacity Utilization %", "0%")
+        return f"The **{cnt} referenced bins** have a combined total capacity of **{tot_cap:,.2f} FT³**, of which **{occ_vol:,.2f} FT³** is occupied ({util_pct} utilization) and **{avail_cap:,.2f} FT³** is available capacity remaining."
+
+    # 0A_CAP_2. Empty Bins Available Capacity: "How much capacity is available in empty bins?"
+    if "Empty Bins Available Capacity (FT3)" in cols:
+        cnt = rows[0].get("Empty Bins Count", 0)
+        avail_cap = rows[0].get("Empty Bins Available Capacity (FT3)", 0.0)
+        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
+        plant_val = plant_match.group(1) if plant_match else None
+        plant_str = f" in Plant {plant_val}" if plant_val else " across the warehouse"
+        return f"There are **{cnt:,} empty bins** currently available{plant_str}, offering **{avail_cap:,.2f} FT³** of available storage capacity for immediate put-away."
+
+    # 0A_CAP_3. Total Warehouse Storage Capacity (Scalar warehouse-wide sum): "What is the total capacity?"
+    if "Total Capacity (FT3)" in cols and "Total Bins" in cols and len(rows) == 1 and "Plant" not in cols and "Rank" not in cols:
+        cap_val = rows[0].get("Total Capacity (FT3)", 0.0)
+        bins_val = rows[0].get("Total Bins", 0)
+        return f"The total warehouse storage capacity is **{cap_val:,.2f} FT³** across **{bins_val:,} total bins**."
+
+    # 0A_CAP_4. Total Available Storage Capacity: "How much space is left?", "Show available capacity"
+    if "Total Available Capacity (FT3)" in cols and "Total Capacity (FT3)" in cols and len(rows) == 1 and "Rank" not in cols and "Referenced Bins Count" not in cols:
+        avail_val = rows[0].get("Total Available Capacity (FT3)", 0.0)
+        tot_val = rows[0].get("Total Capacity (FT3)", 0.0)
+        occ_val = rows[0].get("Total Occupied Volume (FT3)", 0.0)
+        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
+        plant_val = plant_match.group(1) if plant_match else (rows[0].get("Plant") if "Plant" in rows[0] else None)
+        if plant_val:
+            return f"**Plant {plant_val}** has **{avail_val:,.2f} FT³** of available storage capacity remaining (Total Capacity: **{tot_val:,.2f} FT³**, Occupied: **{occ_val:,.2f} FT³**)."
+        return f"There is **{avail_val:,.2f} FT³** of available storage capacity remaining in the warehouse (Total Capacity: **{tot_val:,.2f} FT³**, Occupied: **{occ_val:,.2f} FT³**)."
+
+    # 0A_CAP_5. Occupied Storage Volume: "How much space is occupied?", "Show occupied volume"
+    if "Total Occupied Volume (FT3)" in cols and "Occupied Bins" in cols and len(rows) == 1 and "Rank" not in cols and "Total Capacity (FT3)" not in cols:
+        occ_val = rows[0].get("Total Occupied Volume (FT3)", 0.0)
+        ob_val = rows[0].get("Occupied Bins", 0)
+        qty_val = rows[0].get("Total Inventory Quantity", 0.0)
+        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
+        plant_val = plant_match.group(1) if plant_match else (rows[0].get("Plant") if "Plant" in rows[0] else None)
+        plant_str = f" in Plant {plant_val}" if plant_val else ""
+        return f"The current occupied storage volume{plant_str} is **{occ_val:,.2f} FT³** across **{ob_val:,} occupied bins** (holding **{qty_val:,.0f} total inventory units**)."
+
+    # 0A_CAP_6. Specific Plant Storage Capacity: "Show capacity for Plant 1258", "What is the storage capacity of Plant 1258?"
+    if "Total Capacity (FT3)" in cols and "Plant" in cols and "Available Capacity (FT3)" in cols and len(rows) == 1 and "Rank" not in cols:
+        p_val = rows[0].get("Plant", "N/A")
+        tot_val = rows[0].get("Total Capacity (FT3)", 0.0)
+        occ_val = rows[0].get("Total Occupied Volume (FT3)", 0.0)
+        avail_val = rows[0].get("Available Capacity (FT3)", 0.0)
+        util_val = rows[0].get("Capacity Utilization %", "0%")
+        tb_val = rows[0].get("Total Bins", 0)
+        return f"**Plant {p_val}** has a total storage capacity of **{tot_val:,.2f} FT³** across **{tb_val:,} bins**, with **{occ_val:,.2f} FT³** occupied (**{util_val}** capacity utilization) and **{avail_val:,.2f} FT³** available capacity remaining."
+
+    # 0A_CAP_7. Capacity Comparison by Plant: "Compare capacity between Plant 1258 and Plant 7228", "Which plant has more available capacity?"
+    if "Available Capacity (FT3)" in cols and "Total Capacity (FT3)" in cols and "Plant" in cols and len(rows) >= 2 and "Rank" not in cols and any(k in q_lower for k in ["compare", "versus", "vs", "which plant", "difference between", "more available", "less available"]):
+        sorted_rows = sorted(rows, key=lambda x: x.get("Available Capacity (FT3)", 0.0), reverse=True)
+        p1, p2 = sorted_rows[0], sorted_rows[1]
+        n1, av1, tc1 = p1.get("Plant", "N/A"), p1.get("Available Capacity (FT3)", 0.0), p1.get("Total Capacity (FT3)", 0.0)
+        n2, av2, tc2 = p2.get("Plant", "N/A"), p2.get("Available Capacity (FT3)", 0.0), p2.get("Total Capacity (FT3)", 0.0)
+        diff = av1 - av2
+        
+        single_stmt = f"**Plant {n1}** has more available capacity at **{av1:,.2f} FT³** (Total: {tc1:,.2f} FT³), compared to **Plant {n2}** with **{av2:,.2f} FT³** (Total: {tc2:,.2f} FT³) — a difference of **{diff:,.2f} FT³**."
+        if is_single_statement_requested:
+            return single_stmt
+        lines = [
+            "### 🏭 Capacity Comparison by Plant\n",
+            single_stmt,
+            "\n**Comparison Breakdown:**"
+        ]
+        for r in sorted_rows:
+            p = r.get("Plant", "N/A")
+            tc = r.get("Total Capacity (FT3)", 0.0)
+            ov = r.get("Occupied Volume (FT3)", 0.0)
+            ac = r.get("Available Capacity (FT3)", 0.0)
+            cu = r.get("Capacity Utilization %", "0%")
+            lines.append(f"- **Plant {p}**: **{ac:,.2f} FT³** available | Occupied: **{ov:,.2f} FT³** ({cu}) | Total: **{tc:,.2f} FT³**")
+        lines.append(f"\n💡 *Conclusion: {single_stmt}*")
+        return "\n".join(lines)
+
+    # 0A_CAP_8. Capacity Summary: "Give me a capacity summary", "Warehouse capacity summary"
+    if "Capacity Utilization %" in cols and "Available Capacity (FT3)" in cols and "Plant" in cols and len(rows) >= 2 and "Rank" not in cols and not any(k in q_lower for k in ["compare", "versus", "vs"]):
+        tot_cap_all = sum(r.get("Total Capacity (FT3)", 0.0) for r in rows)
+        tot_occ_all = sum(r.get("Occupied Volume (FT3)", 0.0) for r in rows)
+        tot_avail_all = sum(r.get("Available Capacity (FT3)", 0.0) for r in rows)
+        tot_bins_all = sum(r.get("Total Bins", 0) for r in rows)
+        overall_util = round((tot_occ_all * 100.0 / tot_cap_all), 1) if tot_cap_all > 0 else 0.0
+        
+        single_stmt = f"Total warehouse storage capacity is **{tot_cap_all:,.2f} FT³** across **{tot_bins_all:,} bins** (Occupied: **{tot_occ_all:,.2f} FT³**, Available: **{tot_avail_all:,.2f} FT³**, Overall Utilization: **{overall_util}%**)."
+        if is_single_statement_requested:
+            return single_stmt
+
+        lines = [
+            "### 📊 Warehouse Capacity Summary\n",
+            single_stmt,
+            "\n**Plant Capacity Breakdown:**"
+        ]
+        for r in rows:
+            p = r.get("Plant", "N/A")
+            tc = r.get("Total Capacity (FT3)", 0.0)
+            ov = r.get("Occupied Volume (FT3)", 0.0)
+            ac = r.get("Available Capacity (FT3)", 0.0)
+            cu = r.get("Capacity Utilization %", "0%")
+            tb = r.get("Total Bins", 0)
+            lines.append(f"- **Plant {p}**: **{tc:,.2f} FT³** total ({tb:,} bins) | Occupied: **{ov:,.2f} FT³** ({cu}) | Available: **{ac:,.2f} FT³**")
+        lines.append("\n💡 *The complete capacity breakdown by plant is loaded in the **Data Table** below.*")
+        return "\n".join(lines)
+
+    # 0A_CAP_9. Bins Capacity List: "Show capacity for each bin", "Show capacity of all bins in Plant 1258"
+    if "Bin" in cols and "Total Capacity (FT3)" in cols and "Available Capacity (FT3)" in cols and len(rows) > 1 and "Rank" not in cols and not any(k in q_lower for k in ["between", "from", "above", "below", "at least"]):
+        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
+        plant_val = plant_match.group(1) if plant_match else None
+        plant_str = f" in Plant {plant_val}" if plant_val else ""
+        single_stmt = f"Displaying capacity specifications for **{len(rows)} bins**{plant_str} (Total Capacity, Occupied Volume, Available Capacity, and Capacity Utilization %)."
+        if is_single_statement_requested:
+            return single_stmt
+        lines = [
+            f"### 📦 Bin Capacity Specifications{plant_str}\n",
+            single_stmt,
+            f"\n💡 *The itemized bin capacities are loaded in the **searchable Data Table** below.*"
+        ]
+        return "\n".join(lines)
+
+    # 0A_CAP_10. Capacity Range Query: "Bins between 400 and 600 FT3 total capacity", "Bins with 100 to 300 FT3 free space"
+    if ("Total Capacity (FT3)" in cols or "Available Capacity (FT3)" in cols) and "Bin" in cols and any(k in q_lower for k in ["between", "from", "at least", "above", "more than", "below", "under", "less than"]):
+        rf_list = parse_range_filters(question)
+        if rf_list:
+            from .validator import validate_and_filter_range_rows
+            valid_rows, _ = validate_and_filter_range_rows(rows, rf_list)
+            rows = valid_rows
+            count = len(rows)
+            rf = rf_list[0]
+            metric_name = "total capacity" if rf.get("field") == "TotalCapacity" else ("occupied volume" if rf.get("field") == "Volume" else "available capacity")
+            if rf["operator"] == "BETWEEN":
+                rf_desc = f"between {rf['lower']:,.0f} and {rf['upper']:,.0f} FT³ {metric_name}"
+            elif rf["operator"] in ["GT", "GTE"]:
+                rf_desc = f"at least {rf['lower']:,.0f} FT³ {metric_name}"
+            elif rf["operator"] in ["LT", "LTE"]:
+                rf_desc = f"up to {rf['upper']:,.0f} FT³ {metric_name}"
+            else:
+                rf_desc = f"in the specified {metric_name} range"
+            plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
+            plant_val = plant_match.group(1) if plant_match else None
+            plant_str = f" in Plant {plant_val}" if plant_val else ""
+            if count == 0:
+                single_stmt = f"No bins found with **{rf_desc}**{plant_str}."
+            else:
+                single_stmt = f"Found **{count:,} bins** with **{rf_desc}**{plant_str}."
+            if is_single_statement_requested:
+                return single_stmt
+            lines = [
+                f"### 📦 Bins with {rf_desc.capitalize()}{plant_str}\n",
+                single_stmt,
+                f"\n💡 *The matching bins with storage locations, capacities, and exact utilization percentages are loaded in the **searchable Data Table** below.*"
+            ]
+            return "\n".join(lines)
 
     # 0A_RANK_1. Specific Entity Rank Statement: "What rank is Plant 1258 by occupied volume?"
     if "Rank" in cols and len(rows) == 1 and any(k in q_lower for k in ["what rank is", "what is the rank", "where does", "where does plant stand", "what position", "rank of plant"]):
