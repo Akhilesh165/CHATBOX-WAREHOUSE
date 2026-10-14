@@ -10,6 +10,7 @@ out/
 frontend/out/
 build/
 dist/
+*.tsbuildinfo
 
 # Python cache & virtual environments
 __pycache__/
