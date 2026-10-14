@@ -248,6 +248,24 @@ async def chat_endpoint(req: ChatRequest):
     except Exception as val_check_err:
         logger.warning(f"Result validator check skipped due to non-critical error: {val_check_err}")
 
+    # 4B. RANGE FILTER VALIDATION RULE & DISPLAYED-METRIC CONSISTENCY Enforcement
+    # "Every returned row must satisfy the requested range. The chatbot must never display rows outside
+    # the requested range, even if the backend returns them. Before presenting the response, validate
+    # every returned row against the requested lower and upper bounds. If any row falls outside the range,
+    # exclude it or correct the calculation before displaying the result."
+    active_range_filters = None
+    if isinstance(generated, dict) and generated.get("query_plan"):
+        active_range_filters = generated["query_plan"].get("range_filters")
+    if not active_range_filters:
+        from .llm import parse_range_filters
+        active_range_filters = parse_range_filters(req.message)
+
+    if active_range_filters and rows:
+        from .validator import validate_and_filter_range_rows
+        rows, range_pruning_warnings = validate_and_filter_range_rows(rows, active_range_filters)
+        if range_pruning_warnings:
+            warnings.extend(range_pruning_warnings)
+
     if len(rows) >= settings.sql_max_result_rows:
         warnings.append(f"Result capped at maximum {settings.sql_max_result_rows} rows.")
 

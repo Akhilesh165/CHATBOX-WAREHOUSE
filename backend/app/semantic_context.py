@@ -301,6 +301,8 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
             "this month / last month / current quarter / year to date"
         ],
         "field_resolution_rule": "Do not assume the field from a number alone. The entity/metric context must determine whether the range applies to quantity (UnrestrictedQty), utilization (BinUtilizationPct), volume (Volume), date (FullyVestedOn/ChangedAt), or rank.",
+        "range_filter_validation_rule": "When the user specifies a numerical range such as 'between 50% and 80% utilization,' the chatbot must filter the final result using the same metric displayed in the response. For an inclusive 'between' request, use 50% <= utilization <= 80%. Every returned row must satisfy the requested range. The chatbot must never display rows outside the requested range, even if the backend returns them. Before presenting the response, validate every returned row against the requested lower and upper bounds. If any row falls outside the range, exclude it or correct the calculation before displaying the result.",
+        "displayed_metric_consistency": "The metric used for filtering must be the same metric shown to the user. If the table displays 'Utilization %,' then the range filter must operate on the calculated Utilization % value, not on bin capacity, occupied volume, a raw database field, or another percentage field.",
         "plan_schema": {
             "range_filters": [
                 {

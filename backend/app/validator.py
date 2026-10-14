@@ -302,5 +302,118 @@ def validate_query_result(question: str, query_plan: dict | None, sql: str, rows
         if len(rows) > 1 and ("Material" in cols or "BinNo" in cols or "Bin" in cols or "Batch" in cols) and "Total Inventory Quantity" not in cols:
             return False, "User requested: Aggregate KPI/count value. Returned: Multi-row row-level detail records table. Rejecting result to re-execute proper aggregation query."
 
+    # 5. RANGE / FILTER CONTEXT Validation (RANGE FILTER VALIDATION RULE & DISPLAYED-METRIC CONSISTENCY)
+    range_filters = (query_plan.get("range_filters") if query_plan else None)
+    if not range_filters and ("between" in q_lower or "%-" in q_lower or "% to" in q_lower or "% -" in q_lower):
+        pct_m = re.search(r"(?:between|from)\s*(\d+(?:\.\d+)?)\s*%\s*(?:and|to|–|-)\s*(\d+(?:\.\d+)?)\s*%", q_lower)
+        if not pct_m:
+            pct_m = re.search(r"\b(\d+(?:\.\d+)?)\s*%\s*(?:–|-|to)\s*(\d+(?:\.\d+)?)\s*%", q_lower)
+        if pct_m:
+            range_filters = [{
+                "field": "BinUtilizationPct",
+                "operator": "BETWEEN",
+                "lower": float(pct_m.group(1)),
+                "upper": float(pct_m.group(2)),
+                "inclusive": True
+            }]
+
+    if range_filters and rows:
+        rf = range_filters[0]
+        field = rf.get("field", "")
+        # DISPLAYED-METRIC CONSISTENCY:
+        # If the query asks for utilization range, the table must display calculated Utilization %,
+        # not on bin capacity, occupied volume, raw database field, or uncalculated percentage.
+        if field == "BinUtilizationPct" or "utiliz" in q_lower or "occupan" in q_lower:
+            has_util_display = any(c in cols for c in ["Utilization %", "UtilizationPct", "Bin Utilization %", "BinOccupancyPct"])
+            if not has_util_display:
+                return False, "DISPLAYED-METRIC CONSISTENCY VIOLATION: Query requested utilization range, but table does not display calculated 'Utilization %' column."
+        
+        # RANGE FILTER VALIDATION RULE:
+        # Check every returned row against requested bounds. If any row falls outside the range, report violation.
+        _, range_warns = validate_and_filter_range_rows(rows, range_filters)
+        if range_warns:
+            return False, f"RANGE FILTER VALIDATION VIOLATION: {range_warns[0]}"
+
     return True, "Passed semantic result validation."
+
+
+def validate_and_filter_range_rows(rows: list[dict], range_filters: list[dict]) -> tuple[list[dict], list[str]]:
+    """Enforces RANGE FILTER VALIDATION RULE and DISPLAYED-METRIC CONSISTENCY:
+    
+    1. Validates every returned row against requested lower and upper bounds.
+    2. Excludes any rows falling outside the requested range before presenting the result.
+    3. Guarantees that the metric used for filtering matches the metric displayed to the user.
+    """
+    if not rows or not range_filters:
+        return rows, []
+
+    warnings = []
+    filtered_rows = rows
+
+    for rf in range_filters:
+        field = rf.get("field", "")
+        op = rf.get("operator", "BETWEEN")
+        lower = rf.get("lower")
+        upper = rf.get("upper")
+        inclusive = rf.get("inclusive", True)
+
+        # Identify candidate column matching the filtered metric
+        candidate_cols = []
+        if field == "BinUtilizationPct" or "utiliz" in field.lower() or "occupan" in field.lower():
+            candidate_cols = [c for c in ["UtilizationPct", "Utilization %", "Bin Utilization %", "BinOccupancyPct", "BinUtilization"] if c in filtered_rows[0]]
+        elif field in ["UnrestrictedQty", "Quantity", "TotalQuantity"]:
+            candidate_cols = [c for c in ["Total Stock Qty", "UnrestrictedQty", "Quantity", "TotalQuantity", "Inventory Qty"] if c in filtered_rows[0]]
+        elif field in ["Volume", "ConsumedMaterialVolume", "OccupiedBinVolume"]:
+            candidate_cols = [c for c in ["Volume", "Total Material Volume", "Occupied Volume", "ConsumedMaterialVolume"] if c in filtered_rows[0]]
+        elif field in ["FullyVestedOn", "ChangedAt"]:
+            candidate_cols = [c for c in ["Fully Vested On", "FullyVestedOn", "ChangedAt"] if c in filtered_rows[0]]
+
+        if not candidate_cols:
+            for c in filtered_rows[0].keys():
+                if field.lower() in c.lower().replace(" ", "").replace("_", ""):
+                    candidate_cols.append(c)
+
+        if not candidate_cols:
+            continue
+
+        metric_col = candidate_cols[0]
+        valid_rows = []
+        excluded_count = 0
+
+        for r in filtered_rows:
+            raw_val = r.get(metric_col)
+            if raw_val is None:
+                continue
+
+            try:
+                if isinstance(raw_val, (int, float)):
+                    num_val = float(raw_val)
+                else:
+                    clean_str = re.sub(r"[^\d.-]", "", str(raw_val))
+                    num_val = float(clean_str) if clean_str else None
+            except Exception:
+                num_val = None
+
+            if num_val is None:
+                continue
+
+            satisfies = True
+            if op == "BETWEEN" and lower is not None and upper is not None:
+                satisfies = (lower <= num_val <= upper) if inclusive else (lower < num_val < upper)
+            elif op in ["GT", "GTE"] and lower is not None:
+                satisfies = (num_val >= lower) if inclusive else (num_val > lower)
+            elif op in ["LT", "LTE"] and upper is not None:
+                satisfies = (num_val <= upper) if inclusive else (num_val < upper)
+
+            if satisfies:
+                valid_rows.append(r)
+            else:
+                excluded_count += 1
+
+        if excluded_count > 0:
+            warnings.append(f"Excluded {excluded_count} row(s) falling outside the requested range [{lower}, {upper}] for metric '{metric_col}'.")
+
+        filtered_rows = valid_rows
+
+    return filtered_rows, warnings
 

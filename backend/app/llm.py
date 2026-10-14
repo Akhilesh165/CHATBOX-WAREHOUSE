@@ -1825,9 +1825,15 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volum
 
 
     # D. BIN CAPACITY & UTILIZATION THRESHOLD FILTERING
-    threshold_match = re.search(r"(?:more\s+than|greater\s+than|over|above|>|>=|at\s+least|exceeding|less\s+than|below|<|<=|under)\s*(\d{1,3})(?:\s*%)?", q_lower)
-    if not threshold_match:
-        threshold_match = re.search(r"(\d{1,3})\s*%\s*(?:full|utiliz|capacit|occup)", q_lower)
+    has_range_between = bool(
+        re.search(r"(?:between|from)\s*\d+.*?(?:and|to|–|-)\s*\d+", q_lower) or
+        re.search(r"\b\d+\s*%\s*(?:–|-|to)\s*\d+\s*%", q_lower)
+    )
+    threshold_match = None
+    if not has_range_between:
+        threshold_match = re.search(r"(?:more\s+than|greater\s+than|over|above|>|>=|at\s+least|exceeding|less\s+than|below|<|<=|under)\s*(\d{1,3})(?:\s*%)?", q_lower)
+        if not threshold_match:
+            threshold_match = re.search(r"(\d{1,3})\s*%\s*(?:full|utiliz|capacit|occup)", q_lower)
 
     if threshold_match and is_bin_metric and (is_util_metric or "%" in q_lower) and not is_mat_entity:
         thresh_val = float(threshold_match.group(1))
@@ -3953,8 +3959,11 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     # 0C_range_1. Range Query: Material Quantity Range (field: UnrestrictedQty)
     if "Total Stock Qty" in cols and "Occupied Bins" in cols and "Material" in cols and "Plant" in cols:
         rf_list = parse_range_filters(question)
-        rf_desc = "within the specified range"
         if rf_list:
+            from .validator import validate_and_filter_range_rows
+            valid_rows, _ = validate_and_filter_range_rows(rows, rf_list)
+            rows = valid_rows
+            count = len(rows)
             rf = rf_list[0]
             if rf["operator"] == "BETWEEN":
                 rf_desc = f"between {rf['lower']:,.0f} and {rf['upper']:,.0f} units"
@@ -3962,10 +3971,17 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
                 rf_desc = f"at least {rf['lower']:,.0f} units"
             elif rf["operator"] in ["LT", "LTE"]:
                 rf_desc = f"up to {rf['upper']:,.0f} units"
+            else:
+                rf_desc = "within the specified range"
+        else:
+            rf_desc = "within the specified range"
         plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
         plant_val = plant_match.group(1) if plant_match else None
         plant_str = f" in Plant {plant_val}" if plant_val else ""
-        single_stmt = f"Found **{count:,} materials** with inventory quantity **{rf_desc}**{plant_str}."
+        if count == 0:
+            single_stmt = f"No materials found with inventory quantity **{rf_desc}**{plant_str}."
+        else:
+            single_stmt = f"Found **{count:,} materials** with inventory quantity **{rf_desc}**{plant_str}."
         if is_single_statement_requested:
             return single_stmt
         lines = [
@@ -3975,16 +3991,30 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         ]
         return "\n".join(lines)
 
-    # 0C_range_2. Range Query: Bin Utilization Range (field: BinUtilizationPct BETWEEN)
-    if "Bin Capacity" in cols and "Utilization %" in cols and any(k in q_lower for k in ["between", "%-", "% -", "% to"]):
+    # 0C_range_2. Range Query: Bin Utilization Range (field: BinUtilizationPct)
+    if ("Utilization %" in cols or "UtilizationPct" in cols or "Bin Capacity" in cols) and any(k in q_lower for k in ["between", "%-", "% -", "% to", "to "]):
         rf_list = parse_range_filters(question)
-        if rf_list and rf_list[0].get("field") == "BinUtilizationPct" and rf_list[0].get("operator") == "BETWEEN":
+        if rf_list and rf_list[0].get("field") == "BinUtilizationPct":
             rf = rf_list[0]
-            rf_desc = f"between {rf['lower']}% and {rf['upper']}% utilization"
+            from .validator import validate_and_filter_range_rows
+            valid_rows, _ = validate_and_filter_range_rows(rows, rf_list)
+            rows = valid_rows
+            count = len(rows)
+            if rf["operator"] == "BETWEEN":
+                rf_desc = f"between {rf['lower']}% and {rf['upper']}% utilization"
+            elif rf["operator"] in ["GT", "GTE"]:
+                rf_desc = f"above {rf['lower']}% utilization"
+            elif rf["operator"] in ["LT", "LTE"]:
+                rf_desc = f"below {rf['upper']}% utilization"
+            else:
+                rf_desc = "in the requested utilization range"
             plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
             plant_val = plant_match.group(1) if plant_match else None
             plant_str = f" in Plant {plant_val}" if plant_val else ""
-            single_stmt = f"Found **{count:,} bins** operating with **{rf_desc}**{plant_str}."
+            if count == 0:
+                single_stmt = f"No bins found operating with **{rf_desc}**{plant_str}."
+            else:
+                single_stmt = f"Found **{count:,} bins** operating with **{rf_desc}**{plant_str}."
             if is_single_statement_requested:
                 return single_stmt
             lines = [
