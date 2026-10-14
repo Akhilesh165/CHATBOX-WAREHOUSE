@@ -161,17 +161,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
           {/* Theme Toggle in Sidebar */}
           <button
             onClick={onToggleTheme}
-            className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs text-slate-300 hover:bg-slate-800/70 hover:text-white transition"
+            className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs text-slate-300 hover:bg-slate-800/80 hover:text-white transition group"
           >
             <div className="flex items-center space-x-2.5">
               {isDarkMode ? (
-                <Sun className="w-4 h-4 text-amber-400" />
+                <Sun className="w-4 h-4 text-amber-400 group-hover:rotate-45 transition-transform duration-200" />
               ) : (
-                <Moon className="w-4 h-4 text-sky-400" />
+                <Moon className="w-4 h-4 text-sky-400 group-hover:-rotate-12 transition-transform duration-200" />
               )}
-              <span>{isDarkMode ? 'Light Contrast Mode' : 'Dark Contrast Mode'}</span>
+              <span>{isDarkMode ? 'Light Mode' : 'Dark Mode'}</span>
             </div>
-            <span className="text-[10px] bg-slate-800 dark:bg-slate-900 px-1.5 py-0.5 rounded text-slate-400">
+            <span className="text-[10px] font-semibold bg-slate-800 dark:bg-slate-900 border border-slate-700/60 dark:border-slate-800 px-2 py-0.5 rounded text-slate-300">
               {isDarkMode ? 'Dark' : 'Light'}
             </span>
           </button>

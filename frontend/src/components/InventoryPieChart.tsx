@@ -92,7 +92,7 @@ export const InventoryPieChart: React.FC<InventoryPieChartProps> = ({
             </Pie>
             <Tooltip
               contentStyle={{
-                backgroundColor: '#0f172a',
+                backgroundColor: '#090d16',
                 borderRadius: '10px',
                 border: '1px solid #334155',
                 color: '#fff',
@@ -101,7 +101,7 @@ export const InventoryPieChart: React.FC<InventoryPieChartProps> = ({
               }}
               formatter={(value: any) => [Number(value).toLocaleString(), valKey]}
             />
-            <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px', color: '#64748b' }} />
+            <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px', color: '#94a3b8' }} />
           </PieChart>
         </ResponsiveContainer>
       </div>

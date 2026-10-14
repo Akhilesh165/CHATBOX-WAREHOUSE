@@ -43,15 +43,40 @@ body {
   background: #475569;
 }
 
+/* Dark mode text selection */
+.dark ::selection {
+  background-color: #0284c7;
+  color: #ffffff;
+}
+
 /* Markdown prose styles for dark mode */
 .dark .prose {
   color: #cbd5e1;
 }
 .dark .prose strong {
   color: #f1f5f9;
+  font-weight: 600;
 }
 .dark .prose h1, .dark .prose h2, .dark .prose h3, .dark .prose h4 {
   color: #f8fafc;
+  font-weight: 700;
+}
+.dark .prose a {
+  color: #38bdf8;
+  text-decoration: none;
+}
+.dark .prose a:hover {
+  text-decoration: underline;
+}
+.dark .prose blockquote {
+  border-left-color: #0284c7;
+  color: #94a3b8;
+  background: rgba(15, 23, 42, 0.5);
+  padding: 0.5rem 0.85rem;
+  border-radius: 0.375rem;
+}
+.dark .prose ul, .dark .prose ol {
+  color: #cbd5e1;
 }
 .dark .prose code {
   color: #38bdf8;
@@ -60,9 +85,23 @@ body {
   padding: 0.15rem 0.35rem;
   border-radius: 0.375rem;
 }
+.dark .prose table {
+  border-color: #334155;
+}
+.dark .prose thead {
+  border-bottom-color: #334155;
+}
 .dark .prose th {
-  color: #e2e8f0;
+  color: #f1f5f9;
+  background-color: #1e293b;
+  padding: 0.5rem 0.75rem;
 }
 .dark .prose td {
   color: #cbd5e1;
+  border-bottom-color: #334155;
+  padding: 0.4rem 0.75rem;
 }
+.dark .prose tr:hover {
+  background-color: rgba(30, 41, 59, 0.4);
+}
+

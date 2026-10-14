@@ -134,10 +134,10 @@ export const InventoryBarChart: React.FC<InventoryBarChartProps> = ({
       <div className="h-72 w-full">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={chartData} margin={{ top: 12, right: 24, left: 10, bottom: 28 }}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#94a3b8" strokeOpacity={0.2} />
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#94a3b8" strokeOpacity={0.18} />
             <XAxis
               dataKey={effectiveXKey}
-              tick={{ fontSize: 11, fill: '#64748b' }}
+              tick={{ fontSize: 11, fill: '#94a3b8' }}
               interval={0}
               angle={-20}
               textAnchor="end"
@@ -147,7 +147,7 @@ export const InventoryBarChart: React.FC<InventoryBarChartProps> = ({
               }}
             />
             <YAxis
-              tick={{ fontSize: 11, fill: '#64748b' }}
+              tick={{ fontSize: 11, fill: '#94a3b8' }}
               domain={yDomain}
               tickFormatter={(v) => {
                 if (isPercentage) return `${Number(v).toFixed(0)}%`;
@@ -159,7 +159,7 @@ export const InventoryBarChart: React.FC<InventoryBarChartProps> = ({
             <Tooltip
               cursor={{ fill: 'currentColor', fillOpacity: 0.05 }}
               contentStyle={{
-                backgroundColor: '#0f172a',
+                backgroundColor: '#090d16',
                 borderRadius: '10px',
                 border: '1px solid #334155',
                 color: '#fff',
@@ -181,7 +181,7 @@ export const InventoryBarChart: React.FC<InventoryBarChartProps> = ({
               verticalAlign="top"
               height={36}
               iconType="circle"
-              wrapperStyle={{ fontSize: '11px', paddingBottom: '10px', color: '#64748b' }}
+              wrapperStyle={{ fontSize: '11px', paddingBottom: '10px', color: '#94a3b8' }}
               formatter={(val) => {
                 return String(val || effectiveYKey)
                   .replace(/BinUtilizationPct/gi, 'Bin Utilization (%)')

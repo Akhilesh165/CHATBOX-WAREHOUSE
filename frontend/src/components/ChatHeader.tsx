@@ -54,21 +54,22 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
 
       {/* Right: Quick actions */}
       <div className="flex items-center space-x-1.5">
-        {/* Dark / Light Contrast Mode Toggle */}
+        {/* Dark / Light Theme Toggle */}
         <button
           onClick={onToggleTheme}
-          className="flex items-center space-x-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700 transition"
-          title={isDarkMode ? 'Switch to Light Contrast Mode' : 'Switch to Dark Contrast Mode'}
+          className="flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700/80 hover:bg-slate-200/80 dark:hover:bg-slate-750 transition-all shadow-2xs group"
+          title={isDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+          aria-label={isDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
         >
           {isDarkMode ? (
             <>
-              <Sun className="w-3.5 h-3.5 text-amber-400" />
-              <span className="hidden sm:inline">Light Mode</span>
+              <Sun className="w-4 h-4 text-amber-400 group-hover:rotate-45 transition-transform duration-200" />
+              <span className="hidden sm:inline font-semibold">Light</span>
             </>
           ) : (
             <>
-              <Moon className="w-3.5 h-3.5 text-sky-600" />
-              <span className="hidden sm:inline">Dark Mode</span>
+              <Moon className="w-4 h-4 text-sky-600 dark:text-sky-400 group-hover:-rotate-12 transition-transform duration-200" />
+              <span className="hidden sm:inline font-semibold">Dark</span>
             </>
           )}
         </button>

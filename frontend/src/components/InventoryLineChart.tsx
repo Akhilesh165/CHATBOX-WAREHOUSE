@@ -82,16 +82,16 @@ export const InventoryLineChart: React.FC<InventoryLineChartProps> = ({
       <div className="h-64 w-full">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chartData} margin={{ top: 10, right: 24, left: 10, bottom: 25 }}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#94a3b8" strokeOpacity={0.2} />
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#94a3b8" strokeOpacity={0.18} />
             <XAxis
               dataKey={effectiveXKey}
-              tick={{ fontSize: 11, fill: '#64748b' }}
+              tick={{ fontSize: 11, fill: '#94a3b8' }}
               interval="preserveStartEnd"
               angle={-20}
               textAnchor="end"
             />
             <YAxis
-              tick={{ fontSize: 11, fill: '#64748b' }}
+              tick={{ fontSize: 11, fill: '#94a3b8' }}
               tickFormatter={(v) => {
                 if (isPercentage) return `${Number(v).toFixed(0)}%`;
                 if (v >= 1000000) return `${(v / 1000000).toFixed(1)}M`;
@@ -101,7 +101,7 @@ export const InventoryLineChart: React.FC<InventoryLineChartProps> = ({
             />
             <Tooltip
               contentStyle={{
-                backgroundColor: '#0f172a',
+                backgroundColor: '#090d16',
                 borderRadius: '10px',
                 border: '1px solid #334155',
                 color: '#fff',

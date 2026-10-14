@@ -13,28 +13,33 @@ import { SchemaModal } from './SchemaModal';
 
 export const ChatWindow: React.FC = () => {
   // Theme state: dark / light contrast
-  const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
+    if (typeof document !== 'undefined') {
+      return document.documentElement.classList.contains('dark');
+    }
+    return false;
+  });
 
-  // Initialize theme from localStorage or system preference
+  // Initialize theme from DOM class / localStorage / system preference
   useEffect(() => {
     try {
-      const savedTheme = localStorage.getItem('wms_theme');
-      if (savedTheme) {
-        const isDark = savedTheme === 'dark';
-        setIsDarkMode(isDark);
-        if (isDark) {
-          document.documentElement.classList.add('dark');
-        } else {
-          document.documentElement.classList.remove('dark');
+      const isDarkActive = document.documentElement.classList.contains('dark');
+      setIsDarkMode(isDarkActive);
+
+      const mediaQuery = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+      const handleSystemChange = (e: MediaQueryListEvent) => {
+        if (!localStorage.getItem('wms_theme')) {
+          setIsDarkMode(e.matches);
+          if (e.matches) {
+            document.documentElement.classList.add('dark');
+          } else {
+            document.documentElement.classList.remove('dark');
+          }
         }
-      } else {
-        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-        setIsDarkMode(prefersDark);
-        if (prefersDark) {
-          document.documentElement.classList.add('dark');
-        } else {
-          document.documentElement.classList.remove('dark');
-        }
+      };
+      if (mediaQuery && mediaQuery.addEventListener) {
+        mediaQuery.addEventListener('change', handleSystemChange);
+        return () => mediaQuery.removeEventListener('change', handleSystemChange);
       }
     } catch (e) {
       console.warn('Unable to access localStorage for theme', e);
