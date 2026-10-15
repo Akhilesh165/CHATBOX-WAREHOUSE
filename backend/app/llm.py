@@ -43,6 +43,22 @@ def clean_llm_json(raw_text: str) -> dict[str, Any]:
     
     return json.loads(text)
 
+def extract_plants(q_lower: str) -> list[str]:
+    """Return ALL plant IDs named in the question, in order, without duplicates.
+    Handles: 'plant 7228 and 1268', 'plants 1258, 1266 and 7228', 'plant 1258 or plant 7228', 'both 7228 and 1268'."""
+    m = re.search(
+        r"(?:plants?|facilities|sites)\s*[:#-]?\s*(\d{4,5}(?:\s*(?:,|and|&|or|/)\s*(?:plants?\s*)?\d{4,5})*)",
+        q_lower,
+    )
+    if not m:
+        m = re.search(r"\bboth\s+(\d{4,5})\s*(?:and|&)\s*(\d{4,5})\b", q_lower)
+        if m:
+            ids = [m.group(1), m.group(2)]
+            return [p for p in dict.fromkeys(ids) if p not in ("2024", "2025", "2026")]
+        return []
+    ids = re.findall(r"\d{4,5}", m.group(1))
+    return [p for p in dict.fromkeys(ids) if p not in ("2024", "2025", "2026")]
+
 def parse_range_filters(q_lower: str, context_metric: str = "quantity") -> list[dict]:
     """Extracts numeric, percentage, date, and ordinal range filters without exact wording.
     
@@ -2341,60 +2357,77 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volum
 
     if threshold_match and is_bin_metric and (is_util_metric or "%" in q_lower) and not is_mat_entity:
         thresh_val = float(threshold_match.group(1))
-        # Operator fidelity according to Policy:
-        # 'above 80%' -> > 80, 'at least 80%' / '>= 80%' -> >= 80
-        # 'below 25%' -> < 25, '<= 25%' -> <= 25
-        if any(k in q_lower for k in ["less than", "below", "under", "<", "<=", "at most", "or below", "or less"]):
-            op = "<="
-            op_symbol = "≤"
-            op_text = "below or equal to"
-            is_less = True
+        inclusive = any(k in q_lower for k in ["at least", ">=", "or more", "or above", "minimum"])
+        inclusive_low = any(k in q_lower for k in ["at most", "<=", "or below", "or less", "maximum"])
+        is_less = any(k in q_lower for k in ["less than", "below", "under", "<", "at most", "or below", "or less"])
+        if is_less:
+            op = "<=" if inclusive_low else "<"
         else:
-            op = ">="
-            op_symbol = "≥"
-            op_text = "above or equal to"
-            is_less = False
+            op = ">=" if inclusive else ">"
+        op_symbol = {"<": "<", "<=": "≤", ">": ">", ">=": "≥"}[op]
 
-        plant_filter = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
+        plants = extract_plants(q_lower) or ([plant_cand] if plant_cand else [])
+        if len(plants) == 1:
+            plant_filter = f" AND b.Plant = '{plants[0]}'"
+        elif len(plants) > 1:
+            plant_filter = " AND b.Plant IN (" + ", ".join(f"'{p}'" for p in plants) + ")"
+        else:
+            plant_filter = ""
+        plant_label = ("Plants " + " and ".join(plants)) if len(plants) > 1 else (f"Plant {plants[0]}" if plants else "all plants")
         intent_name = "low_utilization_bins" if is_less else "high_utilization_bins"
         
         # If user asks for count ("How many bins are above 90%?"):
         is_count_request = any(c in q_lower for c in ["how many", "count", "number of", "total count"])
         if is_count_request:
-            sql_thresh_count = f"""SELECT COUNT(*) AS [Threshold Bins Count]
+            sql_thresh_count = f"""SELECT Plant, COUNT(*) AS [Threshold Bins Count]
 FROM (
-    SELECT b.BinLocation
+    SELECT b.Plant, b.BinLocation
     FROM dbo.ZWMS_BIN_MASTER b
     JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
     LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
     WHERE b.Volume > 0{plant_filter}
-    GROUP BY b.BinLocation, b.Volume
+    GROUP BY b.Plant, b.BinLocation, b.Volume
     HAVING ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1) {op} {thresh_val}
-) sub"""
+) sub
+GROUP BY Plant"""
             return {
                 "sql": sql_thresh_count,
                 "chart_type": "none",
-                "chart_title": f"Count of Bins with Utilization % {op_symbol} {thresh_val}%",
+                "chart_title": f"Count of Bins with Utilization % {op_symbol} {thresh_val}% ({plant_label})",
                 "chart_x": None,
                 "chart_y": None,
                 "intent": f"{intent_name}_count",
                 "metric": "bin_count",
-                "filters": {"Utilization %": f"{op_symbol} {thresh_val}%"},
+                "filters": {"Utilization %": f"{op_symbol} {thresh_val}%", "plants": plants},
                 "time_range": "current",
                 "output_type": "text",
                 "conversation_state": state
             }
 
-        # Otherwise compact table for lists
+        util_expr = "SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0)"
+        list_sql = f"""SELECT
+    b.BinLocation AS [Bin],
+    b.Plant AS [Plant],
+    CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Bin Capacity],
+    ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 2) AS [Occupied Volume],
+    CONCAT(ROUND({util_expr}, 1), '%') AS [Utilization %]
+FROM dbo.ZWMS_BIN_MASTER b
+JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+WHERE b.Volume > 0{plant_filter}
+GROUP BY b.BinLocation, b.Plant, b.Volume, b.VolumeUnit
+HAVING ROUND({util_expr}, 1) {op} {thresh_val}
+ORDER BY {util_expr} {'ASC' if is_less else 'DESC'}"""
+
         return {
-            "sql": f"SELECT TOP 50 b.BinLocation AS Bin, CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Bin Capacity], CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %] FROM dbo.ZWMS_BIN_MASTER b JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode WHERE b.Volume > 0{plant_filter} GROUP BY b.BinLocation, b.Volume, b.VolumeUnit HAVING ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1) {op} {thresh_val} ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) {'ASC' if is_less else 'DESC'}",
+            "sql": list_sql,
             "chart_type": "none",
-            "chart_title": f"Bins with Utilization % {op_symbol} {thresh_val}%",
+            "chart_title": f"Bins with Utilization % {op_symbol} {thresh_val}% ({plant_label})",
             "chart_x": None,
             "chart_y": None,
             "intent": intent_name,
             "metric": "bin_fullness",
-            "filters": {"Utilization %": f"{op_symbol} {thresh_val}%"},
+            "filters": {"Utilization %": f"{op_symbol} {thresh_val}%", "plants": plants},
             "time_range": "current",
             "output_type": "table",
             "conversation_state": state
@@ -5342,15 +5375,40 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
 
     # 1B. Threshold Bins Count (e.g. "How many bins are above 90% utilization?")
     if "Threshold Bins Count" in cols:
-        count_val = rows[0].get("Threshold Bins Count", 0)
+        total_count = sum(r.get("Threshold Bins Count", 0) for r in rows)
         thresh_m = re.search(r"(\d{1,3})\s*%", q_lower)
-        th_val = thresh_m.group(1) if thresh_m else "90"
-        is_l = any(k in q_lower for k in ["less than", "below", "under", "<"])
-        op_lbl = "below" if is_l else "above"
-        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
-        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026", th_val]) else None
-        plant_suffix = f" in Plant {plant_val}" if plant_val else ""
-        return f"There are **{count_val:,} bins** {op_lbl} {th_val}% utilization{plant_suffix}."
+        th_val = thresh_m.group(1) if thresh_m else "80"
+        
+        inclusive = any(k in q_lower for k in ["at least", ">=", "or more", "or above", "minimum"])
+        inclusive_low = any(k in q_lower for k in ["at most", "<=", "or below", "or less", "maximum"])
+        is_less = any(k in q_lower for k in ["less than", "below", "under", "<", "at most", "or below", "or less"])
+        if is_less:
+            op_symbol = "≤" if inclusive_low else "<"
+            op_lbl = "at most" if inclusive_low else "below"
+        else:
+            op_symbol = "≥" if inclusive else ">"
+            op_lbl = "at least" if inclusive else "above"
+
+        plants = extract_plants(q_lower)
+        if not plants:
+            plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
+            if plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026", th_val]:
+                plants = [plant_match.group(1)]
+
+        plant_label = ("Plants " + " and ".join(plants)) if len(plants) > 1 else (f"Plant {plants[0]}" if plants else "all plants")
+        
+        split_dict = {str(r.get("Plant")): r.get("Threshold Bins Count", 0) for r in rows if r.get("Plant")}
+        if plants and len(split_dict) > 1:
+            split_parts = [f"{p}: {split_dict[p]:,}" for p in plants if p in split_dict]
+        elif len(split_dict) > 1:
+            split_parts = [f"{p}: {cnt:,}" for p, cnt in sorted(split_dict.items())]
+        else:
+            split_parts = []
+        split_str = f" ({' · '.join(split_parts)})" if split_parts else ""
+
+        plant_suffix = f" across {plant_label}" if plant_label == "all plants" else f" in {plant_label}"
+        bin_lbl = "bin" if total_count == 1 else "bins"
+        return f"There are **{total_count:,} {bin_lbl}** with utilization {op_symbol} {th_val}%{plant_suffix}{split_str}."
 
     # 2. Empty Bins List (Table Output)
     if ("Storage Location" in cols or "StorageLocation" in cols) and ("Status" in cols or "Inventory Qty" in cols) and ("Bin" in cols or "BinLocation" in cols) and any(k in q_lower for k in ["empty", "putaway", "put-away", "vacant", "unoccupied", "free"]):
@@ -5478,27 +5536,103 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
 
     # 3. Specific Bins Fullness / Utilization Threshold
     if "Bin Capacity" in cols and ("Utilization" in cols or "Utilization %" in cols):
+        inclusive = any(k in q_lower for k in ["at least", ">=", "or more", "or above", "minimum"])
+        inclusive_low = any(k in q_lower for k in ["at most", "<=", "or below", "or less", "maximum"])
+        is_less = any(k in q_lower for k in ["less than", "below", "under", "<", "at most", "or below", "or less"])
+        if is_less:
+            op_symbol = "≤" if inclusive_low else "<"
+            op_desc = "at most" if inclusive_low else "below"
+        else:
+            op_symbol = "≥" if inclusive else ">"
+            op_desc = "at least" if inclusive else "above"
+
         threshold_match = re.search(r"(?:more\s+than|greater\s+than|over|above|>|>=|at\s+least|exceeding|less\s+than|below|<|<=|under)\s*(\d{1,3})(?:\s*%)?", q_lower)
         if not threshold_match:
             threshold_match = re.search(r"(\d{1,3})\s*%", q_lower)
-        thresh_str = threshold_match.group(1) if threshold_match else "90"
-        is_less = any(k in q_lower for k in ["less than", "below", "under", "<"])
-        op_desc = "less than" if is_less else "more than"
-        op_symbol = "<" if is_less else ">"
-        
-        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
-        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026", thresh_str]) else None
-        plant_str = f" in **Plant {plant_val}**" if plant_val else ""
-        
-        single_stmt = f"Found **{count} bins** currently operating at **{op_desc} {thresh_str}% utilization** (Filter: `Utilization % {op_symbol} {thresh_str}`){plant_str}."
+        thresh_str = threshold_match.group(1) if threshold_match else "80"
+
+        plants = extract_plants(q_lower)
+        if not plants:
+            plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
+            if plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026", thresh_str]:
+                plants = [plant_match.group(1)]
+
+        plant_label = ("Plants " + " and ".join(plants)) if len(plants) > 1 else (f"Plant {plants[0]}" if plants else "all plants")
+        plant_suffix = f" across {plant_label}" if plant_label == "all plants" else f" in {plant_label}"
+
+        total_count = len(rows)
+        plant_counts = {}
+        for r in rows:
+            p = str(r.get("Plant", ""))
+            if p:
+                plant_counts[p] = plant_counts.get(p, 0) + 1
+
+        is_capped = len(rows) >= settings.sql_max_result_rows
+        if is_capped:
+            try:
+                from .db import execute_readonly
+                plant_filter = ""
+                if len(plants) == 1:
+                    plant_filter = f" AND b.Plant = '{plants[0]}'"
+                elif len(plants) > 1:
+                    plant_filter = " AND b.Plant IN (" + ", ".join(f"'{p}'" for p in plants) + ")"
+                op_sql = "<=" if inclusive_low else "<" if is_less else ">=" if inclusive else ">"
+                cnt_sql = f"""SELECT Plant, COUNT(*) AS [Threshold Bins Count]
+FROM (
+    SELECT b.Plant, b.BinLocation
+    FROM dbo.ZWMS_BIN_MASTER b
+    JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+    LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+    WHERE b.Volume > 0{plant_filter}
+    GROUP BY b.Plant, b.BinLocation, b.Volume
+    HAVING ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1) {op_sql} {thresh_str}
+) sub
+GROUP BY Plant"""
+                cnt_rows, _ = execute_readonly(cnt_sql)
+                if cnt_rows:
+                    total_count = sum(cr.get("Threshold Bins Count", 0) for cr in cnt_rows)
+                    plant_counts = {str(cr.get("Plant")): cr.get("Threshold Bins Count", 0) for cr in cnt_rows if cr.get("Plant")}
+            except Exception:
+                pass
+
+        if plants and len(plant_counts) > 1:
+            split_parts = [f"{p}: {plant_counts[p]:,}" for p in plants if p in plant_counts]
+        elif len(plant_counts) > 1:
+            split_parts = [f"{p}: {cnt:,}" for p, cnt in sorted(plant_counts.items())]
+        else:
+            split_parts = []
+        split_str = f" ({' · '.join(split_parts)})" if split_parts else ""
+
+        # Over-capacity bins check (> 100%)
+        over_cap_count = 0
+        for r in rows:
+            u = r.get("Utilization %", r.get("Utilization", 0))
+            if isinstance(u, str):
+                try:
+                    u_val = float(u.replace("%", "").strip())
+                except ValueError:
+                    u_val = 0.0
+            else:
+                u_val = float(u or 0.0)
+            if u_val > 100.0:
+                over_cap_count += 1
+
+        cap_note = f" Showing the top {len(rows):,} by utilization." if is_capped else ""
+        bin_lbl = "bin" if total_count == 1 else "bins"
+        single_stmt = f"Found **{total_count:,} {bin_lbl}** with utilization {op_symbol} {thresh_str}%{plant_suffix}{split_str}.{cap_note}"
+
         if is_single_statement_requested:
+            if over_cap_count > 0:
+                single_stmt += f" ({over_cap_count:,} of these bins are above 100% of capacity)."
             return single_stmt
-            
+
         lines = [
-            f"### 📦 Bins Operating at {op_desc.capitalize()} {thresh_str}% Capacity\n",
+            f"### 📦 Bins with utilization {op_symbol} {thresh_str}%{plant_suffix}\n",
             single_stmt,
-            f"\n💡 *The exact **Bin Capacity** and **Utilization %** metrics for each bin are loaded in the **searchable, paginated Data Table** below (with real-time search, sorting, and CSV export):*"
         ]
+        if over_cap_count > 0:
+            lines.append(f"\n⚠️ **Note:** **{over_cap_count:,}** of these bins are above 100% of capacity (stock volume exceeds bin capacity).")
+        lines.append(f"\n💡 *The exact **Bin Capacity**, **Occupied Volume**, and **Utilization %** metrics for each bin are loaded in the **searchable, paginated Data Table** below (with real-time search, sorting, and CSV export):*")
         return "\n".join(lines)
 
     # 4. Average Inventory per Occupied Bin (Single KPI Card & Operational Explanation)
