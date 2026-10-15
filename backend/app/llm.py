@@ -2160,7 +2160,7 @@ ORDER BY b.BinLocation ASC"""
             top_kw = f"TOP {limit_rows} "
 
             sql_bin_avail = f"""SELECT {top_kw}
-    ROW_NUMBER() OVER (ORDER BY ROUND(b.Volume - COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) {order_dir}) AS [Rank],
+    RANK() OVER (ORDER BY ROUND(b.Volume - COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) {order_dir}) AS [Rank],
     b.BinLocation AS [Bin],
     b.Plant AS [Plant],
     ROUND(b.Volume - COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Available Capacity (FT3)],
@@ -2251,7 +2251,7 @@ FROM BottomBins"""
             limit_rows = 1 if is_single_statement_requested else n_val
             top_kw = f"TOP {limit_rows} " if is_single_statement_requested else f"TOP {n_val} "
             sql_bottom = f"""SELECT {top_kw}
-    ROW_NUMBER() OVER (ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) ASC) AS [Rank],
+    RANK() OVER (ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) ASC) AS [Rank],
     b.BinLocation AS [Bin],
     b.Plant AS [Plant],
     ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 2) AS [Occupied Volume],
@@ -2291,7 +2291,7 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volum
             limit_rows = 1 if is_single_statement_requested else n_val
             top_kw = f"TOP {limit_rows} " if is_single_statement_requested else f"TOP {n_val} "
             sql_top = f"""SELECT {top_kw}
-    ROW_NUMBER() OVER (ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) DESC) AS [Rank],
+    RANK() OVER (ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) DESC) AS [Rank],
     b.BinLocation AS [Bin],
     b.Plant AS [Plant],
     ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 2) AS [Occupied Volume],
@@ -2952,7 +2952,7 @@ ORDER BY [Total Stock Qty] DESC"""
     sub.[Total Bins]
 FROM (
     SELECT 
-        ROW_NUMBER() OVER (ORDER BY ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) DESC) AS [Rank],
+        RANK() OVER (ORDER BY ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) DESC) AS [Rank],
         b.Plant AS [Plant],
         ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS [Total Occupied Volume (FT3)],
         COUNT(DISTINCT i.BinNo) AS [Occupied Bins],
@@ -2992,7 +2992,7 @@ WHERE sub.Plant = '{target_plant_lookup}'"""
     )
     if is_rank_explanation:
         sql_rank_exp = """SELECT 
-    ROW_NUMBER() OVER (ORDER BY ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) DESC) AS [Rank],
+    RANK() OVER (ORDER BY ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) DESC) AS [Rank],
     b.Plant AS [Plant],
     ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS [Total Occupied Volume (FT3)],
     ROUND(SUM(b.Volume), 2) AS [Total Capacity (FT3)],
@@ -3031,7 +3031,7 @@ ORDER BY [Total Occupied Volume (FT3)] DESC"""
         order_dir = "ASC" if is_least else "DESC"
         in_clause = ", ".join(f"'{p}'" for p in subset_plants)
         sql_subset_rank = f"""SELECT 
-    ROW_NUMBER() OVER (ORDER BY ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) {order_dir}) AS [Rank],
+    RANK() OVER (ORDER BY ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) {order_dir}) AS [Rank],
     b.Plant AS [Plant],
     ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS [Total Occupied Volume (FT3)],
     COUNT(DISTINCT i.BinNo) AS [Occupied Bins],
@@ -3098,7 +3098,7 @@ ORDER BY [Total Occupied Volume (FT3)] {order_dir}"""
 
         if is_occ_vol:
             sql_plant_vol = f"""SELECT {top_kw}
-    ROW_NUMBER() OVER (ORDER BY ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) {order_dir}) AS [Rank],
+    RANK() OVER (ORDER BY ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) {order_dir}) AS [Rank],
     b.Plant AS [Plant],
     ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS [Total Occupied Volume (FT3)],
     COUNT(DISTINCT i.BinNo) AS [Occupied Bins],
@@ -3140,7 +3140,7 @@ ORDER BY [Total Occupied Volume (FT3)] {order_dir}"""
         )
         if is_avail_cap:
             sql_plant_avail = f"""SELECT {top_kw}
-    ROW_NUMBER() OVER (ORDER BY ROUND(SUM(b.Volume) - SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) {order_dir}) AS [Rank],
+    RANK() OVER (ORDER BY ROUND(SUM(b.Volume) - SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) {order_dir}) AS [Rank],
     b.Plant AS [Plant],
     ROUND(SUM(b.Volume) - SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS [Available Capacity (FT3)],
     ROUND(SUM(b.Volume), 2) AS [Total Capacity (FT3)],
@@ -3175,7 +3175,7 @@ ORDER BY [Available Capacity (FT3)] {order_dir}"""
         is_bin_cap = any(k in q_lower for k in ["bin capacity", "storage capacity", "total capacity", "total volume capacity", "largest capacity", "smallest capacity"])
         if is_bin_cap:
             sql_plant_cap = f"""SELECT {top_kw}
-    ROW_NUMBER() OVER (ORDER BY ROUND(SUM(b.Volume), 2) {order_dir}) AS [Rank],
+    RANK() OVER (ORDER BY ROUND(SUM(b.Volume), 2) {order_dir}) AS [Rank],
     b.Plant AS [Plant],
     ROUND(SUM(b.Volume), 2) AS [Total Capacity (FT3)],
     COUNT(DISTINCT b.BinLocation) AS [Total Bins]
@@ -3211,7 +3211,7 @@ ORDER BY [Total Capacity (FT3)] {order_dir}"""
         )
         if is_bins_cnt:
             sql_plant_bins = f"""SELECT {top_kw}
-    ROW_NUMBER() OVER (ORDER BY COUNT(DISTINCT b.BinLocation) {order_dir}) AS [Rank],
+    RANK() OVER (ORDER BY COUNT(DISTINCT b.BinLocation) {order_dir}) AS [Rank],
     b.Plant AS [Plant],
     COUNT(DISTINCT b.BinLocation) AS [Total Bins],
     COUNT(DISTINCT i.BinNo) AS [Occupied Bins]
@@ -3248,7 +3248,7 @@ ORDER BY [Total Bins] {order_dir}"""
         )
         if is_mats_cnt:
             sql_plant_mats = f"""SELECT {top_kw}
-    ROW_NUMBER() OVER (ORDER BY COUNT(DISTINCT i.Material) {order_dir}) AS [Rank],
+    RANK() OVER (ORDER BY COUNT(DISTINCT i.Material) {order_dir}) AS [Rank],
     i.Plant AS [Plant],
     COUNT(DISTINCT i.Material) AS [Unique Materials],
     SUM(i.UnrestrictedQty) AS [Total Stock Quantity]
@@ -3284,7 +3284,7 @@ ORDER BY [Unique Materials] {order_dir}"""
         )
         if is_inv_qty:
             sql_plant_inv = f"""SELECT {top_kw}
-    ROW_NUMBER() OVER (ORDER BY SUM(i.UnrestrictedQty) {order_dir}) AS [Rank],
+    RANK() OVER (ORDER BY SUM(i.UnrestrictedQty) {order_dir}) AS [Rank],
     i.Plant AS [Plant],
     SUM(i.UnrestrictedQty) AS [Total Inventory Quantity],
     COUNT(DISTINCT i.Material) AS [Unique Materials],
@@ -3781,7 +3781,7 @@ GROUP BY b.Plant"""
             top_clause = f"TOP {limit_n} " if limit_n == 1 else ""
 
             sql_extreme_util = f"""SELECT {top_clause}
-    ROW_NUMBER() OVER (ORDER BY ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) {order_dir}) AS [Rank],
+    RANK() OVER (ORDER BY ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) {order_dir}) AS [Rank],
     b.Plant AS [Plant],
     ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS [BinUtilizationPct],
     CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1), '%') AS [Bin Utilization %],
@@ -4457,6 +4457,18 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     cols = list(rows[0].keys())
     q_lower = question.lower()
     is_single_statement_requested = any(s in q_lower for s in ["single statement", "single line", "one line", "concise", "briefly", "in short", "just the percentage", "just the number", "only the number"])
+
+    # 0_INVALID_ENTITY. Invalid Plant / Bin / Entity Handling (Master Context Sections 37-41 & 57)
+    valid_plants = {"1258", "1266", "1268", "7228"}
+    plant_req_match = re.search(r"\b(?:plant|facility)\s*[:#-]?\s*(\d{4,5})\b", q_lower)
+    if plant_req_match:
+        target_plant = plant_req_match.group(1)
+        if target_plant not in valid_plants and target_plant not in ["2024", "2025", "2026"]:
+            return "No matching warehouse records were found for your query in the database."
+        if len(rows) == 1:
+            vals = [v for v in rows[0].values() if isinstance(v, (int, float))]
+            if vals and all(v == 0 for v in vals):
+                return "No matching warehouse records were found for your query in the database."
 
     # 0A_CLARIFICATION. Predefined threshold clarification rule
     if "clarification_needed" in cols:
@@ -5220,7 +5232,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         return "\n".join(lines)
 
     # 0C. Specific Bin Utilization & Details (Explicit Single Bin Scope)
-    if "Bin" in cols and ("Utilization %" in cols or "Bin Capacity" in cols or "PalletType" in cols or "VolumeUnit" in cols) and len(rows) == 1 and not any(k in q_lower for k in ["top", "bottom", "least", "most", "lowest", "highest", "ranking", "more than", "less than"]):
+    if "Bin" in cols and ("Utilization %" in cols or "Bin Capacity" in cols or "PalletType" in cols or "VolumeUnit" in cols) and len(rows) == 1 and not any(k in q_lower for k in ["top", "bottom", "least", "most", "lowest", "highest", "ranking", "more than", "less than", "above", "below", "over", "under", "list", "show", "find", "between", ">", "<", "greater", "exceed"]):
         bin_val = rows[0].get("Bin", "N/A")
         plant_val = rows[0].get("Plant", "")
         plant_str = f" in Plant {plant_val}" if plant_val else ""

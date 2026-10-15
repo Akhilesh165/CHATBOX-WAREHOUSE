@@ -36,7 +36,8 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
         "10. RESPONSE_FORMAT_RULES",
         "11. VISUALIZATION_RULES",
         "12. CONVERSATION_STATE_RULES",
-        "13. CAPACITY_RULES"
+        "13. CAPACITY_RULES",
+        "14. MASTER_CONTEXT_RULES"
     ],
 
     # =========================================================================
@@ -657,6 +658,38 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
             "detail_mode": "If user includes detail triggers, automatically activate detail mode with summary, formulas, metrics, breakdown, and chart.",
             "conversation_followup": "Preserve entity=Bin, metric=Available Capacity, adjust limit, adjust direction, add plant filter, resolve pronouns ('they', 'these', 'those')."
         }
+    },
+
+    # =========================================================================
+    # 14. MASTER CONTEXT RULES (Universal Operational & Analytical Contract)
+    # =========================================================================
+    "master_context_rules": {
+        "purpose": "Comprehensive operational rules governing Bin Utilization, Comparison, Ranking, Range Validation, Entity Scoping, Context Preservation, and Response Depth across all 61 Sections.",
+        "primary_objective": "USER QUESTION -> INTENT -> ENTITY -> METRIC -> FILTER -> CALCULATION -> VALIDATION -> OUTPUT FORMAT. Never depend on exact predefined question-answer mappings.",
+        "golden_rules": [
+            "1. Semantic Intent: Understand user meaning and intent; multiple wordings map to the same intent.",
+            "2. Bin Utilization Formula: (Occupied Volume / Total Bin Capacity) * 100. Always use actual project capacity and occupied volume fields. Never invent values.",
+            "3. Overall Warehouse Utilization: SUM(Occupied Volume) / NULLIF(SUM(Total Capacity), 0) * 100 across complete requested scope. Never calculate overall utilization by averaging individual bin percentages.",
+            "4. Bin-Level Scope: Specific bin queries (e.g. NRJP2124D2) must return information for requested bin only. Never replace bin-level results with plant or warehouse statistics.",
+            "5. Plant-Wise Scope: Apply plant filter strictly before calculating metric. Explicitly identify plant in response. Never describe plant results as warehouse-wide.",
+            "6. Range Filter Validation Rule: When user specifies a numerical range (e.g. 'between 50% and 80% utilization'), filter the final result using the same metric displayed. For inclusive 'between', use 50% <= utilization <= 80%. Every returned row must satisfy the requested range. Never display rows outside requested range. Validate every row before presenting.",
+            "7. Displayed-Metric Consistency: The metric used for filtering must be the same metric shown to user. If table displays 'Utilization %', range filter must operate on calculated Utilization %, not bin capacity, occupied volume, or raw fields.",
+            "8. Qualitative Thresholds: Use predefined PROJECT_CAPACITY_THRESHOLDS if available; otherwise ask for clarification rather than inventing arbitrary thresholds.",
+            "9. Compound Queries: For 'low capacity but high utilization', identify entity as Bin and apply BOTH conditions. Output at minimum Bin | Capacity | Utilization % (and Occupied Volume if relevant).",
+            "10. Entity Preservation Rule: If user asks 'Find bins…', final result must be at bin level. Do not replace with Plant Breakdown, Warehouse Summary, aggregate statistics, or unrelated charts.",
+            "11. Empty Bins Definition: Bins where UnrestrictedQty = 0 or BinNo IS NULL (Occupied Volume = 0).",
+            "12. Available Capacity: Total Capacity - Occupied Volume. For warehouse: SUM(Total Capacity) - SUM(Occupied Volume). Never confuse Total Capacity with Available Capacity or Occupied Volume.",
+            "13. Competition Ranking for Ties: When ranking bins or plants, use standard competition ranking RANK() OVER (...) so identical metric values receive the same rank.",
+            "14. Ranking Direction: 'top/highest/most/largest/best' -> DESC; 'bottom/lowest/least/smallest/worst' -> ASC. 'Reverse it' -> invert active direction.",
+            "15. Singular Winner/Loser Queries: 'Which plant has the highest...' -> Return strictly ONE concise winner statement, not a full ranking table.",
+            "16. Count vs List: 'How many' -> scalar count; 'List/Show' -> data table.",
+            "17. Single-Line Response Mode: Concise single executive statement for scalar metrics, counts, winner queries, or explicit single-line requests ('one line', 'single statement', 'just the number').",
+            "18. Detail Mode: Triggers ('explain', 'break it down', 'deep dive', 'detailed analysis') activate structured breakdown (summary, KPIs, storage location breakdown, table, optional chart). Detail is a semantic mode, not a button.",
+            "19. Chart Rule: No chart by default unless explicitly requested ('chart', 'graph', 'plot', 'visualize') or detail mode.",
+            "20. Invalid Entity Handling (Strict): If requested entity (Plant 99999, Bin ABC999999) does not exist, return strictly the standard response: 'No matching warehouse records were found for your query in the database.' Never invent data, substitute similar bins, or default to Plant 1258."
+        ],
+        "standard_not_found_response": "No matching warehouse records were found for your query in the database.",
+        "valid_plants": ["1258", "1266", "1268", "7228"]
     },
 
     "response_and_intent_rules": [

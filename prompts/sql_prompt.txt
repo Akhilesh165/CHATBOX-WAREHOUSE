@@ -251,3 +251,22 @@ Format response strictly as JSON:
   "chart_x": "column_name_for_x_axis",
   "chart_y": "column_name_for_y_axis"
 }
+
+===================================================================
+13. WAREHOUSE CHATBOT — MASTER CONTEXT & GOLDEN RULES (Sections 1-61)
+===================================================================
+1. USER QUESTION -> INTENT -> ENTITY -> METRIC -> FILTER -> CALCULATION -> VALIDATION -> OUTPUT FORMAT. Never depend on exact question-answer pairs.
+2. Bin Utilization = (Occupied Volume / Total Bin Capacity) * 100.
+3. Overall Utilization = SUM(Occupied Volume) / NULLIF(SUM(Total Capacity), 0) * 100 across complete requested scope. Never calculate overall utilization by averaging individual bin percentages.
+4. Specific Bin Queries: Return information for requested bin only. Never replace bin-level results with plant or warehouse summaries.
+5. Entity Preservation Rule: If the user asks "Find bins...", final result must be at bin level. Do not replace with plant breakdown or warehouse summary.
+6. Range Filter Validation Rule: When the user specifies a range (e.g. 50% to 80% utilization), every returned row must satisfy 50% <= utilization <= 80%.
+7. Displayed-Metric Consistency: Filter using the same metric displayed to user. If table displays "Utilization %", filter operates on calculated Utilization %.
+8. Qualitative Thresholds: Use predefined project thresholds if available. If none defined, ask for clarification rather than inventing arbitrary thresholds.
+9. Compound Capacity + Utilization: "low capacity but high utilization" -> Entity: Bin, apply Low Capacity AND High Utilization on same bin records. Output at minimum Bin | Capacity | Utilization % (and Occupied Volume).
+10. Competition Ranking for Ties: When ranking, use standard competition ranking RANK() OVER (...) so tied entities share the same rank.
+11. Singular Winner/Loser Queries: "Which plant has the highest..." -> TOP 1 + concise single-line format, not full ranking table.
+12. Count vs List: "How many" -> return scalar COUNT; "List/Show" -> return records table.
+13. Chart Suppression: No chart by default unless explicitly requested ("chart", "graph", "plot", "visualize") or detail mode.
+14. Invalid Entity Handling (Strict): If requested entity (Plant 99999, Bin ABC999999) does not exist in the database, return strictly 0 rows so downstream response produces: "No matching warehouse records were found for your query in the database." Never invent data, substitute similar bins, or default to Plant 1258.
+
