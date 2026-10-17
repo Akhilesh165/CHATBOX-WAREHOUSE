@@ -43,21 +43,54 @@ def clean_llm_json(raw_text: str) -> dict[str, Any]:
     
     return json.loads(text)
 
-def extract_plants(q_lower: str) -> list[str]:
-    """Return ALL plant IDs named in the question, in order, without duplicates.
-    Handles: 'plant 7228 and 1268', 'plants 1258, 1266 and 7228', 'plant 1258 or plant 7228', 'both 7228 and 1268'."""
-    m = re.search(
-        r"(?:plants?|facilities|sites)\s*[:#-]?\s*(\d{4,5}(?:\s*(?:,|and|&|or|/)\s*(?:plants?\s*)?\d{4,5})*)",
-        q_lower,
+def extract_explicit_plants(text: str) -> list[str]:
+    """Extract every plant explicitly requested, including chained forms like
+    'Plant 1258 and 1268', 'plants 1258, 1268 & 7228', and repeated 'Plant N'.
+    This is intentionally separate from generic number extraction so thresholds,
+    quantities, and years are not mistaken for plant IDs.
+    """
+    q = (text or "").lower()
+    found: list[str] = []
+
+    # Capture a plant ID plus any immediately chained plant IDs.
+    chain_re = re.compile(
+        r"\bplants?\b\s*(?:#|:|-)?\s*(\d{4,5})"
+        r"((?:\s*(?:,|and|&|or|/)\s*(?:plants?\s*)?\d{4,5})*)",
+        re.IGNORECASE,
     )
-    if not m:
-        m = re.search(r"\bboth\s+(\d{4,5})\s*(?:and|&)\s*(\d{4,5})\b", q_lower)
-        if m:
-            ids = [m.group(1), m.group(2)]
-            return [p for p in dict.fromkeys(ids) if p not in ("2024", "2025", "2026")]
-        return []
-    ids = re.findall(r"\d{4,5}", m.group(1))
-    return [p for p in dict.fromkeys(ids) if p not in ("2024", "2025", "2026")]
+    for m in chain_re.finditer(q):
+        found.append(m.group(1))
+        for n in re.findall(r"(?:,|and|&|or|/)\s*(?:plants?\s*)?(\d{4,5})", m.group(2), re.I):
+            found.append(n)
+
+    # Also catch repeated explicit forms: "Plant 1258 and Plant 1268".
+    for n in re.findall(r"\bplants?\s*(?:#|:|-)?\s*(\d{4,5})\b", q, re.I):
+        found.append(n)
+
+    # "both 7228 and 1268"
+    m_both = re.search(r"\bboth\s+(\d{4,5})\s*(?:and|&)\s*(\d{4,5})\b", q)
+    if m_both:
+        found.extend([m_both.group(1), m_both.group(2)])
+
+    # Exclude years that can appear in otherwise valid questions.
+    return list(dict.fromkeys(n for n in found if n not in {"2024", "2025", "2026"}))
+
+extract_plants = extract_explicit_plants
+
+def _plant_sql_clause(column: str, plants: list[str] | None, prefix: str = " AND ") -> str:
+    """Build a safe multi-value plant predicate for deterministic SQL."""
+    vals = list(dict.fromkeys(str(p) for p in (plants or []) if str(p).isdigit()))
+    if not vals:
+        return ""
+    if len(vals) == 1:
+        return f"{prefix}{column} = '{vals[0]}'"
+    return f"{prefix}{column} IN ({', '.join(repr(v) for v in vals)})"
+
+def _plant_label(plants: list[str] | None, prefix: str = "Plant ") -> str:
+    vals = list(dict.fromkeys(str(p) for p in (plants or [])))
+    if not vals:
+        return ""
+    return ", ".join(f"{prefix}{p}" for p in vals)
 
 def parse_range_filters(q_lower: str, context_metric: str = "quantity") -> list[dict]:
     """Extracts numeric, percentage, date, and ordinal range filters without exact wording.
@@ -2156,12 +2189,22 @@ ORDER BY b.BinLocation ASC"""
             n_match = re.search(r"\b(?:top|bottom|highest|lowest|first|last|least|most)?\s*(\d{1,3})\b", q_lower)
             n_val = int(n_match.group(1)) if (n_match and n_match.group(1) not in ["100", "2024", "2025", "2026"]) else 10
         
-        plant_filter = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
-        filters = {"ranking_limit": n_val}
-        if plant_cand:
-            filters["plant"] = plant_cand
-
-        plant_title_suffix = f" — Plant {plant_cand}" if plant_cand else ""
+        plant_cands = extract_explicit_plants(q_lower) or ([plant_cand] if plant_cand else [])
+        if len(plant_cands) == 1:
+            plant_filter = f" AND b.Plant = '{plant_cands[0]}'"
+            plant_title_suffix = f" — Plant {plant_cands[0]}"
+            rank_scope = {"Plant": plant_cands[0]}
+            filters = {"ranking_limit": n_val, "plant": plant_cands[0]}
+        elif len(plant_cands) > 1:
+            plant_filter = " AND b.Plant IN (" + ", ".join(f"'{p}'" for p in plant_cands) + ")"
+            plant_title_suffix = " — Plants " + " and ".join(plant_cands)
+            rank_scope = {"Plants": plant_cands}
+            filters = {"ranking_limit": n_val, "plants": plant_cands}
+        else:
+            plant_filter = ""
+            plant_title_suffix = ""
+            rank_scope = {}
+            filters = {"ranking_limit": n_val}
 
         # Bin Available Capacity Ranking: "Rank bins by available capacity", "Which bin has the most available capacity?"
         is_bin_avail_cap = (
@@ -2198,7 +2241,7 @@ ORDER BY [Available Capacity (FT3)] {order_dir}"""
                     "rank_metric": "AvailableCapacity",
                     "rank_entity": "Bin",
                     "limit": limit_rows,
-                    "rank_scope": {"Plant": plant_cand} if plant_cand else {}
+                    "rank_scope": rank_scope
                 },
                 "chart_type": "bar" if is_explicit_chart else "none",
                 "chart_title": f"{rank_label} Available Capacity Bins{plant_title_suffix}",
@@ -2249,7 +2292,7 @@ FROM BottomBins"""
                     "rank_metric": "BinUtilization",
                     "rank_entity": "Bin",
                     "limit": n_val,
-                    "rank_scope": {"Plant": plant_cand} if plant_cand else {}
+                    "rank_scope": rank_scope
                 },
                 "chart_type": "bar" if is_explicit_chart else "none",
                 "chart_title": f"Top {n_val} Most & Bottom {n_val} Least Utilized Bins{plant_title_suffix}",
@@ -2289,7 +2332,7 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volum
                     "rank_metric": "BinUtilization",
                     "rank_entity": "Bin",
                     "limit": n_val,
-                    "rank_scope": {"Plant": plant_cand} if plant_cand else {}
+                    "rank_scope": rank_scope
                 },
                 "chart_type": "bar" if is_explicit_chart else "none",
                 "chart_title": f"{n_val} Least Utilized Bins{plant_title_suffix}",
@@ -2329,7 +2372,7 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volum
                     "rank_metric": "BinUtilization",
                     "rank_entity": "Bin",
                     "limit": n_val,
-                    "rank_scope": {"Plant": plant_cand} if plant_cand else {}
+                    "rank_scope": rank_scope
                 },
                 "chart_type": "bar" if is_explicit_chart else "none",
                 "chart_title": f"Top {n_val} Most Utilized Bins{plant_title_suffix}",
@@ -2535,8 +2578,9 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
         if len(saved_plants) >= 2:
             all_plants_unique = saved_plants
 
+    range_filters_pre = parse_range_filters(resolved_q)
     is_ranking_in_q = any(k in q_lower for k in ["rank", "ranking", "rankings", "order by", "sort by"])
-    is_comparison_query = not is_ranking_in_q and (
+    is_comparison_query = not is_ranking_in_q and not range_filters_pre and (
         (
             len(all_plants_unique) >= 2 and
             any(k in q_lower for k in [
@@ -2590,13 +2634,14 @@ ORDER BY [Unique Materials Count] DESC"""
         elif any(k in q_lower for k in ["bin utilization", "utilization", "how full", "fill rate", "space utilization", "occupancy rate", "capacity utilization"]):
             sql_comp = f"""SELECT 
     b.Plant AS [Plant], 
-    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1), '%') AS [Bin Utilization %],
-    ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS [BinUtilizationPct],
-    ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS [Occupied Volume], 
+    CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(SUM(b.Volume), 0), 1), '%') AS [Bin Utilization %],
+    ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(SUM(b.Volume), 0), 2) AS [BinUtilizationPct],
+    ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Occupied Volume], 
     ROUND(SUM(b.Volume), 2) AS [Total Capacity],
-    ROUND(SUM(b.Volume) - SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS [Available Capacity]
+    ROUND(SUM(b.Volume) - COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Available Capacity]
 FROM dbo.ZWMS_BIN_MASTER b 
 LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant 
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
 WHERE b.Plant IN ({plants_in_str})
 GROUP BY b.Plant
 ORDER BY BinUtilizationPct DESC"""
@@ -2760,8 +2805,16 @@ ORDER BY b.Plant"""
         rf = range_filters[0]
         state["range_filters"] = range_filters
         field = rf.get("field", "UnrestrictedQty")
-        plant_filter_i = f" AND i.Plant = '{plant_cand}'" if plant_cand else ""
-        plant_filter_b = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
+        plants_range = extract_plants(q_lower) or ([plant_cand] if plant_cand else [])
+        if len(plants_range) == 1:
+            plant_filter_i = f" AND i.Plant = '{plants_range[0]}'"
+            plant_filter_b = f" AND b.Plant = '{plants_range[0]}'"
+        elif len(plants_range) > 1:
+            plant_filter_i = " AND i.Plant IN (" + ", ".join(f"'{p}'" for p in plants_range) + ")"
+            plant_filter_b = " AND b.Plant IN (" + ", ".join(f"'{p}'" for p in plants_range) + ")"
+        else:
+            plant_filter_i = ""
+            plant_filter_b = ""
 
         if field == "BinUtilizationPct":
             where_cond = ""
@@ -4445,6 +4498,57 @@ async def generate_sql(question: str, history: list[dict], retry_context: dict |
     det_intent = det_plan.get("intent", "")
     q_lower = question.lower()
     
+    # A fresh, unscoped total-inventory question is an all-warehouse aggregate.
+    # Do not let an LLM add a plant filter, group rows by plant, or return raw
+    # inventory records just because those fields appear in conversation history.
+    explicit_global_inventory = any(phrase in q_lower for phrase in (
+        "total warehouse inventory",
+        "total inventory for the whole warehouse",
+        "total inventory across the warehouse",
+        "overall warehouse inventory",
+        "total stock in the warehouse",
+        "total inventory quantity across the warehouse",
+    ))
+    explicit_plant_scope = bool(re.search(
+        r"\b(?:plant|facility)\s*[:#-]?\s*\d{4,5}\b|\b(?:by|per|for|in)\s+plants?\b",
+        q_lower,
+    ))
+    asks_for_breakdown = any(term in q_lower for term in (
+        "by plant", "per plant", "plant-wise", "breakdown", "grouped by",
+        "list", "show records", "inventory rows", "raw rows", "chart", "graph",
+    ))
+    if explicit_global_inventory and not explicit_plant_scope and not asks_for_breakdown:
+        det_plan = {
+            **det_plan,
+            "sql": (
+                "SELECT SUM(UnrestrictedQty) AS total_inventory, "
+                "SUM(UnrestrictedQty) AS [Total Unrestricted Quantity], "
+                "COUNT(DISTINCT Material) AS TotalUniqueMaterials, "
+                "COUNT(DISTINCT BinNo) AS TotalActiveBins, "
+                "COUNT(DISTINCT Plant) AS PlantCount "
+                "FROM dbo.ZWMS_INVENTORY"
+            ),
+            "query_plan": {
+                "intent": "KPI",
+                "entity": "inventory",
+                "metric": "total_inventory_quantity",
+                "aggregation": "SUM",
+                "field": "UnrestrictedQty",
+                "scope": "ALL_WAREHOUSE",
+                "plant": None,
+                "response_format": "SINGLE_LINE",
+            },
+            "intent": "total_inventory_quantity",
+            "metric": "total_inventory_quantity",
+            "filters": {},
+            "output_type": "text",
+            "chart_type": "none",
+            "chart_title": "Total Warehouse Inventory",
+            "chart_x": None,
+            "chart_y": None,
+        }
+        return det_plan
+
     # If the deterministic semantic layer identified a concrete domain intent or user asked for summary, use it directly
     is_explicit_summary = any(k in q_lower for k in ["summary", "overview", "dashboard", "overall", "network overview", "status"])
     if det_intent != "inventory_summary" or is_explicit_summary:
@@ -4493,14 +4597,20 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
 
     # 0_INVALID_ENTITY. Invalid Plant / Bin / Entity Handling (Master Context Sections 37-41 & 57)
     valid_plants = {"1258", "1266", "1268", "7228"}
-    plant_req_match = re.search(r"\b(?:plant|facility)\s*[:#-]?\s*(\d{4,5})\b", q_lower)
-    if plant_req_match:
-        target_plant = plant_req_match.group(1)
-        if target_plant not in valid_plants and target_plant not in ["2024", "2025", "2026"]:
-            return "No matching warehouse records were found for your query in the database."
-        if len(rows) == 1:
-            vals = [v for v in rows[0].values() if isinstance(v, (int, float))]
-            if vals and all(v == 0 for v in vals):
+    req_plants = extract_explicit_plants(q_lower)
+    if req_plants:
+        for p in req_plants:
+            if p not in valid_plants and p not in ["2024", "2025", "2026"]:
+                return "No matching warehouse records were found for your query in the database."
+        if rows and "Plant" in cols:
+            returned_plants = {str(r.get("Plant")).strip() for r in rows if r.get("Plant") is not None}
+            if not set(req_plants).issubset(returned_plants):
+                return "No matching warehouse records were found for your query in the database."
+    else:
+        plant_req_match = re.search(r"\b(?:plant|facility)\s*[:#-]?\s*(\d{4,5})\b", q_lower)
+        if plant_req_match:
+            target_plant = plant_req_match.group(1)
+            if target_plant not in valid_plants and target_plant not in ["2024", "2025", "2026"]:
                 return "No matching warehouse records were found for your query in the database."
 
     # 0A_CLARIFICATION. Predefined threshold clarification rule

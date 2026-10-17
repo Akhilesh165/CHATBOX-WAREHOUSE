@@ -169,6 +169,19 @@ def validate_query_result(question: str, query_plan: dict | None, sql: str, rows
     q_lower = question.lower()
     cols = list(rows[0].keys()) if rows else []
 
+    # Multi-plant safety: if the user explicitly requested multiple plants,
+    # every requested plant must be represented in the result whenever a Plant
+    # column is available. Never accept a partial result silently.
+    requested_plants = []
+    for m in re.finditer(r"\bplants?\b\s*(?:#|:|-)?\s*(\d{4,5})((?:\s*(?:,|and|&)\s*(?:plant\s*)?\d{4,5})*)", q_lower):
+        requested_plants.append(m.group(1))
+        requested_plants.extend(re.findall(r"(?:,|and|&)\s*(?:plant\s*)?(\d{4,5})", m.group(2)))
+    requested_plants = list(dict.fromkeys(p for p in requested_plants if p not in {"2024", "2025", "2026"}))
+    if requested_plants and rows and "Plant" in cols:
+        returned_plants = {str(r.get("Plant")).strip() for r in rows if r.get("Plant") is not None}
+        if not set(requested_plants).issubset(returned_plants):
+            return False, "Result does not contain records for every plant explicitly requested by the user."
+
     # -------------------------------------------------------------------------
     # A. Plan-driven validation (Priority when query_plan is provided)
     # -------------------------------------------------------------------------
@@ -202,8 +215,8 @@ def validate_query_result(question: str, query_plan: dict | None, sql: str, rows
             if len(comp_entities) >= 2 and rows and "Plant" in cols:
                 returned_plants = {str(r.get("Plant")) for r in rows if r.get("Plant") is not None}
                 expected_plants = {str(e.get("value")) for e in comp_entities if isinstance(e, dict) and e.get("type") == "plant"}
-                if expected_plants and not expected_plants.issubset(returned_plants) and not any(p in returned_plants for p in expected_plants):
-                    return False, "Comparison query did not return records for the requested comparison plants."
+                if expected_plants and not expected_plants.issubset(returned_plants):
+                    return False, "Comparison query did not return records for every requested comparison plant."
 
         # 3. KPI / COUNT / SINGLE_LINE intent
         if plan_intent_upper in ["KPI", "COUNT"] or query_plan.get("response_format") == "single_line":

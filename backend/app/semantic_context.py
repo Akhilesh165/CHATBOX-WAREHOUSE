@@ -144,8 +144,8 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
             "synonyms": ["occupied", "active bin", "in use", "filled bin", "currently occupied"]
         },
         "BIN_UTILIZATION": {
-            "meaning": "Occupied bins / total applicable bins * 100",
-            "formula": "COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0)",
+            "meaning": "Total occupied material volume / total applicable bin capacity * 100",
+            "formula": "SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(SUM(b.Volume), 0)",
             "synonyms": [
                 "bin utilization", "bin occupancy", "bin fill rate", "facility fill",
                 "space utilization rate", "bin fill percentage", "how full are bins"
@@ -153,15 +153,21 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
             "rules": [
                 "Overall utilization must use the complete requested scope, not an average of percentages.",
                 "Plant and bin filters must be applied before aggregation.",
-                "Ranking must calculate the metric at bin granularity before sorting."
+                "Ranking must calculate the metric at bin granularity before sorting.",
+                "Do not substitute occupied-bin count / total-bin count for physical volume utilization.",
+                "When the user says 'bin utilization' for capacity/volume questions, use occupied material volume divided by total bin capacity."
             ]
         },
         "VOLUME_UTILIZATION": {
             "meaning": "Total occupied material volume / total bin capacity * 100",
-            "formula": "SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END) * 100.0 / NULLIF(SUM(b.Volume), 0)",
+            "formula": "SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(SUM(b.Volume), 0)",
             "synonyms": [
                 "volume utilization", "volumetric utilization", "storage capacity usage",
                 "cubic capacity utilization", "occupied volume percentage", "capacity utilization"
+            ],
+            "rules": [
+                "Overall warehouse volume utilization must be calculated as SUM(occupied volume) / SUM(total bin capacity) * 100.",
+                "Do not calculate warehouse volume utilization by averaging individual bin percentages."
             ]
         },
         "MATERIALS_MISSING_FROM_VOLUME_MASTER": {

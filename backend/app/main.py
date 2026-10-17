@@ -266,8 +266,12 @@ async def chat_endpoint(req: ChatRequest):
         if range_pruning_warnings:
             warnings.extend(range_pruning_warnings)
 
-    if len(rows) >= settings.sql_max_result_rows:
-        warnings.append(f"Result capped at maximum {settings.sql_max_result_rows} rows.")
+    if settings.sql_max_result_rows > 0 and len(rows) >= settings.sql_max_result_rows:
+        warnings.append(
+            f"Results reached the configured {settings.sql_max_result_rows}-row limit; "
+            "the displayed list may be incomplete. Narrow the filters or increase "
+            "SQL_MAX_RESULT_ROWS if the complete list is required."
+        )
 
     # 5. Generate Grounded Answer from SQL Result
     answer_start = time.perf_counter()

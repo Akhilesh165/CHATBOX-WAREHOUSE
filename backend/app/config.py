@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     sql_pool_size: int = 10
     sql_max_overflow: int = 20
     sql_query_timeout_sec: int = 30
-    sql_max_result_rows: int = 1000
+    sql_max_result_rows: int = 10000
     
     # LLM Configuration
     llm_provider: str = "gemini"  # "gemini", "openai", or "generic_http"

@@ -8,6 +8,7 @@ import sqlglot
 from decimal import Decimal
 from datetime import datetime, date
 from urllib.parse import quote_plus
+from pathlib import Path
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from .config import settings
@@ -28,9 +29,12 @@ def get_engine() -> Engine:
             pool_pre_ping=True,
             pool_recycle=1800
         )
-    elif os.path.exists("warehouse.db") and (not settings.sql_password or settings.sql_password == "ChangeThisStrongPassword123!"):
-        # Development SQLite fallback
-        _engine = create_engine("sqlite:///warehouse.db")
+    elif (Path(__file__).resolve().parents[2] / "warehouse.db").exists() and (
+        not settings.sql_password or settings.sql_password == "ChangeThisStrongPassword123!"
+    ):
+        # Development SQLite fallback; resolve relative to the project, not cwd.
+        sqlite_path = Path(__file__).resolve().parents[2] / "warehouse.db"
+        _engine = create_engine(f"sqlite:///{sqlite_path.as_posix()}")
     else:
         # SQL Server ODBC connection
         conn_str = (
@@ -59,7 +63,7 @@ def serialize_value(val):
         return val.isoformat()
     return val
 
-def execute_readonly(sql: str, max_rows: int = 1000) -> tuple[list[dict], int]:
+def execute_readonly(sql: str, max_rows: int = 10000) -> tuple[list[dict], int]:
     """Execute a read-only SQL query and return normalized row dictionaries and execution time in ms.
     
     Returns (rows, execution_duration_ms)
