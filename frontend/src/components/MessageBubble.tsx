@@ -222,10 +222,25 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
           )}
 
           {/* 6. Summary or Detailed Data Table View */}
-          {showTable && (
-            <div className="pt-2">
-              <ResultTable rows={rows} pageSize={8} />
+          {message.tables && message.tables.length > 0 ? (
+            <div className="pt-2 space-y-4">
+              {message.tables.map((tbl, tblIdx) => (
+                <ResultTable
+                  key={tblIdx}
+                  rows={tbl.rows}
+                  title={tbl.title}
+                  emptyMessage={tbl.empty_message}
+                  exportFilename={`plant_${tbl.plant || tblIdx}_utilization_${new Date().toISOString().slice(0, 10)}.csv`}
+                  pageSize={8}
+                />
+              ))}
             </div>
+          ) : (
+            showTable && (
+              <div className="pt-2">
+                <ResultTable rows={rows} pageSize={8} />
+              </div>
+            )
           )}
 
 

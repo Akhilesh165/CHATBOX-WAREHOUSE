@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from .config import settings
-from .models import ChatRequest, ChatResponse, Chart, Meta, FeedbackRequest, FeedbackResponse
+from .models import ChatRequest, ChatResponse, Chart, Meta, FeedbackRequest, FeedbackResponse, TableDataset
 from .llm import generate_sql, generate_answer, optimize_response_format, deterministic_warehouse_sql_generator
 from .validator import validate_sql, validate_query_result
 from .db import execute_readonly, get_engine
@@ -201,35 +201,75 @@ async def chat_endpoint(req: ChatRequest):
     # 3. Execute Validated SQL on Read-Only Connection
     rows = []
     sql_duration_ms = 0
-    try:
-        rows, sql_duration_ms = execute_readonly(validated_sql, max_rows=settings.sql_max_result_rows)
-    except Exception as db_err:
-        logger.warning(f"Database execution failed for SQL [{validated_sql}]: {db_err}. Retrying with deterministic generator...")
+    table_datasets: list[TableDataset] = []
+
+    is_multi_table = bool(isinstance(generated, dict) and generated.get("is_multi_table_comparison"))
+    comp_plants = generated.get("comparison_plants", []) if is_multi_table else []
+    plant_sql_template = generated.get("plant_sql_template", "") if is_multi_table else ""
+
+    if is_multi_table and comp_plants and plant_sql_template:
+        op_desc = generated.get("op_desc", "above")
+        thresh_str = generated.get("thresh_str", "80")
+        combined_rows = []
+        sql_duration_total_ms = 0
+
+        for p in comp_plants:
+            plant_sql = plant_sql_template.format(plant=p)
+            try:
+                p_rows, p_ms = execute_readonly(plant_sql, max_rows=settings.sql_max_result_rows)
+                sql_duration_total_ms += p_ms
+            except Exception as e:
+                logger.error(f"Error querying plant {p}: {e}")
+                p_rows = []
+
+            p_count = len(p_rows)
+            table_title = f"Plant {p} — Bins {op_desc} {thresh_str}% utilization"
+            empty_msg = f"No bins found {op_desc} {thresh_str}% utilization in Plant {p}." if p_count == 0 else None
+
+            table_datasets.append(TableDataset(
+                title=table_title,
+                plant=str(p),
+                count=p_count,
+                rows=p_rows,
+                empty_message=empty_msg
+            ))
+            combined_rows.extend(p_rows)
+
+        rows = combined_rows
+        sql_duration_ms = sql_duration_total_ms
+    else:
         try:
-            corrected_gen = deterministic_warehouse_sql_generator(req.message, history=history)
-            corrected_sql = validate_sql(corrected_gen.get("sql", ""))
-            rows, sql_duration_ms = execute_readonly(corrected_sql, max_rows=settings.sql_max_result_rows)
-            generated = corrected_gen
-            validated_sql = corrected_sql
-        except Exception as retry_err:
-            logger.error(f"Database retry failed: {retry_err}")
-            warnings.append(f"Database execution warning: {str(db_err)}")
-            return ChatResponse(
-                answer=f"A database error occurred while querying inventory records. Please verify the query parameters or try asking for a specific metric (e.g. 'Total warehouse inventory' or 'Bin utilization for Plant 1258').",
-                data=[],
-                rows=[],
-                chart=Chart(type="none"),
-                meta=Meta(rowCount=0, executionMs=0, llmMs=llm_duration_ms, sqlMs=0),
-                warnings=warnings,
-                intent="DB_ERROR_HANDLED",
-                output_type="text"
-            )
+            rows, sql_duration_ms = execute_readonly(validated_sql, max_rows=settings.sql_max_result_rows)
+        except Exception as db_err:
+            logger.warning(f"Database execution failed for SQL [{validated_sql}]: {db_err}. Retrying with deterministic generator...")
+            try:
+                corrected_gen = deterministic_warehouse_sql_generator(req.message, history=history)
+                corrected_sql = validate_sql(corrected_gen.get("sql", ""))
+                rows, sql_duration_ms = execute_readonly(corrected_sql, max_rows=settings.sql_max_result_rows)
+                generated = corrected_gen
+                validated_sql = corrected_sql
+            except Exception as retry_err:
+                logger.error(f"Database retry failed: {retry_err}")
+                warnings.append(f"Database execution warning: {str(db_err)}")
+                return ChatResponse(
+                    answer=f"A database error occurred while querying inventory records. Please verify the query parameters or try asking for a specific metric (e.g. 'Total warehouse inventory' or 'Bin utilization for Plant 1258').",
+                    data=[],
+                    rows=[],
+                    chart=Chart(type="none"),
+                    meta=Meta(rowCount=0, executionMs=0, llmMs=llm_duration_ms, sqlMs=0),
+                    warnings=warnings,
+                    intent="DB_ERROR_HANDLED",
+                    output_type="text"
+                )
 
     # 4. Result Validator Layer ("Does this result actually answer the user's question?")
     try:
+        val_plan = dict(generated.get("query_plan") or {}) if isinstance(generated, dict) else {}
+        if is_multi_table:
+            val_plan["is_multi_table_comparison"] = True
         is_valid_result, validation_reason = validate_query_result(
             req.message,
-            generated.get("query_plan") if isinstance(generated, dict) else None,
+            val_plan or None,
             validated_sql,
             rows
         )
@@ -382,6 +422,7 @@ async def chat_endpoint(req: ChatRequest):
         answer=answer,
         data=rows,
         rows=rows,
+        tables=table_datasets,
         chart=chart,
         meta=meta,
         sql=safe_sql,

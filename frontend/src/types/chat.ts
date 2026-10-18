@@ -53,7 +53,16 @@ export interface ChatMessage {
   time_range?: string;
   follow_up_action?: FollowUpAction;
   relevant_kpis?: RelevantKpi[];
+  tables?: TableDataset[];
   timestamp: Date;
+}
+
+export interface TableDataset {
+  title: string;
+  plant?: string;
+  count: number;
+  rows: Array<Record<string, any>>;
+  empty_message?: string;
 }
 
 export interface ChatRequestPayload {
@@ -66,6 +75,7 @@ export interface ChatResponsePayload {
   answer: string;
   data?: Array<Record<string, any>>;
   rows?: Array<Record<string, any>>;
+  tables?: TableDataset[];
   chart: ChartMetadata;
   meta?: ResponseMeta;
   sql?: string | null;

@@ -55,12 +55,12 @@ def extract_explicit_plants(text: str) -> list[str]:
     # Capture a plant ID plus any immediately chained plant IDs.
     chain_re = re.compile(
         r"\bplants?\b\s*(?:#|:|-)?\s*(\d{4,5})"
-        r"((?:\s*(?:,|and|&|or|/)\s*(?:plants?\s*)?\d{4,5})*)",
+        r"((?:\s*(?:,\s*(?:and|&|or)|,|and|&|or|/)\s*(?:plants?\s*)?\d{4,5})*)",
         re.IGNORECASE,
     )
     for m in chain_re.finditer(q):
         found.append(m.group(1))
-        for n in re.findall(r"(?:,|and|&|or|/)\s*(?:plants?\s*)?(\d{4,5})", m.group(2), re.I):
+        for n in re.findall(r"(?:,\s*(?:and|&|or)|,|and|&|or|/)\s*(?:plants?\s*)?(\d{4,5})", m.group(2), re.I):
             found.append(n)
 
     # Also catch repeated explicit forms: "Plant 1258 and Plant 1268".
@@ -2405,8 +2405,10 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volum
         is_less = any(k in q_lower for k in ["less than", "below", "under", "<", "at most", "or below", "or less"])
         if is_less:
             op = "<=" if inclusive_low else "<"
+            op_desc = "at most" if inclusive_low else "below"
         else:
             op = ">=" if inclusive else ">"
+            op_desc = "at least" if inclusive else "above"
         op_symbol = {"<": "<", "<=": "≤", ">": ">", ">=": "≥"}[op]
 
         plants = extract_plants(q_lower) or ([plant_cand] if plant_cand else [])
@@ -2462,7 +2464,7 @@ GROUP BY b.BinLocation, b.Plant, b.Volume, b.VolumeUnit
 HAVING ROUND({util_expr}, 1) {op} {thresh_val}
 ORDER BY {util_expr} {'ASC' if is_less else 'DESC'}"""
 
-        return {
+        res_dict = {
             "sql": list_sql,
             "chart_type": "none",
             "chart_title": f"Bins with Utilization % {op_symbol} {thresh_val}% ({plant_label})",
@@ -2475,6 +2477,27 @@ ORDER BY {util_expr} {'ASC' if is_less else 'DESC'}"""
             "output_type": "table",
             "conversation_state": state
         }
+        if len(plants) >= 2:
+            thresh_fmt = str(int(thresh_val)) if thresh_val.is_integer() else str(thresh_val)
+            res_dict["is_multi_table_comparison"] = True
+            res_dict["comparison_plants"] = plants
+            res_dict["op_desc"] = op_desc
+            res_dict["op_symbol"] = op_symbol
+            res_dict["thresh_str"] = thresh_fmt
+            res_dict["plant_sql_template"] = f"""SELECT
+    b.BinLocation AS [Bin],
+    b.Plant AS [Plant],
+    CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Bin Capacity],
+    ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 2) AS [Occupied Volume],
+    CONCAT(ROUND({util_expr}, 1), '%') AS [Utilization %]
+FROM dbo.ZWMS_BIN_MASTER b
+JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+WHERE b.Volume > 0 AND b.Plant = '{{plant}}'
+GROUP BY b.BinLocation, b.Plant, b.Volume, b.VolumeUnit
+HAVING ROUND({util_expr}, 1) {op} {thresh_val}
+ORDER BY {util_expr} {'ASC' if is_less else 'DESC'}"""
+        return res_dict
 
     # E. EMPTY BINS / AVAILABLE FOR PUT-AWAY & COUNT SCALARS
     # Semantic Definition: Bin inventory quantity = 0 (UnrestrictedQty = 0 or BinNo IS NULL)
@@ -2988,7 +3011,7 @@ ORDER BY [Total Stock Qty] DESC"""
             "range_filters": range_filters,
             "field": field
         }
-        return {
+        res_range = {
             "sql": sql_range,
             "query_plan": query_plan,
             "chart_type": "bar" if is_explicit_chart else "none",
@@ -3002,6 +3025,35 @@ ORDER BY [Total Stock Qty] DESC"""
             "output_type": "text" if is_single_statement_requested else ("bar_chart" if is_explicit_chart else "table"),
             "conversation_state": state
         }
+        if field == "BinUtilizationPct" and len(plants_range) >= 2:
+            rf_op = rf.get("operator", "BETWEEN")
+            if rf_op == "BETWEEN":
+                range_desc = f"{rf['lower']}% to {rf['upper']}%"
+                op_desc = f"between {range_desc}"
+            elif rf_op in ["GT", "GTE"]:
+                op_desc = "at least" if rf.get("inclusive") else "above"
+                range_desc = f"{rf['lower']}%"
+            else:
+                op_desc = "at most" if rf.get("inclusive") else "below"
+                range_desc = f"{rf['upper']}%"
+            res_range["is_multi_table_comparison"] = True
+            res_range["comparison_plants"] = plants_range
+            res_range["op_desc"] = op_desc
+            res_range["thresh_str"] = range_desc
+            res_range["plant_sql_template"] = f"""SELECT
+    b.BinLocation AS [Bin],
+    b.Plant AS [Plant],
+    CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Bin Capacity],
+    ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 2) AS [Occupied Volume],
+    CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %]
+FROM dbo.ZWMS_BIN_MASTER b
+JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+WHERE b.Volume > 0 AND b.Plant = '{{plant}}'
+GROUP BY b.BinLocation, b.Plant, b.Volume, b.VolumeUnit
+HAVING {where_cond.replace('UtilizationPct', 'ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1)')}
+ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) DESC"""
+        return res_range
 
     # F0_RANK. COMPREHENSIVE PLANT RANKING SYSTEM (Sections 1-47 of Ranking System Context)
     # Master Pipeline: Entity -> Metric -> Aggregation -> Scope -> Direction -> Limit -> Format
@@ -4604,7 +4656,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
                 return "No matching warehouse records were found for your query in the database."
         if rows and "Plant" in cols:
             returned_plants = {str(r.get("Plant")).strip() for r in rows if r.get("Plant") is not None}
-            if not set(req_plants).issubset(returned_plants):
+            if not set(req_plants).intersection(returned_plants):
                 return "No matching warehouse records were found for your query in the database."
     else:
         plant_req_match = re.search(r"\b(?:plant|facility)\s*[:#-]?\s*(\d{4,5})\b", q_lower)
@@ -5706,9 +5758,9 @@ GROUP BY Plant"""
                 pass
 
         if plants and len(plant_counts) > 1:
-            split_parts = [f"{p}: {plant_counts[p]:,}" for p in plants if p in plant_counts]
+            split_parts = [f"Plant {p}: {plant_counts[p]:,}" for p in plants if p in plant_counts]
         elif len(plant_counts) > 1:
-            split_parts = [f"{p}: {cnt:,}" for p, cnt in sorted(plant_counts.items())]
+            split_parts = [f"Plant {p}: {cnt:,}" for p, cnt in sorted(plant_counts.items())]
         else:
             split_parts = []
         split_str = f" ({' · '.join(split_parts)})" if split_parts else ""
@@ -5742,7 +5794,10 @@ GROUP BY Plant"""
         ]
         if over_cap_count > 0:
             lines.append(f"\n⚠️ **Note:** **{over_cap_count:,}** of these bins are above 100% of capacity (stock volume exceeds bin capacity).")
-        lines.append(f"\n💡 *The exact **Bin Capacity**, **Occupied Volume**, and **Utilization %** metrics for each bin are loaded in the **searchable, paginated Data Table** below (with real-time search, sorting, and CSV export):*")
+        if len(plants) > 1:
+            lines.append(f"\n💡 *The matching bins for each plant are displayed in **separate Data Tables below** (Plant {' & Plant '.join(plants)}) with independent search, pagination, and CSV export:*")
+        else:
+            lines.append(f"\n💡 *The exact **Bin Capacity**, **Occupied Volume**, and **Utilization %** metrics for each bin are loaded in the **searchable, paginated Data Table** below (with real-time search, sorting, and CSV export):*")
         return "\n".join(lines)
 
     # 4. Average Inventory per Occupied Bin (Single KPI Card & Operational Explanation)

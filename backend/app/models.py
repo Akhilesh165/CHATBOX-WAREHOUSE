@@ -55,10 +55,18 @@ class RelevantKpi(BaseModel):
     value: Any
     subtext: Optional[str] = None
 
+class TableDataset(BaseModel):
+    title: str
+    plant: Optional[str] = None
+    count: int = 0
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    empty_message: Optional[str] = None
+
 class ChatResponse(BaseModel):
     answer: str
     data: list[dict[str, Any]] = Field(default_factory=list)
     rows: list[dict[str, Any]] = Field(default_factory=list)
+    tables: list[TableDataset] = Field(default_factory=list)
     chart: Chart = Field(default_factory=Chart)
     meta: Meta = Field(default_factory=Meta)
     sql: Optional[str] = None

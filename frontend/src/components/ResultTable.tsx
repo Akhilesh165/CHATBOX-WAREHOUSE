@@ -4,13 +4,39 @@ import { Download, ChevronLeft, ChevronRight, Search, Table as TableIcon } from 
 interface ResultTableProps {
   rows: Array<Record<string, any>>;
   pageSize?: number;
+  title?: string;
+  exportFilename?: string;
+  emptyMessage?: string;
 }
 
-export const ResultTable: React.FC<ResultTableProps> = ({ rows, pageSize = 8 }) => {
+export const ResultTable: React.FC<ResultTableProps> = ({
+  rows,
+  pageSize = 8,
+  title,
+  exportFilename,
+  emptyMessage,
+}) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [searchTerm, setSearchTerm] = useState('');
 
-  if (!rows || rows.length === 0) return null;
+  if (!rows || rows.length === 0) {
+    if (emptyMessage) {
+      return (
+        <div className="w-full bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm p-4 my-3 transition-colors">
+          {title && (
+            <div className="flex items-center space-x-2 text-xs font-semibold text-slate-800 dark:text-slate-100 pb-2 border-b border-slate-100 dark:border-slate-800">
+              <TableIcon className="w-4 h-4 text-sky-600 dark:text-sky-400" />
+              <span>{title}</span>
+            </div>
+          )}
+          <div className="pt-3 text-xs text-slate-500 dark:text-slate-400 italic text-center">
+            {emptyMessage}
+          </div>
+        </div>
+      );
+    }
+    return null;
+  }
 
   const columns = Object.keys(rows[0]);
 
@@ -48,7 +74,7 @@ export const ResultTable: React.FC<ResultTableProps> = ({ rows, pageSize = 8 }) 
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `warehouse_inventory_export_${new Date().toISOString().slice(0, 10)}.csv`);
+    link.setAttribute('download', exportFilename || `warehouse_inventory_export_${new Date().toISOString().slice(0, 10)}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -60,7 +86,12 @@ export const ResultTable: React.FC<ResultTableProps> = ({ rows, pageSize = 8 }) 
       <div className="flex flex-wrap items-center justify-between p-3 bg-slate-50 dark:bg-slate-850 border-b border-slate-200 dark:border-slate-800 gap-2">
         <div className="flex items-center space-x-2 text-xs font-semibold text-slate-700 dark:text-slate-200">
           <TableIcon className="w-4 h-4 text-sky-600 dark:text-sky-400" />
-          <span>Results Data ({rows.length} {rows.length === 1 ? 'row' : 'rows'})</span>
+          <span>{title ? title : `Results Data (${rows.length} ${rows.length === 1 ? 'row' : 'rows'})`}</span>
+          {title && (
+            <span className="text-[11px] font-normal text-slate-500 dark:text-slate-400 bg-slate-200/60 dark:bg-slate-800 px-1.5 py-0.5 rounded">
+              {rows.length.toLocaleString()} {rows.length === 1 ? 'bin' : 'bins'}
+            </span>
+          )}
         </div>
         <div className="flex items-center space-x-2">
           <div className="relative">

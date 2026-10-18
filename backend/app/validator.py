@@ -179,7 +179,8 @@ def validate_query_result(question: str, query_plan: dict | None, sql: str, rows
     requested_plants = list(dict.fromkeys(p for p in requested_plants if p not in {"2024", "2025", "2026"}))
     if requested_plants and rows and "Plant" in cols:
         returned_plants = {str(r.get("Plant")).strip() for r in rows if r.get("Plant") is not None}
-        if not set(requested_plants).issubset(returned_plants):
+        is_multi_table = query_plan and query_plan.get("is_multi_table_comparison")
+        if not is_multi_table and not set(requested_plants).issubset(returned_plants):
             return False, "Result does not contain records for every plant explicitly requested by the user."
 
     # -------------------------------------------------------------------------

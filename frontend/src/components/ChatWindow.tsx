@@ -201,6 +201,7 @@ export const ChatWindow: React.FC = () => {
         sql: data.sql,
         rows: rows,
         data: rows,
+        tables: data.tables,
         chart: data.chart,
         meta: data.meta,
         rowCount: data.meta?.rowCount ?? data.row_count ?? rows.length,
