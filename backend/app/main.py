@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from .config import settings
 from .models import ChatRequest, ChatResponse, Chart, Meta, FeedbackRequest, FeedbackResponse, TableDataset
-from .llm import generate_sql, generate_answer, optimize_response_format, deterministic_warehouse_sql_generator
+from .llm import generate_sql, generate_answer, optimize_response_format, deterministic_warehouse_sql_generator, is_single_line_requested, is_number_only_requested, extract_only_number
 from .validator import validate_sql, validate_query_result
 from .db import execute_readonly, get_engine
 
@@ -321,29 +321,63 @@ async def chat_endpoint(req: ChatRequest):
     # 5. Generate Grounded Answer from SQL Result
     answer_start = time.perf_counter()
     resolved_query_for_answer = generated.get("conversation_state", {}).get("resolved_query") or req.message
-    try:
-        answer = await generate_answer(resolved_query_for_answer, validated_sql, rows)
-    except Exception as ans_err:
-        logger.warning(f"Answer generation error, falling back to structured summary: {ans_err}")
-        if not rows:
-            answer = f"No matching warehouse records found for your query."
-        else:
-            answer = f"Found {len(rows)} matching record(s). Please review the data table below for details."
+    
+    is_invalid = bool(
+        (isinstance(generated, dict) and generated.get("is_invalid_query")) or
+        (isinstance(generated, dict) and generated.get("intent") == "no_matching_records") or
+        (not rows and not is_multi_table)
+    )
+
+    if is_invalid:
+        answer = "No matching warehouse records were found for your query in the database."
+        rows = []
+        table_datasets = []
+    else:
+        try:
+            answer = await generate_answer(resolved_query_for_answer, validated_sql, rows)
+        except Exception as ans_err:
+            logger.warning(f"Answer generation error, falling back to structured summary: {ans_err}")
+            if not rows:
+                answer = "No matching warehouse records were found for your query in the database."
+            else:
+                answer = f"Found {len(rows)} matching record(s). Please review the data table below for details."
     
     total_llm_ms = llm_duration_ms + int((time.perf_counter() - answer_start) * 1000)
 
-    # 6. Automatically optimize response format and visual presentation
+    # 6. Check single-line or number-only modes and automatically optimize response format
+    q_user = req.message.lower()
+    single_line_mode = is_single_line_requested(q_user)
+    number_only_mode = is_number_only_requested(q_user)
+
+    if not is_invalid:
+        if number_only_mode:
+            answer = extract_only_number(answer)
+        elif single_line_mode:
+            cleaned_lines = [l.strip() for l in answer.split("\n") if l.strip() and not l.strip().startswith("#")]
+            if cleaned_lines:
+                answer = cleaned_lines[0]
+
     try:
         opt = optimize_response_format(resolved_query_for_answer, rows, generated)
     except Exception as opt_err:
         logger.warning(f"optimize_response_format error: {opt_err}")
         opt = {}
     
-    chart_type = opt.get("chart_type") or (generated.get("chart_type", "none") if isinstance(generated, dict) else "none")
-    chart_title = opt.get("chart_title") or (generated.get("chart_title") if isinstance(generated, dict) else None)
-    chart_x = opt.get("chart_x") or (generated.get("chart_x") if isinstance(generated, dict) else None)
-    chart_y = opt.get("chart_y") or (generated.get("chart_y") if isinstance(generated, dict) else None)
-    chart_data = rows[:50] if chart_type != "none" else []
+    if single_line_mode or number_only_mode or is_invalid:
+        rows = []
+        table_datasets = []
+        chart_type = "none"
+        opt["output_type"] = "text"
+        chart_title = None
+        chart_x = None
+        chart_y = None
+        chart_data = []
+    else:
+        chart_type = opt.get("chart_type") or (generated.get("chart_type", "none") if isinstance(generated, dict) else "none")
+        chart_title = opt.get("chart_title") or (generated.get("chart_title") if isinstance(generated, dict) else None)
+        chart_x = opt.get("chart_x") or (generated.get("chart_x") if isinstance(generated, dict) else None)
+        chart_y = opt.get("chart_y") or (generated.get("chart_y") if isinstance(generated, dict) else None)
+        chart_data = rows[:50] if chart_type != "none" else []
     
     chart = Chart(
         type=chart_type,
@@ -370,21 +404,26 @@ async def chat_endpoint(req: ChatRequest):
 
     # Compute separated total_count vs displayed_count
     total_matching_count = None
-    if rows and isinstance(rows[0], dict) and "TotalMatching" in rows[0]:
+    if is_invalid:
+        total_matching_count = 0
+        displayed_count = 0
+    elif rows and isinstance(rows[0], dict) and "TotalMatching" in rows[0]:
         try:
             total_matching_count = int(rows[0]["TotalMatching"])
         except Exception:
             total_matching_count = len(rows)
         for r in rows:
             r.pop("TotalMatching", None)
+        displayed_count = len(rows)
     elif is_multi_table and table_datasets:
         total_matching_count = sum(t.total_count or t.count for t in table_datasets)
+        displayed_count = len(rows)
     elif rows and isinstance(rows[0], dict):
         total_matching_count = len(rows)
+        displayed_count = len(rows)
     else:
         total_matching_count = 0
-
-    displayed_count = len(rows)
+        displayed_count = len(rows)
 
     meta = Meta(
         rowCount=displayed_count,
@@ -395,11 +434,13 @@ async def chat_endpoint(req: ChatRequest):
         sqlMs=sql_duration_ms
     )
 
-    output_type = opt.get("output_type") or (generated.get("output_type") if isinstance(generated, dict) else None) or (
-        "line_chart" if chart_type == "line" else
-        "bar_chart" if chart_type == "bar" else
-        "pie_chart" if chart_type == "pie" else
-        "table" if rows else "text"
+    output_type = "text" if (single_line_mode or number_only_mode or is_invalid) else (
+        opt.get("output_type") or (generated.get("output_type") if isinstance(generated, dict) else None) or (
+            "line_chart" if chart_type == "line" else
+            "bar_chart" if chart_type == "bar" else
+            "pie_chart" if chart_type == "pie" else
+            "table" if rows else "text"
+        )
     )
 
     intent = opt.get("intent") or (generated.get("intent") if isinstance(generated, dict) else None)
@@ -411,37 +452,38 @@ async def chat_endpoint(req: ChatRequest):
     follow_up_action = generated.get("follow_up_action") if isinstance(generated, dict) else None
     relevant_kpis_raw = generated.get("relevant_kpis") if isinstance(generated, dict) else None
     relevant_kpis = None
-    try:
-        if relevant_kpis_raw and rows and isinstance(rows[0], dict):
-            row0 = rows[0]
-            tb_val = row0.get("Total Bins", row0.get("TotalBins", 0)) or 0
-            ob_val = row0.get("Occupied Bins", row0.get("OccupiedBins", 0)) or 0
-            tb = float(tb_val) if isinstance(tb_val, (int, float)) or (isinstance(tb_val, str) and tb_val.replace('.', '', 1).isdigit()) else 0.0
-            ob = float(ob_val) if isinstance(ob_val, (int, float)) or (isinstance(ob_val, str) and ob_val.replace('.', '', 1).isdigit()) else 0.0
-            eb_val = row0.get("Empty Bins", row0.get("EmptyBins"))
-            if eb_val is not None:
-                try:
-                    eb = float(eb_val)
-                except Exception:
+    if not (single_line_mode or number_only_mode or is_invalid):
+        try:
+            if relevant_kpis_raw and rows and isinstance(rows[0], dict):
+                row0 = rows[0]
+                tb_val = row0.get("Total Bins", row0.get("TotalBins", 0)) or 0
+                ob_val = row0.get("Occupied Bins", row0.get("OccupiedBins", 0)) or 0
+                tb = float(tb_val) if isinstance(tb_val, (int, float)) or (isinstance(tb_val, str) and tb_val.replace('.', '', 1).isdigit()) else 0.0
+                ob = float(ob_val) if isinstance(ob_val, (int, float)) or (isinstance(ob_val, str) and ob_val.replace('.', '', 1).isdigit()) else 0.0
+                eb_val = row0.get("Empty Bins", row0.get("EmptyBins"))
+                if eb_val is not None:
+                    try:
+                        eb = float(eb_val)
+                    except Exception:
+                        eb = max(0.0, tb - ob)
+                else:
                     eb = max(0.0, tb - ob)
-            else:
-                eb = max(0.0, tb - ob)
-            
-            bpct_raw = row0.get("Bin Utilization %")
-            if bpct_raw is not None:
-                bpct_str = str(bpct_raw) if "%" in str(bpct_raw) else f"{bpct_raw}%"
-            else:
-                bpct_str = f"{round(ob * 100.0 / tb, 1) if tb > 0 else 0}%"
-            
-            relevant_kpis = [
-                {"label": "Bin Utilization", "value": bpct_str, "subtext": "Occupancy Rate"},
-                {"label": "Occupied Bins", "value": f"{int(ob):,}", "subtext": "Active In Use"},
-                {"label": "Empty Bins", "value": f"{int(eb):,}", "subtext": "Available Put-Away"},
-                {"label": "Total Bins", "value": f"{int(tb):,}", "subtext": "Total Capacity"}
-            ]
-    except Exception as kpi_err:
-        logger.warning(f"Error extracting relevant KPIs: {kpi_err}")
-        relevant_kpis = None
+                
+                bpct_raw = row0.get("Bin Utilization %")
+                if bpct_raw is not None:
+                    bpct_str = str(bpct_raw) if "%" in str(bpct_raw) else f"{bpct_raw}%"
+                else:
+                    bpct_str = f"{round(ob * 100.0 / tb, 1) if tb > 0 else 0}%"
+                
+                relevant_kpis = [
+                    {"label": "Bin Utilization", "value": bpct_str, "subtext": "Occupancy Rate"},
+                    {"label": "Occupied Bins", "value": f"{int(ob):,}", "subtext": "Active In Use"},
+                    {"label": "Empty Bins", "value": f"{int(eb):,}", "subtext": "Available Put-Away"},
+                    {"label": "Total Bins", "value": f"{int(tb):,}", "subtext": "Total Capacity"}
+                ]
+        except Exception as kpi_err:
+            logger.warning(f"Error extracting relevant KPIs: {kpi_err}")
+            relevant_kpis = None
 
     return ChatResponse(
         answer=answer,
