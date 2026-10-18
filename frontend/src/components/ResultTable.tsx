@@ -7,6 +7,8 @@ interface ResultTableProps {
   title?: string;
   exportFilename?: string;
   emptyMessage?: string;
+  totalCount?: number;
+  displayedCount?: number;
 }
 
 export const ResultTable: React.FC<ResultTableProps> = ({
@@ -15,6 +17,8 @@ export const ResultTable: React.FC<ResultTableProps> = ({
   title,
   exportFilename,
   emptyMessage,
+  totalCount,
+  displayedCount,
 }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [searchTerm, setSearchTerm] = useState('');
@@ -86,12 +90,12 @@ export const ResultTable: React.FC<ResultTableProps> = ({
       <div className="flex flex-wrap items-center justify-between p-3 bg-slate-50 dark:bg-slate-850 border-b border-slate-200 dark:border-slate-800 gap-2">
         <div className="flex items-center space-x-2 text-xs font-semibold text-slate-700 dark:text-slate-200">
           <TableIcon className="w-4 h-4 text-sky-600 dark:text-sky-400" />
-          <span>{title ? title : `Results Data (${rows.length} ${rows.length === 1 ? 'row' : 'rows'})`}</span>
-          {title && (
-            <span className="text-[11px] font-normal text-slate-500 dark:text-slate-400 bg-slate-200/60 dark:bg-slate-800 px-1.5 py-0.5 rounded">
-              {rows.length.toLocaleString()} {rows.length === 1 ? 'bin' : 'bins'}
-            </span>
-          )}
+          <span>{title ? title : `Results Data`}</span>
+          <span className="text-[11px] font-normal text-slate-500 dark:text-slate-400 bg-slate-200/60 dark:bg-slate-800 px-1.5 py-0.5 rounded">
+            {totalCount && totalCount > rows.length
+              ? `Showing top ${rows.length.toLocaleString()} of ${totalCount.toLocaleString()} matching records`
+              : `${rows.length.toLocaleString()} ${rows.length === 1 ? 'record' : 'records'}`}
+          </span>
         </div>
         <div className="flex items-center space-x-2">
           <div className="relative">
@@ -173,7 +177,12 @@ export const ResultTable: React.FC<ResultTableProps> = ({
             <span className="font-semibold">
               {Math.min(startIndex + pageSize, filteredRows.length)}
             </span>{' '}
-            of <span className="font-semibold">{filteredRows.length}</span> entries
+            of <span className="font-semibold">{filteredRows.length.toLocaleString()}</span> displayed entries
+            {totalCount && totalCount > rows.length && (
+              <span className="text-slate-400 dark:text-slate-500 ml-1">
+                ({totalCount.toLocaleString()} total matching in database)
+              </span>
+            )}
           </div>
           <div className="flex items-center space-x-1.5">
             <button

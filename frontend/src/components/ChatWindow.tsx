@@ -205,6 +205,8 @@ export const ChatWindow: React.FC = () => {
         chart: data.chart,
         meta: data.meta,
         rowCount: data.meta?.rowCount ?? data.row_count ?? rows.length,
+        total_count: data.meta?.total_count ?? data.total_count,
+        displayed_count: data.meta?.displayed_count ?? data.displayed_count ?? rows.length,
         executionMs: data.meta?.executionMs ?? data.execution_ms,
         llmMs: data.meta?.llmMs ?? data.llm_ms,
         sqlMs: data.meta?.sqlMs ?? data.sql_ms,

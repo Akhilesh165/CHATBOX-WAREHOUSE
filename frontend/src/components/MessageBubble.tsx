@@ -136,7 +136,9 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
               )}
               {message.rowCount !== undefined && message.rowCount > 0 && (
                 <span className="bg-sky-50 dark:bg-sky-950/80 text-sky-700 dark:text-sky-300 px-2 py-0.5 rounded font-medium border border-sky-200/60 dark:border-sky-800">
-                  {message.rowCount} rows
+                  {message.total_count && message.total_count > message.rowCount
+                    ? `Showing ${message.rowCount.toLocaleString()} of ${message.total_count.toLocaleString()} rows`
+                    : `${message.rowCount.toLocaleString()} rows`}
                 </span>
               )}
             </div>
@@ -229,6 +231,8 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
                   key={tblIdx}
                   rows={tbl.rows}
                   title={tbl.title}
+                  totalCount={tbl.total_count}
+                  displayedCount={tbl.displayed_count}
                   emptyMessage={tbl.empty_message}
                   exportFilename={`plant_${tbl.plant || tblIdx}_utilization_${new Date().toISOString().slice(0, 10)}.csv`}
                   pageSize={8}
@@ -238,7 +242,12 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
           ) : (
             showTable && (
               <div className="pt-2">
-                <ResultTable rows={rows} pageSize={8} />
+                <ResultTable
+                  rows={rows}
+                  totalCount={message.total_count}
+                  displayedCount={message.displayed_count}
+                  pageSize={8}
+                />
               </div>
             )
           )}

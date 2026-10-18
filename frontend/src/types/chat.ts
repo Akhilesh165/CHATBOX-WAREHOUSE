@@ -14,6 +14,8 @@ export interface ChartMetadata {
 export interface ResponseMeta {
   requestId?: string;
   rowCount: number;
+  total_count?: number;
+  displayed_count?: number;
   executionMs: number;
   llmMs?: number;
   sqlMs?: number;
@@ -42,6 +44,8 @@ export interface ChatMessage {
   chart?: ChartMetadata;
   meta?: ResponseMeta;
   rowCount?: number;
+  total_count?: number;
+  displayed_count?: number;
   executionMs?: number;
   llmMs?: number;
   sqlMs?: number;
@@ -61,6 +65,8 @@ export interface TableDataset {
   title: string;
   plant?: string;
   count: number;
+  total_count?: number;
+  displayed_count?: number;
   rows: Array<Record<string, any>>;
   empty_message?: string;
 }
@@ -78,6 +84,8 @@ export interface ChatResponsePayload {
   tables?: TableDataset[];
   chart: ChartMetadata;
   meta?: ResponseMeta;
+  total_count?: number;
+  displayed_count?: number;
   sql?: string | null;
   warnings?: string[];
   intent?: string;

@@ -26,6 +26,8 @@ class Chart(BaseModel):
 class Meta(BaseModel):
     requestId: str = Field(default_factory=lambda: f"req-{uuid.uuid4().hex[:10]}")
     rowCount: int = 0
+    total_count: Optional[int] = None
+    displayed_count: Optional[int] = None
     executionMs: int = 0
     llmMs: Optional[int] = None
     sqlMs: Optional[int] = None
@@ -59,6 +61,8 @@ class TableDataset(BaseModel):
     title: str
     plant: Optional[str] = None
     count: int = 0
+    total_count: Optional[int] = None
+    displayed_count: Optional[int] = None
     rows: list[dict[str, Any]] = Field(default_factory=list)
     empty_message: Optional[str] = None
 
@@ -69,6 +73,8 @@ class ChatResponse(BaseModel):
     tables: list[TableDataset] = Field(default_factory=list)
     chart: Chart = Field(default_factory=Chart)
     meta: Meta = Field(default_factory=Meta)
+    total_count: Optional[int] = None
+    displayed_count: Optional[int] = None
     sql: Optional[str] = None
     warnings: list[str] = Field(default_factory=list)
     intent: Optional[str] = None

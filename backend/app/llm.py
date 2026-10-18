@@ -77,6 +77,54 @@ def extract_explicit_plants(text: str) -> list[str]:
 
 extract_plants = extract_explicit_plants
 
+def extract_single_plant_safe(text: str) -> Optional[str]:
+    """Extract a single plant ID safely without confusing quantities/thresholds for plants."""
+    explicit = extract_explicit_plants(text)
+    if explicit:
+        return explicit[0]
+    m = re.search(r"\b(1258|1266|1268|7228)\b", (text or "").lower())
+    if m:
+        return m.group(1)
+    return None
+
+def extract_explicit_limit(q_lower: str) -> Optional[int]:
+    """Extract an explicit row/item limit requested by the user, ignoring thresholds and quantities."""
+    # 1. Follow-up limit adjustments: "show 5 instead", "5 instead", "make it 5", "change to 5", "just 5", "only 5", "limit to 5"
+    m_adj = re.search(r"\b(?:show\s+|give\s+me\s+|display\s+|limit\s+to\s+|make\s+it\s+|change\s+to\s+|just\s+|only\s+)?(\d{1,3})\s+instead\b", q_lower)
+    if m_adj:
+        val = int(m_adj.group(1))
+        if val not in [2024, 2025, 2026, 1258, 1266, 1268, 7228]:
+            return val
+
+    m_change = re.search(r"\b(?:make\s+it|change\s+(?:limit\s+)?to|set\s+limit\s+to|limit\s+to)\s*(\d{1,3})\b(?!\s*%)", q_lower)
+    if m_change:
+        val = int(m_change.group(1))
+        if val not in [2024, 2025, 2026, 1258, 1266, 1268, 7228]:
+            return val
+
+    # 2. Ranking or count limit prefix: "top 10", "bottom 5", "first 20", "last 5", "highest 10", "lowest 5", "limit 25"
+    m = re.search(r"\b(?:top|bottom|highest|lowest|first|last|least|limit)\s*(\d{1,3})\b(?!\s*%)", q_lower)
+    if m:
+        val = int(m.group(1))
+        if val not in [2024, 2025, 2026, 1258, 1266, 1268, 7228]:
+            return val
+            
+    # 3. Explicit action + quantity + optional entity: "show 5 empty bins", "give me 10 materials", "display 20 rows", "list 5 bins", "show 5"
+    m2 = re.search(r"\b(?:show|give\s+me|display|list|fetch)\s+(\d{1,3})(?:\s+(?:completely\s+|active\s+|empty\s+|vacant\s+)?(?:bins?|materials?|records?|rows?|items?|results?))?\b(?!\s*%)", q_lower)
+    if m2:
+        val = int(m2.group(1))
+        if val not in [2024, 2025, 2026, 1258, 1266, 1268, 7228]:
+            return val
+
+    # 4. Leading count: "5 empty bins", "10 bins"
+    m3 = re.search(r"^(?:show|get|find|display)?\s*(\d{1,3})\s+(?:completely\s+|active\s+|empty\s+|vacant\s+)?(?:bins?|materials?|records?|rows?|items?|results?)\b(?!\s*%)", q_lower)
+    if m3:
+        val = int(m3.group(1))
+        if val not in [2024, 2025, 2026, 1258, 1266, 1268, 7228]:
+            return val
+
+    return None
+
 def _plant_sql_clause(column: str, plants: list[str] | None, prefix: str = " AND ") -> str:
     """Build a safe multi-value plant predicate for deterministic SQL."""
     vals = list(dict.fromkeys(str(p) for p in (plants or []) if str(p).isdigit()))
@@ -541,20 +589,18 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     q_lower = question.lower().strip()
     is_followup = is_elliptical_followup(q_lower) and bool(history)
     
-    # Extract any explicit plant filter in the current question
-    new_plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-    new_plant = new_plant_match.group(1) if new_plant_match and new_plant_match.group(1) not in ["2024", "2025", "2026"] else None
+    # Extract any explicit plant filter in the current question safely
+    new_plant = extract_single_plant_safe(q_lower)
 
-    # Extract any explicit limit in the current question
-    new_limit_match = re.search(r"\b(?:top|bottom|highest|lowest|first|last|least)?\s*(\d{1,3})\b", q_lower)
-    new_limit = int(new_limit_match.group(1)) if (new_limit_match and new_limit_match.group(1) not in ["100", "2024", "2025", "2026", "1258", "1266", "1268", "7228"]) else None
+    # Extract any explicit limit in the current question safely
+    new_limit = extract_explicit_limit(q_lower)
 
     # Default initial state
     state = {
         "entity": "inventory",
         "metric": "total_inventory",
         "ranking": None,
-        "limit": 10,
+        "limit": new_limit,
         "condition": None,
         "aggregation": "list",
         "filters": {},
@@ -577,14 +623,14 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             if any(k in uq_lower for k in ["all plants", "across plants", "by plant", "each plant", "every plant", "plants", "compare plants", "across all", "whole warehouse", "entire warehouse", "network", "overall"]):
                 state["filters"].pop("plant", None)
             else:
-                pm = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", uq_lower)
-                if pm and pm.group(1) not in ["2024", "2025", "2026"]:
-                    state["filters"]["plant"] = pm.group(1)
+                pm_val = extract_single_plant_safe(uq_lower)
+                if pm_val:
+                    state["filters"]["plant"] = pm_val
 
             # Limit in history
-            lm = re.search(r"\b(?:top|bottom|highest|lowest|first|last|least)?\s*(\d{1,3})\b", uq_lower)
-            if lm and lm.group(1) not in ["100", "2024", "2025", "2026", "1258", "1266", "1268", "7228"]:
-                state["limit"] = int(lm.group(1))
+            hist_lim = extract_explicit_limit(uq_lower)
+            if hist_lim:
+                state["limit"] = hist_lim
 
             # Check topic signatures
             if (
@@ -963,13 +1009,13 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             state["metric"] = "utilization"
         state["ranking"] = None
         state["filters"] = {"plant": new_plant} if new_plant else {}
-        state["limit"] = new_limit or 50
+        state["limit"] = new_limit
     elif is_find_bins and not is_fresh_specific_bin and not is_fresh_empty and not is_mat_entity:
         state["entity"] = "bin"
         state["aggregation"] = "list"
         state["ranking"] = None
         state["filters"] = {"plant": new_plant} if new_plant else {}
-        state["limit"] = new_limit or 50
+        state["limit"] = new_limit
         if any(k in q_lower for k in ["high utiliz", "highly utiliz", "top utiliz", "most utiliz"]):
             state["topic"] = "top_utilized_bins"
             state["ranking"] = "highest"
@@ -1202,7 +1248,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["ranking"] = None
         state["aggregation"] = "list"
         state["filters"] = {"plant": new_plant} if new_plant else {}
-        state["limit"] = new_limit or 50
+        state["limit"] = new_limit
     elif is_fresh_top_bins:
         state["entity"] = "bin"
         state["metric"] = "utilization"
@@ -1537,6 +1583,7 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
     resolved_q = state.get("resolved_query", question)
     q_lower = resolved_q.lower()
     is_followup = is_elliptical_followup(question.lower()) and bool(history)
+    new_limit = state.get("limit") or extract_explicit_limit(q_lower)
 
     # 1. ENTITY & SCOPE EXTRACTION (Context-driven)
     is_mat_entity = any(m in q_lower for m in ["material", "materials", "sku", "skus", "item", "items", "product", "products", "goods", "stock item", "stock items"])
@@ -2063,7 +2110,8 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC"""
             util_condition = "UtilizationNum >= 80"
 
         plant_filter = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
-        n_limit = state.get("limit") or 50
+        n_limit = state.get("limit") or new_limit
+        top_clause = f"TOP {n_limit} " if n_limit else ""
         sql_compound = f"""WITH BinStats AS (
     SELECT 
         b.BinLocation AS [Bin],
@@ -2079,10 +2127,16 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) DESC"""
     LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
     WHERE b.Volume > 0{plant_filter}
     GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit
+),
+FilteredStats AS (
+    SELECT 
+        Bin, Plant, [Storage Location], Capacity, [Occupied Volume], [Utilization %], [UtilizationNum], [CapacityNum],
+        COUNT(*) OVER() AS [TotalMatching]
+    FROM BinStats
+    WHERE {cap_condition} AND {util_condition}
 )
-SELECT TOP {n_limit} Bin, Plant, [Storage Location], Capacity, [Occupied Volume], [Utilization %]
-FROM BinStats
-WHERE {cap_condition} AND {util_condition}
+SELECT {top_clause}Bin, Plant, [Storage Location], Capacity, [Occupied Volume], [Utilization %], TotalMatching
+FROM FilteredStats
 ORDER BY [UtilizationNum] DESC, [CapacityNum] ASC"""
 
         return {
@@ -2109,14 +2163,16 @@ ORDER BY [UtilizationNum] DESC, [CapacityNum] ASC"""
     )
     if is_find_bins_req and not is_mat_entity:
         plant_filter_fb = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
-        n_limit = state.get("limit") or 50
-        sql_find_bins = f"""SELECT TOP {n_limit}
+        n_limit = state.get("limit") or new_limit
+        top_clause = f"TOP {n_limit} " if n_limit else ""
+        sql_find_bins = f"""SELECT {top_clause}
     b.BinLocation AS [Bin],
     b.Plant AS [Plant],
     COALESCE(b.StorageLocation, 'N/A') AS [Storage Location],
     CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Capacity],
     ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Occupied Volume],
-    CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %]
+    CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %],
+    COUNT(*) OVER() AS [TotalMatching]
 FROM dbo.ZWMS_BIN_MASTER b
 LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
 LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
@@ -2547,15 +2603,18 @@ WHERE (i.BinNo IS NULL OR i.UnrestrictedQty = 0){plant_filter}"""
             }
 
         plant_suffix = f" — Plant {plant_cand}" if plant_cand else ""
-        sql_empty_list = f"""SELECT TOP 50 
+        n_limit = state.get("limit") or new_limit
+        top_clause = f"TOP {n_limit} " if n_limit else ""
+        sql_empty_list = f"""SELECT {top_clause}
     b.BinLocation AS [BinLocation],
     b.BinLocation AS [Bin], 
     b.Plant AS [Plant], 
     b.StorageLocation AS [Storage Location], 
     0 AS [Inventory Qty], 
-    'Available' AS [Status] 
+    'Available' AS [Status],
+    COUNT(*) OVER() AS [TotalMatching]
 FROM dbo.ZWMS_BIN_MASTER b 
-LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant AND b.StorageLocation = i.StorageLocation 
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant 
 WHERE (i.BinNo IS NULL OR i.UnrestrictedQty = 0){plant_filter} 
 GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit 
 ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
@@ -3764,15 +3823,18 @@ WHERE i.UnrestrictedQty > 0{plant_filter_occ}"""
         )
     )
     if is_bin_cap_list_req:
+        n_limit = state.get("limit") or new_limit
+        top_clause = f"TOP {n_limit} " if n_limit else ""
         plant_filter_bin = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
-        sql_bin_cap_list = f"""SELECT TOP 100
+        sql_bin_cap_list = f"""SELECT {top_clause}
     b.BinLocation AS [Bin],
     b.Plant AS [Plant],
     COALESCE(b.StorageLocation, 'N/A') AS [Storage Location],
     ROUND(b.Volume, 2) AS [Total Capacity (FT3)],
     ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Occupied Volume (FT3)],
     ROUND(b.Volume - COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Available Capacity (FT3)],
-    CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Capacity Utilization %]
+    CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Capacity Utilization %],
+    COUNT(*) OVER() AS [TotalMatching]
 FROM dbo.ZWMS_BIN_MASTER b
 LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
 LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
@@ -4672,12 +4734,17 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     # 0A_COMPOUND. Compound Capacity + Utilization: "low capacity but high utilization", "bins with capacity < 45 FT3 and utilization > 80%"
     compound_info = parse_compound_capacity_utilization(q_lower)
     if compound_info and "Bin" in cols and ("Utilization %" in cols or "Capacity Utilization %" in cols):
-        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-        plant_val = plant_match.group(1) if plant_match else None
+        plant_val = extract_single_plant_safe(q_lower)
         plant_str = f" in Plant {plant_val}" if plant_val else ""
         cap_desc = compound_info.get("cap_desc", "specified capacity")
         util_desc = compound_info.get("util_desc", "specified utilization")
-        single_stmt = f"Found **{len(rows)} matching bins**{plant_str} meeting both conditions: Capacity ({cap_desc}) and Utilization ({util_desc})."
+        total_matching = rows[0].get("TotalMatching") if (rows and "TotalMatching" in rows[0]) else len(rows)
+        displayed_rows = len(rows)
+        explicit_lim = extract_explicit_limit(q_lower)
+        if explicit_lim and total_matching > displayed_rows:
+            single_stmt = f"Found **{total_matching:,} matching bins**{plant_str} meeting both conditions. Showing the first **{displayed_rows}** (Capacity: {cap_desc}, Utilization: {util_desc})."
+        else:
+            single_stmt = f"Found **{total_matching:,} matching bins**{plant_str} meeting both conditions: Capacity ({cap_desc}) and Utilization ({util_desc})."
         if is_single_statement_requested:
             return single_stmt
         lines = [
@@ -4689,10 +4756,15 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
 
     # 0A_FIND_BINS. Entity Preservation: "Find bins..."
     if "Bin" in cols and any(q_lower.startswith(p) or f" {p}" in q_lower for p in ["find bins", "find bin", "search bins", "look for bins", "list bins", "show bins", "get bins"]) and not any(k in q_lower for k in ["between", "from", "utiliz"]):
-        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-        plant_val = plant_match.group(1) if plant_match else None
+        plant_val = extract_single_plant_safe(q_lower)
         plant_str = f" in Plant {plant_val}" if plant_val else ""
-        single_stmt = f"Displaying **{len(rows)} bins**{plant_str} at the individual bin level."
+        total_matching = rows[0].get("TotalMatching") if (rows and "TotalMatching" in rows[0]) else len(rows)
+        displayed_rows = len(rows)
+        explicit_lim = extract_explicit_limit(q_lower)
+        if explicit_lim and total_matching > displayed_rows:
+            single_stmt = f"Found **{total_matching:,} matching bins**{plant_str}. Showing the first **{displayed_rows}** at the individual bin level."
+        else:
+            single_stmt = f"Displaying **{total_matching:,} bins**{plant_str} at the individual bin level."
         if is_single_statement_requested:
             return single_stmt
         lines = [
@@ -4760,8 +4832,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     if "Empty Bins Available Capacity (FT3)" in cols:
         cnt = rows[0].get("Empty Bins Count", 0)
         avail_cap = rows[0].get("Empty Bins Available Capacity (FT3)", 0.0)
-        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-        plant_val = plant_match.group(1) if plant_match else None
+        plant_val = extract_single_plant_safe(q_lower)
         plant_str = f" in Plant {plant_val}" if plant_val else " across the warehouse"
         return f"There are **{cnt:,} empty bins** currently available{plant_str}, offering **{avail_cap:,.2f} FT³** of available storage capacity for immediate put-away."
 
@@ -4776,8 +4847,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         avail_val = rows[0].get("Total Available Capacity (FT3)", 0.0)
         tot_val = rows[0].get("Total Capacity (FT3)", 0.0)
         occ_val = rows[0].get("Total Occupied Volume (FT3)", 0.0)
-        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-        plant_val = plant_match.group(1) if plant_match else (rows[0].get("Plant") if "Plant" in rows[0] else None)
+        plant_val = extract_single_plant_safe(q_lower) or (rows[0].get("Plant") if "Plant" in rows[0] else None)
         if plant_val:
             return f"**Plant {plant_val}** has **{avail_val:,.2f} FT³** of available storage capacity remaining (Total Capacity: **{tot_val:,.2f} FT³**, Occupied: **{occ_val:,.2f} FT³**)."
         return f"There is **{avail_val:,.2f} FT³** of available storage capacity remaining in the warehouse (Total Capacity: **{tot_val:,.2f} FT³**, Occupied: **{occ_val:,.2f} FT³**)."
@@ -4787,8 +4857,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         occ_val = rows[0].get("Total Occupied Volume (FT3)", 0.0)
         ob_val = rows[0].get("Occupied Bins", 0)
         qty_val = rows[0].get("Total Inventory Quantity", 0.0)
-        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-        plant_val = plant_match.group(1) if plant_match else (rows[0].get("Plant") if "Plant" in rows[0] else None)
+        plant_val = extract_single_plant_safe(q_lower) or (rows[0].get("Plant") if "Plant" in rows[0] else None)
         plant_str = f" in Plant {plant_val}" if plant_val else ""
         return f"The current occupied storage volume{plant_str} is **{occ_val:,.2f} FT³** across **{ob_val:,} occupied bins** (holding **{qty_val:,.0f} total inventory units**)."
 
@@ -4858,10 +4927,15 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
 
     # 0A_CAP_9. Bins Capacity List: "Show capacity for each bin", "Show capacity of all bins in Plant 1258"
     if "Bin" in cols and "Total Capacity (FT3)" in cols and "Available Capacity (FT3)" in cols and len(rows) > 1 and "Rank" not in cols and not any(k in q_lower for k in ["between", "from", "above", "below", "at least"]):
-        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-        plant_val = plant_match.group(1) if plant_match else None
+        plant_val = extract_single_plant_safe(q_lower)
         plant_str = f" in Plant {plant_val}" if plant_val else ""
-        single_stmt = f"Displaying capacity specifications for **{len(rows)} bins**{plant_str} (Total Capacity, Occupied Volume, Available Capacity, and Capacity Utilization %)."
+        total_matching = rows[0].get("TotalMatching") if (rows and "TotalMatching" in rows[0]) else len(rows)
+        displayed_rows = len(rows)
+        explicit_lim = extract_explicit_limit(q_lower)
+        if explicit_lim and total_matching > displayed_rows:
+            single_stmt = f"Displaying capacity specifications for **{total_matching:,} matching bins**{plant_str}. Showing the first **{displayed_rows}**."
+        else:
+            single_stmt = f"Displaying capacity specifications for **{total_matching:,} bins**{plant_str} (Total Capacity, Occupied Volume, Available Capacity, and Capacity Utilization %)."
         if is_single_statement_requested:
             return single_stmt
         lines = [
@@ -4889,8 +4963,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
                 rf_desc = f"up to {rf['upper']:,.0f} FT³ {metric_name}"
             else:
                 rf_desc = f"in the specified {metric_name} range"
-            plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-            plant_val = plant_match.group(1) if plant_match else None
+            plant_val = extract_single_plant_safe(q_lower)
             plant_str = f" in Plant {plant_val}" if plant_val else ""
             if count == 0:
                 single_stmt = f"No bins found with **{rf_desc}**{plant_str}."
@@ -5102,8 +5175,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     # 0A0. Cross-Table Validation: Count of Materials Missing from Volume Master (Rule DQ-001 Count)
     if "Missing Materials Count" in cols or ("Count" in cols and any(k in q_lower for k in ["volume master", "material master", "missing", "without dimension", "no corresponding", "entries", "entry"])):
         count_val = rows[0].get("Missing Materials Count", rows[0].get("Count", 0))
-        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-        plant_val = plant_match.group(1) if plant_match else None
+        plant_val = extract_single_plant_safe(q_lower)
         plant_str = f" in Plant {plant_val}" if plant_val else ""
 
         single_stmt = f"There are **{count_val:,}** inventory items that do not have corresponding Volume Master entries{plant_str}."
@@ -5112,8 +5184,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     # 0A. Cross-Table Validation: Materials Missing from Volume Master (Rule DQ-001)
     if "Inventory Qty" in cols and ("Storage Location" in cols or "StorageLocation" in cols) and "Quality Issue" not in cols and "Bin" not in cols and "BinLocation" not in cols:
         total_missing_qty = sum(r.get("Inventory Qty", 0) for r in rows)
-        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-        plant_val = plant_match.group(1) if plant_match else None
+        plant_val = extract_single_plant_safe(q_lower)
         plant_str = f" in Plant {plant_val}" if plant_val else " across active inventory"
 
         single_stmt = f"Detected **{count} material records** in Inventory Master that have no corresponding record in Material Volume Master{plant_str} (affecting **{total_missing_qty:,.2f} total inventory units**)."
@@ -5337,8 +5408,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
                 rf_desc = "within the specified range"
         else:
             rf_desc = "within the specified range"
-        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-        plant_val = plant_match.group(1) if plant_match else None
+        plant_val = extract_single_plant_safe(q_lower)
         plant_str = f" in Plant {plant_val}" if plant_val else ""
         if count == 0:
             single_stmt = f"No materials found with inventory quantity **{rf_desc}**{plant_str}."
@@ -5370,8 +5440,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
                 rf_desc = f"below {rf['upper']}% utilization"
             else:
                 rf_desc = "in the requested utilization range"
-            plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-            plant_val = plant_match.group(1) if plant_match else None
+            plant_val = extract_single_plant_safe(q_lower)
             plant_str = f" in Plant {plant_val}" if plant_val else ""
             if count == 0:
                 single_stmt = f"No bins found operating with **{rf_desc}**{plant_str}."
@@ -5476,32 +5545,28 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     # 0D_slocs. Storage Locations Count (Direct Single Metric)
     if "Storage Locations Count" in cols or ("Storage Location Count" in cols and len(cols) == 1):
         count_val = rows[0].get("Storage Locations Count", rows[0].get("Storage Location Count", 0))
-        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
-        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
+        plant_val = extract_single_plant_safe(q_lower)
         plant_str = f" in Plant {plant_val}" if plant_val else ""
         return f"**{count_val:,} storage locations**{plant_str}."
 
     # 0D. Occupied Bins Count (Direct Single Metric)
     if "Occupied Bins Count" in cols:
         count_val = rows[0].get("Occupied Bins Count", 0)
-        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
-        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
+        plant_val = extract_single_plant_safe(q_lower)
         plant_str = f" in Plant {plant_val}" if plant_val else ""
         return f"**{count_val:,} occupied bins**{plant_str}."
 
     # 0E. Total Bins Count (Direct Single Metric)
     if "Total Bins Count" in cols:
         count_val = rows[0].get("Total Bins Count", 0)
-        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
-        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
+        plant_val = extract_single_plant_safe(q_lower)
         plant_str = f" in Plant {plant_val}" if plant_val else ""
         return f"**{count_val:,} total bins**{plant_str}."
 
     # 0D_records. Inventory Records Count (Concept B - COUNT(rows))
     if "Inventory Records Count" in cols or (len(cols) == 1 and any(k in q_lower for k in ["inventory record", "inventory records", "inventory row", "inventory rows", "records are there", "records in inventory", "number of inventory records", "count of inventory records", "total inventory records", "records in plant", "how many inventory records", "how many records in inventory", "total inventory rows"])):
         count_val = rows[0].get("Inventory Records Count", list(rows[0].values())[0])
-        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
+        plant_val = extract_single_plant_safe(q_lower)
         if plant_val:
             return f"There are **{count_val:,}** inventory records in Plant {plant_val}."
         return f"There are **{count_val:,}** inventory records."
@@ -5509,8 +5574,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     # 0F. Total Unique Materials / SKU Count (Concept C - COUNT(DISTINCT Material))
     if ("Unique Materials Count" in cols or "Total Unique Materials" in cols) and "total_inventory" not in cols and "TotalUnrestrictedQuantity" not in cols:
         count_val = rows[0].get("Unique Materials Count", rows[0].get("Total Unique Materials", 0))
-        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
+        plant_val = extract_single_plant_safe(q_lower)
         if plant_val:
             return f"There are **{count_val:,}** unique materials in Plant {plant_val}."
         return f"There are **{count_val:,}** unique materials in inventory."
@@ -5518,8 +5582,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     # 0G. Total Inventory Quantity (Concept A - SUM(UnrestrictedQty))
     if ("total_inventory" in cols or "Total Unrestricted Quantity" in cols or "TotalUnrestrictedQuantity" in cols) and "Total Unique Materials" not in cols and "TotalUniqueMaterials" not in cols:
         tot_val = rows[0].get("total_inventory", rows[0].get("Total Unrestricted Quantity", rows[0].get("TotalUnrestrictedQuantity", 0.0)))
-        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
+        plant_val = extract_single_plant_safe(q_lower)
         if plant_val:
             return f"Total inventory in Plant {plant_val} is **{tot_val:,.0f}** units."
         return f"Total warehouse inventory is **{tot_val:,.0f}** units."
@@ -5527,8 +5590,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     # 1. Empty Bins Count (Scalar KPI)
     if "Empty Bins Count" in cols:
         count_val = rows[0].get("Empty Bins Count", 0)
-        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
-        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
+        plant_val = extract_single_plant_safe(q_lower)
         
         if plant_val:
             return f"There are **{count_val:,}** completely empty bins in Plant {plant_val}."
@@ -5574,11 +5636,18 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
 
     # 2. Empty Bins List (Table Output)
     if ("Storage Location" in cols or "StorageLocation" in cols) and ("Status" in cols or "Inventory Qty" in cols) and ("Bin" in cols or "BinLocation" in cols) and any(k in q_lower for k in ["empty", "putaway", "put-away", "vacant", "unoccupied", "free"]):
-        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
-        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
+        plant_val = extract_single_plant_safe(q_lower)
         plant_str = f" — Plant {plant_val}" if plant_val else ""
         
-        single_stmt = f"Found **{count} empty bins**{plant_str} currently available for put-away (Inventory Qty = 0)."
+        total_matching = rows[0].get("TotalMatching") if (rows and "TotalMatching" in rows[0]) else count
+        displayed_rows = count
+        
+        explicit_lim = extract_explicit_limit(q_lower)
+        if explicit_lim and total_matching > displayed_rows:
+            single_stmt = f"Found **{total_matching:,} matching empty bins**{plant_str}. Showing the first **{displayed_rows}** available for put-away (Inventory Qty = 0)."
+        else:
+            single_stmt = f"Found **{total_matching:,} empty bins**{plant_str} currently available for put-away (Inventory Qty = 0)."
+            
         if is_single_statement_requested:
             return single_stmt
             
@@ -5678,8 +5747,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         leader = rows[0].get("Bin", "N/A") if rows else "N/A"
         l_util = rows[0].get("Utilization", rows[0].get("Utilization %", "0%")) if rows else "0%"
         
-        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
-        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else None
+        plant_val = extract_single_plant_safe(q_lower)
         plant_str = f" in Plant {plant_val}" if plant_val else " across the warehouse"
         leader_cap = rows[0].get("Bin Capacity", rows[0].get("Capacity", "N/A")) if rows else "N/A"
         leader_plant = rows[0].get("Plant", "")
@@ -5805,8 +5873,7 @@ GROUP BY Plant"""
         avg_val = rows[0].get("AvgInventoryPerOccupiedBin", 0.0)
         tot_qty = rows[0].get("TotalQuantity", 0.0)
         occ_bins = rows[0].get("OccupiedBins", 0)
-        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
-        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else (rows[0].get("Plant") if "Plant" in rows[0] and str(rows[0]["Plant"]) != "All" else None)
+        plant_val = extract_single_plant_safe(q_lower) or (rows[0].get("Plant") if "Plant" in rows[0] and str(rows[0]["Plant"]) != "All" else None)
         
         if plant_val:
             single_stmt = f"The average inventory per occupied bin in **Plant {plant_val}** is **{avg_val:,.2f} units** across **{occ_bins:,} occupied bins** (Total Stock: **{tot_qty:,.2f} units**)."
@@ -5899,8 +5966,7 @@ GROUP BY Plant"""
     # 5. Bin Utilization and Occupancy Percentage
     if "BinUtilizationPct" in cols or "VolumeUtilizationPct" in cols or "BinOccupancyPct" in cols:
 
-        plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
-        plant_val = plant_match.group(1) if (plant_match and plant_match.group(1) not in ["10", "20", "50", "100", "2024", "2025", "2026"]) else (rows[0].get("Plant") if len(rows) == 1 and rows[0].get("Plant") and str(rows[0].get("Plant")) != "All" else None)
+        plant_val = extract_single_plant_safe(q_lower) or (rows[0].get("Plant") if len(rows) == 1 and rows[0].get("Plant") and str(rows[0].get("Plant")) != "All" else None)
         
         if plant_val:
             matching_row = next((r for r in rows if str(r.get("Plant")) == str(plant_val)), rows[0])
@@ -5996,8 +6062,7 @@ GROUP BY Plant"""
 
     # 6. Specific Plant Material Records
     if ("Material" in cols or "Description" in cols) and ("Qty" in cols or "UnrestrictedQty" in cols or "Bin" in cols or "BinNo" in cols):
-        plant_match = re.search(r"\b(1258|1266|1268|7228|\d{4})\b", q_lower)
-        plant_val = plant_match.group(1) if plant_match else (rows[0].get("Plant", "N/A") if "Plant" in cols else "1258")
+        plant_val = extract_single_plant_safe(q_lower) or (rows[0].get("Plant", "N/A") if "Plant" in cols else "1258")
         
         tot_records_str = f"{count:,}"
         single_stmt = f"In the uploaded inventory data, **Plant {plant_val}** has **{tot_records_str} inventory records**."

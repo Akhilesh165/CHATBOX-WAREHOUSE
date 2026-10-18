@@ -222,6 +222,9 @@ async def chat_endpoint(req: ChatRequest):
                 logger.error(f"Error querying plant {p}: {e}")
                 p_rows = []
 
+            p_total = p_rows[0].get("TotalMatching") if (p_rows and isinstance(p_rows[0], dict) and "TotalMatching" in p_rows[0]) else len(p_rows)
+            for r in p_rows:
+                r.pop("TotalMatching", None)
             p_count = len(p_rows)
             table_title = f"Plant {p} — Bins {op_desc} {thresh_str}% utilization"
             empty_msg = f"No bins found {op_desc} {thresh_str}% utilization in Plant {p}." if p_count == 0 else None
@@ -230,6 +233,8 @@ async def chat_endpoint(req: ChatRequest):
                 title=table_title,
                 plant=str(p),
                 count=p_count,
+                total_count=p_total,
+                displayed_count=p_count,
                 rows=p_rows,
                 empty_message=empty_msg
             ))
@@ -363,8 +368,28 @@ async def chat_endpoint(req: ChatRequest):
     # Expose SQL only if caller is admin or debug is enabled
     safe_sql = validated_sql if (req.is_admin or settings.debug) else None
 
+    # Compute separated total_count vs displayed_count
+    total_matching_count = None
+    if rows and isinstance(rows[0], dict) and "TotalMatching" in rows[0]:
+        try:
+            total_matching_count = int(rows[0]["TotalMatching"])
+        except Exception:
+            total_matching_count = len(rows)
+        for r in rows:
+            r.pop("TotalMatching", None)
+    elif is_multi_table and table_datasets:
+        total_matching_count = sum(t.total_count or t.count for t in table_datasets)
+    elif rows and isinstance(rows[0], dict):
+        total_matching_count = len(rows)
+    else:
+        total_matching_count = 0
+
+    displayed_count = len(rows)
+
     meta = Meta(
-        rowCount=len(rows),
+        rowCount=displayed_count,
+        total_count=total_matching_count,
+        displayed_count=displayed_count,
         executionMs=total_execution_ms,
         llmMs=total_llm_ms,
         sqlMs=sql_duration_ms
@@ -425,6 +450,8 @@ async def chat_endpoint(req: ChatRequest):
         tables=table_datasets,
         chart=chart,
         meta=meta,
+        total_count=total_matching_count,
+        displayed_count=displayed_count,
         sql=safe_sql,
         warnings=warnings,
         intent=intent,
