@@ -235,3 +235,145 @@ def test_chart_suppression_and_explicit_request():
     opt_chart = optimize_response_format(q_chart, rows, gen_chart)
     assert opt_chart["chart_type"] == "bar"
     assert opt_chart["output_type"] == "bar_chart"
+
+
+def test_plant_ranking_empty_bins_desc():
+    """Rule: 'Rank plants by number of empty bins' ranks plants by empty bin count DESC."""
+    variations = [
+        "Rank plants by number of empty bins",
+        "Rank plants by empty bins",
+        "Show plants ranked by empty bin count",
+        "Rank the plants based on empty bins",
+        "Rank plants according to the number of empty bins"
+    ]
+    for q in variations:
+        gen = deterministic_warehouse_sql_generator(q)
+        assert gen["intent"] == "plant_empty_bins_ranking", f"Failed intent for: {q}"
+        assert gen["metric"] == "EMPTY_BIN_COUNT", f"Failed metric for: {q}"
+        assert gen["query_plan"]["intent"] == "RANKING"
+        assert gen["query_plan"]["rank_metric"] == "EMPTY_BIN_COUNT"
+        assert gen["query_plan"]["rank_direction"] == "DESC"
+        assert "Empty Bins" in gen["sql"]
+        assert "ORDER BY [Empty Bins] DESC" in gen["sql"]
+        # Must NOT be hijacked by bin utilization or 80% threshold
+        assert "utilization" not in gen["sql"].lower() or "sum(i.unrestrictedqty" not in gen["sql"].lower()
+        assert "> 80" not in gen["sql"] and "0.8" not in gen["sql"]
+
+    rows, _ = execute_readonly(gen["sql"])
+    assert len(rows) == 4
+    # Plant 1268 has the most empty bins (4,872)
+    assert rows[0]["Plant"] == 1268
+    assert rows[0]["Empty Bins"] == 4872
+    assert rows[1]["Plant"] == 1258
+    assert rows[1]["Empty Bins"] == 2425
+    assert rows[2]["Plant"] == 7228
+    assert rows[2]["Empty Bins"] == 1992
+    assert rows[3]["Plant"] == 1266
+    assert rows[3]["Empty Bins"] == 544
+
+    ans = format_deterministic_answer(q, rows)
+    assert "Plant 1268" in ans
+    assert "4,872 empty bins" in ans
+    assert "Plant Ranking by Number of Empty Bins" in ans
+
+    opt = optimize_response_format(q, rows, gen)
+    assert opt["chart_type"] == "none"
+    assert opt["output_type"] == "table"
+
+
+def test_plant_ranking_empty_bins_singular_most():
+    """Rule: 'Which plant has the most empty bins?' returns TOP 1 in singular text mode."""
+    variations = [
+        "Which plant has the most empty bins?",
+        "Which plant has the highest number of empty bins?"
+    ]
+    for q in variations:
+        gen = deterministic_warehouse_sql_generator(q)
+        assert gen["intent"] == "plant_empty_bins_ranking", f"Failed intent for: {q}"
+        assert gen["metric"] == "EMPTY_BIN_COUNT"
+        assert "TOP 1" in gen["sql"]
+        assert gen["output_type"] == "text"
+
+    rows, _ = execute_readonly(gen["sql"])
+    assert len(rows) == 1
+    assert rows[0]["Plant"] == 1268
+    assert rows[0]["Empty Bins"] == 4872
+
+    ans = format_deterministic_answer(q, rows)
+    assert "Plant 1268" in ans
+    assert "4,872 empty bins" in ans
+    assert "most empty bins" in ans
+
+    opt = optimize_response_format(q, rows, gen)
+    assert opt["output_type"] == "text"
+    assert opt["chart_type"] == "none"
+
+
+def test_plant_ranking_empty_bins_plural_most():
+    """Rule: Plural questions like 'Which plants have the most empty bins?' return all plants ranked."""
+    variations = [
+        "Which plants have the most empty bins?",
+        "Show me the plants with the most empty bins."
+    ]
+    for q in variations:
+        gen = deterministic_warehouse_sql_generator(q)
+        assert gen["intent"] == "plant_empty_bins_ranking", f"Failed intent for: {q}"
+        assert gen["metric"] == "EMPTY_BIN_COUNT"
+        assert gen["output_type"] == "table"
+
+        rows, _ = execute_readonly(gen["sql"])
+        assert len(rows) == 4
+        assert rows[0]["Plant"] == 1268
+        assert rows[0]["Empty Bins"] == 4872
+
+
+def test_plant_ranking_empty_bins_singular_fewest():
+    """Rule: 'Which plant has the fewest empty bins?' sorts ASC and returns TOP 1."""
+    q = "Which plant has the fewest empty bins?"
+    gen = deterministic_warehouse_sql_generator(q)
+    assert gen["intent"] == "plant_empty_bins_ranking"
+    assert gen["metric"] == "EMPTY_BIN_COUNT"
+    assert "TOP 1" in gen["sql"]
+    assert "ASC" in gen["sql"]
+    assert gen["output_type"] == "text"
+
+    rows, _ = execute_readonly(gen["sql"])
+    assert len(rows) == 1
+    assert rows[0]["Plant"] == 1266
+    assert rows[0]["Empty Bins"] == 544
+
+    ans = format_deterministic_answer(q, rows)
+    assert "Plant 1266" in ans
+    assert "544 empty bins" in ans
+    assert "fewest empty bins" in ans
+
+
+def test_plant_ranking_empty_bins_reverse_asc():
+    """Rule: 'Rank plants by number of empty bins from lowest to highest' sorts ASC."""
+    q = "Rank plants by number of empty bins from lowest to highest"
+    gen = deterministic_warehouse_sql_generator(q)
+    assert gen["intent"] == "plant_empty_bins_ranking"
+    assert "ORDER BY [Empty Bins] ASC" in gen["sql"]
+
+    rows, _ = execute_readonly(gen["sql"])
+    assert len(rows) == 4
+    assert rows[0]["Plant"] == 1266
+    assert rows[0]["Empty Bins"] == 544
+    assert rows[1]["Plant"] == 7228
+    assert rows[1]["Empty Bins"] == 1992
+    assert rows[2]["Plant"] == 1258
+    assert rows[2]["Empty Bins"] == 2425
+    assert rows[3]["Plant"] == 1268
+    assert rows[3]["Empty Bins"] == 4872
+
+
+def test_plant_ranking_empty_bins_single_line():
+    """Rule: Single line mode returns concise single statement without tables."""
+    q = "Give me the plant with the most empty bins in one line"
+    gen = deterministic_warehouse_sql_generator(q)
+    rows, _ = execute_readonly(gen["sql"])
+    ans = format_deterministic_answer(q, rows)
+    assert "Plant 1268" in ans
+    assert "4,872 empty bins" in ans
+    assert "\n" not in ans.strip()
+

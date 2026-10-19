@@ -772,6 +772,13 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                 state["topic"] = "plant_bin_capacity_ranking"
                 state["condition"] = None
                 state["aggregation"] = "list"
+            elif any(k in uq_lower for k in ["empty bin", "empty bins", "number of empty bins", "count of empty bins", "most empty bins", "fewest empty bins"]) and any(k in uq_lower for k in ["plant", "plants", "facility", "facilities"]) and any(k in uq_lower for k in ["rank", "ranking", "top", "bottom", "highest", "lowest", "most", "least", "fewest", "which"]):
+                state["entity"] = "plant"
+                state["metric"] = "EMPTY_BIN_COUNT"
+                state["ranking"] = "lowest" if any(k in uq_lower for k in ["least", "lowest", "bottom", "smallest", "fewest"]) else "highest"
+                state["topic"] = "plant_empty_bins_ranking"
+                state["condition"] = "empty"
+                state["aggregation"] = "list"
             elif any(k in uq_lower for k in ["number of bins", "total bins", "bin count"]) and any(k in uq_lower for k in ["plant", "plants", "facility", "facilities"]) and any(k in uq_lower for k in ["rank", "top", "bottom", "highest", "lowest"]):
                 state["entity"] = "plant"
                 state["metric"] = "bins_count"
@@ -1274,6 +1281,20 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["metric"] = "available_capacity"
         state["ranking"] = "lowest" if is_least else "highest"
         state["topic"] = "plant_available_capacity_ranking"
+        state["limit"] = new_limit or 4
+        state["aggregation"] = "list"
+        state["filters"] = {}
+    elif (
+        is_plant_keyword and
+        any(k in q_lower for k in ["empty bin", "empty bins", "number of empty bins", "count of empty bins", "most empty bins", "fewest empty bins"]) and
+        any(k in q_lower for k in ["rank", "ranking", "top", "bottom", "highest", "lowest", "most", "least", "fewest", "which plant", "which plants", "what plant", "show plants", "plants ranked", "based on empty bins", "according to the number of empty bins"])
+    ):
+        is_least = any(k in q_lower for k in ["least", "lowest", "bottom", "minimum", "fewest"])
+        state["entity"] = "plant"
+        state["metric"] = "EMPTY_BIN_COUNT"
+        state["ranking"] = "lowest" if is_least else "highest"
+        state["topic"] = "plant_empty_bins_ranking"
+        state["condition"] = "empty"
         state["limit"] = new_limit or 4
         state["aggregation"] = "list"
         state["filters"] = {}
@@ -2693,10 +2714,23 @@ ORDER BY BinUtilizationPct DESC"""
             "least full plant", "most full plant"
         ])
     )
+    is_plant_empty_bins_query = (
+        bool(re.search(r"\b(?:plants?|plnts?|facility|facilities)\b", q_lower)) and
+        any(k in q_lower for k in ["empty bin", "empty bins", "vacant bin", "vacant bins"]) and
+        (
+            any(k in q_lower for k in [
+                "rank", "ranking", "rankings", "sort", "order", "most", "highest",
+                "least", "lowest", "fewest", "which", "show plants", "plants ranked",
+                "based on", "according to", "empty bin count"
+            ]) or ("by plant" in q_lower and "count" in q_lower)
+        ) and
+        not any(k in q_lower for k in ["capacity", "volume", "ft3", "cubic"])
+    )
     is_bin_metric = (any(k in q_lower for k in ["bin", "bins", "location", "locations", "racks", "rack", "slot", "slots", "storage position", "ones", "one", "these", "those", "they", "them", "it"]) or (has_top or has_bottom or has_both)) and not is_plant_level_extreme
     is_util_metric = any(k in q_lower for k in ["utiliz", "full", "capacit", "occup", "empty", "unused", "space", "occupan"]) or has_both
 
     if (
+        not is_plant_empty_bins_query and
         is_bin_metric and (is_util_metric or has_both) and (has_top or has_bottom or has_both) and not is_mat_entity
         and not (state.get("entity") == "plant" and not any(b in q_lower for b in ["bin", "bins"]))
         and not (bool(re.search(r"\b(?:plants?|plnts?|facility|facilities)\b", q_lower)) and any(k in q_lower for k in ["occupied volume", "storage volume", "space occupied", "total bins", "unique materials", "inventory quantity", "available capacity", "warehouse space"]) and not any(b in q_lower for b in ["bin", "bins"]))
@@ -2704,7 +2738,8 @@ ORDER BY BinUtilizationPct DESC"""
             "total_warehouse_capacity", "available_capacity", "occupied_volume",
             "capacity_summary", "plant_capacity", "empty_bins_capacity",
             "referential_bins_capacity", "single_bin_capacity",
-            "compound_capacity_utilization", "compound_capacity_clarification", "find_bins_list"
+            "compound_capacity_utilization", "compound_capacity_clarification", "find_bins_list",
+            "plant_empty_bins_ranking"
         ]
         and not parse_compound_capacity_utilization(resolved_q)
         and not parse_range_filters(resolved_q)
@@ -3045,7 +3080,7 @@ ORDER BY {util_expr} {'ASC' if is_less else 'DESC'}"""
         "compare", "versus", "vs", "difference between", "their empty bins",
         "how much capacity", "capacity is available", "capacity in empty", "capacity of empty",
         "available capacity in empty", "available capacity of empty"
-    ]) and state.get("topic") != "empty_bins_capacity"
+    ]) and state.get("topic") != "empty_bins_capacity" and not is_plant_empty_bins_query and state.get("topic") != "plant_empty_bins_ranking"
     if is_empty_intent:
         plant_filter = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
         filters = {"plant": plant_cand} if plant_cand else {}
@@ -3588,18 +3623,20 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volum
     has_plant_word = bool(re.search(r"\b(?:plants?|plnts?|facility|facilities|sites)\b", q_lower)) or "warehouse space" in q_lower
     plant_rank_keywords = [
         "rank", "ranking", "rankings", "sort", "highest to lowest", "lowest to highest",
-        "plant-wise ranking", "order by", "which plant", "what plant", "top plant", "bottom plant",
+        "plant-wise ranking", "order by", "which plant", "which plants", "what plant", "top plant", "bottom plant",
         "who is #1", "who is number 1", "plant with the highest", "plant with the lowest",
-        "plant with highest", "plant with lowest", "occupies the most", "occupies the least"
+        "plant with highest", "plant with lowest", "occupies the most", "occupies the least",
+        "show plants ranked", "plants ranked", "ranked by", "based on empty bins", "according to the number of empty bins",
+        "plants with the most", "plants with the fewest", "plants with most", "plants with fewest"
     ]
-    is_plant_ranking_inquiry = has_plant_word and (
+    is_plant_ranking_inquiry = is_plant_empty_bins_query or (has_plant_word and (
         any(k in q_lower for k in plant_rank_keywords) or
         state.get("topic") in [
             "plant_occupied_volume_ranking", "plant_available_capacity_ranking",
             "plant_bin_capacity_ranking", "plant_bins_ranking", "plant_materials_ranking",
-            "plant_inventory_ranking", "plant_rank_lookup", "plant_rank_explanation"
+            "plant_inventory_ranking", "plant_empty_bins_ranking", "plant_rank_lookup", "plant_rank_explanation"
         ]
-    )
+    ))
 
     # 1. SPECIFIC ENTITY RANK INQUIRY: "What rank is Plant 1258 by occupied volume?", "Where does Plant 1258 stand?"
     is_specific_rank_lookup = has_plant_word and (
@@ -3747,7 +3784,9 @@ ORDER BY [Total Occupied Volume (FT3)] {order_dir}"""
                 "plant with the highest", "plant with the lowest",
                 "plant with highest", "plant with lowest",
                 "plant with the most", "plant with the least",
-                "plant with most", "plant with least"
+                "plant with most", "plant with least",
+                "which plant has the fewest", "which plant has fewest",
+                "plant with the fewest", "plant with fewest"
             ]) and not any(k in q_lower for k in ["all", "all plants", "every", "table", "breakdown", "list", "ranking of all", "full ranking"])
         )
         limit_n = 1 if is_singular else (state.get("limit") or (10 if not any(k in q_lower for k in ["all", "all plants", "every"]) else 4))
@@ -3874,10 +3913,55 @@ ORDER BY [Total Capacity (FT3)] {order_dir}"""
                 "conversation_state": state
             }
 
+        # METRIC D_EMPTY: EMPTY BINS COUNT (Rule: Rank plants by number of empty bins)
+        is_empty_bins_rank = (
+            state.get("topic") == "plant_empty_bins_ranking" or
+            is_plant_empty_bins_query or
+            (
+                has_plant_word and
+                any(k in q_lower for k in ["empty bin", "empty bins", "vacant bin", "vacant bins"]) and
+                not any(k in q_lower for k in ["capacity", "volume", "ft3", "cubic"])
+            )
+        )
+        if is_empty_bins_rank:
+            sql_plant_empty = f"""SELECT {top_kw}
+    RANK() OVER (ORDER BY (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) {order_dir}) AS [Rank],
+    b.Plant AS [Plant],
+    (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS [Empty Bins],
+    COUNT(DISTINCT b.BinLocation) AS [Total Bins],
+    COUNT(DISTINCT i.BinNo) AS [Occupied Bins]
+FROM dbo.ZWMS_BIN_MASTER b
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+GROUP BY b.Plant
+ORDER BY [Empty Bins] {order_dir}"""
+            return {
+                "sql": sql_plant_empty,
+                "query_plan": {
+                    "intent": "RANKING",
+                    "rank_direction": order_dir,
+                    "rank_metric": "EMPTY_BIN_COUNT",
+                    "rank_entity": "Plant",
+                    "limit": limit_n,
+                    "rank_scope": {}
+                },
+                "chart_type": "bar" if is_explicit_chart else "none",
+                "chart_title": f"{label} Empty Bins by Plant",
+                "chart_x": "Plant" if is_explicit_chart else None,
+                "chart_y": "Empty Bins" if is_explicit_chart else None,
+                "intent": "plant_empty_bins_ranking",
+                "metric": "EMPTY_BIN_COUNT",
+                "filters": {},
+                "time_range": "current",
+                "output_type": "text" if is_singular else ("bar_chart" if is_explicit_chart else "table"),
+                "conversation_state": state
+            }
+
         # METRIC D: TOTAL BINS COUNT
         is_bins_cnt = (
-            state.get("topic") == "plant_bins_ranking" or
-            any(k in q_lower for k in ["number of bins", "total bins", "bin count", "count of bins", "most bins", "least bins", "fewest bins"])
+            not is_empty_bins_rank and (
+                state.get("topic") == "plant_bins_ranking" or
+                any(k in q_lower for k in ["number of bins", "total bins", "bin count", "count of bins", "most bins", "least bins", "fewest bins"])
+            )
         )
         if is_bins_cnt:
             sql_plant_bins = f"""SELECT {top_kw}
@@ -5717,8 +5801,35 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         ]
         return "\n".join(lines)
 
+    # 0A_RANK_EMPTY_BINS. Plant Empty Bins Ranking: "Rank plants by number of empty bins", "Which plant has the most empty bins?"
+    if "Empty Bins" in cols and "Plant" in cols and "Rank" in cols and "Bin" not in cols and "BinUtilizationPct" not in cols and "Bin Utilization %" not in cols and not any(k in q_lower for k in ["utiliz", "compare", "versus", "vs"]):
+        is_least = any(k in q_lower for k in ["least", "lowest", "bottom", "minimum", "smallest", "fewest"])
+        label = "Fewest" if is_least else "Most"
+        lead_p = rows[0].get("Plant", "N/A")
+        lead_eb = rows[0].get("Empty Bins", 0)
+        lead_tb = rows[0].get("Total Bins", 0)
+        lead_ob = rows[0].get("Occupied Bins", 0)
+        
+        if len(rows) == 1 or is_single_statement_requested:
+            return f"**Plant {lead_p}** has the **{label.lower()} empty bins** with **{lead_eb:,} empty bins** currently available for put-away (out of {lead_tb:,} total bins, {lead_ob:,} occupied)."
+        
+        single_stmt = f"**Plant {lead_p}** ranks #1 with the {label.lower()} empty bins at **{lead_eb:,} empty bins** available for put-away ({lead_tb:,} total bins, {lead_ob:,} occupied)."
+        lines = [
+            f"### 📦 Plant Ranking by Number of Empty Bins\n",
+            single_stmt,
+            f"\n**Plant Empty Bins Ranking:**"
+        ]
+        for r in rows:
+            rnk = r.get("Rank", "-")
+            p = r.get("Plant", "N/A")
+            eb = r.get("Empty Bins", 0)
+            tb = r.get("Total Bins", 0)
+            lines.append(f"- **Rank {rnk} — Plant {p}**: **{eb:,} empty bins** ({tb:,} total bins)")
+        lines.append("\n💡 *The complete ranking is rendered in the **Data Table** below.*")
+        return "\n".join(lines)
+
     # 0A_RANK_7. Plant Total Bins Ranking: "Rank plants by number of bins"
-    if "Total Bins" in cols and "Occupied Bins" in cols and "Plant" in cols and "Rank" in cols and "Total Occupied Volume (FT3)" not in cols and "Bin Utilization %" not in cols:
+    if "Total Bins" in cols and "Occupied Bins" in cols and "Plant" in cols and "Rank" in cols and "Total Occupied Volume (FT3)" not in cols and "Bin Utilization %" not in cols and "Empty Bins" not in cols:
         is_least = any(k in q_lower for k in ["least", "lowest", "bottom", "minimum", "fewest"])
         label = "Fewest" if is_least else "Most"
         lead_p = rows[0].get("Plant", "N/A")
@@ -6881,7 +6992,7 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
             generated.get("intent") in [
                 "ranking", "plant_ranking", "bin_ranking", "material_ranking", "storage_location_ranking",
                 "plant_occupied_volume_ranking", "plant_available_capacity_ranking", "plant_bin_capacity_ranking",
-                "plant_bins_ranking", "plant_materials_ranking", "plant_inventory_ranking",
+                "plant_bins_ranking", "plant_empty_bins_ranking", "plant_materials_ranking", "plant_inventory_ranking",
                 "specific_plant_rank_lookup", "plant_rank_explanation", "plant_subset_ranking",
                 "bin_available_capacity_ranking", "top_utilized_bins", "least_utilized_bins",
                 "high_utilization_bins", "low_utilization_bins"
