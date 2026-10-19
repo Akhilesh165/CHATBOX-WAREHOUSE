@@ -377,8 +377,8 @@ def validate_and_filter_range_rows(rows: list[dict], range_filters: list[dict]) 
             candidate_cols = [c for c in ["UtilizationPct", "Utilization %", "Bin Utilization %", "BinOccupancyPct", "BinUtilization"] if c in filtered_rows[0]]
         elif field in ["UnrestrictedQty", "Quantity", "TotalQuantity"]:
             candidate_cols = [c for c in ["Total Stock Qty", "UnrestrictedQty", "Quantity", "TotalQuantity", "Inventory Qty"] if c in filtered_rows[0]]
-        elif field in ["TotalCapacity"]:
-            candidate_cols = [c for c in ["Total Capacity", "Total Capacity (FT3)", "Total Capacity (FT³)", "Volume", "Total Bin Capacity", "Capacity"] if c in filtered_rows[0]]
+        elif field in ["TotalCapacity", "BIN_CAPACITY", "BinCapacity"]:
+            candidate_cols = [c for c in ["Bin Capacity (FT3)", "Bin Capacity", "Total Capacity", "Total Capacity (FT3)", "Total Capacity (FT³)", "Volume", "Total Bin Capacity", "Capacity"] if c in filtered_rows[0]]
         elif field in ["AvailableCapacity", "FreeCapacity"]:
             candidate_cols = [c for c in ["Available Capacity", "Available Capacity (FT3)", "Available Capacity (FT³)", "Free Capacity", "Remaining Capacity", "Available Space"] if c in filtered_rows[0]]
         elif field in ["Volume", "ConsumedMaterialVolume", "OccupiedBinVolume", "OccupiedVolume"]:

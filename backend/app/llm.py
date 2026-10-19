@@ -321,10 +321,14 @@ def parse_range_filters(q_lower: str, context_metric: str = "quantity") -> list[
     else:
         field = "UnrestrictedQty"
 
-    # 4. Numeric between: between 100 and 500, 100–500, 100-500, from 100 to 500
-    num_between = re.search(r"(?:between|from)\s*(\d+(?:\.\d+)?)\s*(?:and|to)\s*(\d+(?:\.\d+)?)(?:\s*(?:units?|pcs?|items?))?", q_lower)
+    # 4. Numeric between: between 100 and 500, from 100 to 500, in the range 100-500, >= 1000 and <= 5000, 1000 to 5000 capacity
+    num_between = re.search(r"(?:between|from|in the range\s*(?:of)?)\s*(\d+(?:\.\d+)?)\s*(?:and|to|–|-)\s*(\d+(?:\.\d+)?)(?:\s*(?:units?|pcs?|items?|capacity|volume|ft3|m3))?", q_lower)
     if not num_between:
-        num_between = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:–|-)\s*(\d+(?:\.\d+)?)(?:\s*(?:units?|pcs?|items?))?", q_lower)
+        num_between = re.search(r"(?:>=|greater than or equal to|at least)\s*(\d+(?:\.\d+)?)\s*(?:and|,)?\s*(?:<=|less than or equal to|at most)\s*(\d+(?:\.\d+)?)", q_lower)
+    if not num_between:
+        num_between = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:to|and)\s*(\d+(?:\.\d+)?)\s*(?:capacity|volume|units?|pcs?|items?)\b", q_lower)
+    if not num_between:
+        num_between = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:–|-)\s*(\d+(?:\.\d+)?)(?:\s*(?:units?|pcs?|items?|capacity|volume|ft3|m3))?", q_lower)
     if num_between:
         low = float(num_between.group(1))
         up = float(num_between.group(2))
@@ -339,13 +343,13 @@ def parse_range_filters(q_lower: str, context_metric: str = "quantity") -> list[
             })
             return ranges
 
-    # 5. Numeric above: at least 100, 100 or more, above 100, greater than 100, over 100
-    num_above = re.search(r"(?:at least|above|greater than|more than|over)\s*(\d+(?:\.\d+)?)(?:\s*(?:units?|pcs?|items?))?", q_lower)
+    # 5. Numeric above: at least 100, 100 or more, above 100, greater than 100, over 100, >= 100, > 100
+    num_above = re.search(r"(?:at least|above|greater than or equal to|greater than|more than|over|>=|>)\s*(\d+(?:\.\d+)?)(?:\s*(?:units?|pcs?|items?|capacity|volume|ft3|m3))?", q_lower)
     if not num_above:
         num_above = re.search(r"\b(\d+(?:\.\d+)?)\s*or more\b", q_lower)
     if num_above:
         val = float(num_above.group(1))
-        is_inc = "at least" in num_above.group(0) or "or more" in num_above.group(0)
+        is_inc = any(k in num_above.group(0) for k in ["at least", "or more", ">=", "greater than or equal to"])
         ranges.append({
             "field": field,
             "operator": "GTE" if is_inc else "GT",
@@ -355,11 +359,11 @@ def parse_range_filters(q_lower: str, context_metric: str = "quantity") -> list[
         })
         return ranges
 
-    # 6. Numeric below: below 500, under 500, no more than 500, up to 500, less than 500
-    num_below = re.search(r"(?:below|under|less than|up to|at most|no more than)\s*(\d+(?:\.\d+)?)(?:\s*(?:units?|pcs?|items?))?", q_lower)
+    # 6. Numeric below: below 500, under 500, no more than 500, up to 500, less than 500, <= 500, < 500
+    num_below = re.search(r"(?:below|under|less than or equal to|less than|up to|at most|no more than|<=|<)\s*(\d+(?:\.\d+)?)(?:\s*(?:units?|pcs?|items?|capacity|volume|ft3|m3))?", q_lower)
     if num_below:
         val = float(num_below.group(1))
-        is_inc = any(k in num_below.group(0) for k in ["up to", "at most", "no more than"])
+        is_inc = any(k in num_below.group(0) for k in ["up to", "at most", "no more than", "<=", "less than or equal to"])
         ranges.append({
             "field": field,
             "operator": "LTE" if is_inc else "LT",
@@ -1861,10 +1865,14 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
         "single statement", "single line", "one line", "concise", "briefly", "in short",
         "just the percentage", "just the number", "only the number", "in a single statement"
     ]) or (
-        any(k in q_lower for k in [
-            "which bin", "whic bin", "what bin", "wat bin", "bin with the lowest", "bin with lowest",
-            "bin with the highest", "bin with highest", "who has the lowest bin", "who has the highest bin"
-        ]) and not any(d in q_lower for d in ["top 10", "top 5", "bottom 10", "bottom 5", "ranking", "table", "list", "breakdown", "detailed", "detail form"])
+        (
+            bool(re.search(r"\b(?:which|whic|what|wat)\s+bin\b", q_lower)) or
+            any(k in q_lower for k in [
+                "bin with the lowest", "bin with lowest",
+                "bin with the highest", "bin with highest", "who has the lowest bin", "who has the highest bin"
+            ])
+        ) and not any(d in q_lower for d in ["top 10", "top 5", "bottom 10", "bottom 5", "ranking", "table", "list", "breakdown", "detailed", "detail form"])
+        and not any(b in q_lower for b in ["which bins", "whic bins", "what bins"])
     )
     is_detail_requested = any(d in q_lower for d in [
         "detail", "details", "detailed", "in detail", "detail form", "detailed form",
@@ -3093,15 +3101,17 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volum
     # D. BIN CAPACITY & UTILIZATION THRESHOLD FILTERING
     has_range_between = bool(
         re.search(r"(?:between|from)\s*\d+.*?(?:and|to|–|-)\s*\d+", q_lower) or
-        re.search(r"\b\d+\s*%\s*(?:–|-|to)\s*\d+\s*%", q_lower)
+        re.search(r"\b\d+\s*%\s*(?:–|-|to)\s*\d+\s*%", q_lower) or
+        re.search(r"(?:>=|greater than or equal to|at least)\s*\d+.*?(?:<=|less than or equal to|at most)\s*\d+", q_lower)
     )
+    is_bin_cap_query = any(k in q_lower for k in ["capacity", "total capacity", "bin capacity", "storage capacity"]) and not any(k in q_lower for k in ["utiliz", "occupan", "%", "full", "fullness", "fill"])
     threshold_match = None
-    if not has_range_between:
+    if not has_range_between and not is_bin_cap_query:
         threshold_match = re.search(r"(?:more\s+than|greater\s+than|over|above|>|>=|at\s+least|exceeding|less\s+than|below|<|<=|under)\s*(\d{1,3})(?:\s*%)?", q_lower)
         if not threshold_match:
             threshold_match = re.search(r"(\d{1,3})\s*%\s*(?:full|utiliz|capacit|occup)", q_lower)
 
-    if threshold_match and is_bin_metric and (is_util_metric or "%" in q_lower) and not is_mat_entity:
+    if threshold_match and is_bin_metric and (is_util_metric or "%" in q_lower) and not is_mat_entity and not is_bin_cap_query:
         thresh_val = float(threshold_match.group(1))
         inclusive = any(k in q_lower for k in ["at least", ">=", "or more", "or above", "minimum"])
         inclusive_low = any(k in q_lower for k in ["at most", "<=", "or below", "or less", "maximum"])
@@ -3675,6 +3685,7 @@ ORDER BY [Quantity] DESC"""
     b.Plant AS [Plant],
     COALESCE(b.StorageLocation, 'N/A') AS [Storage Location],
     ROUND(b.Volume, 2) AS [Total Capacity (FT3)],
+    ROUND(b.Volume, 2) AS [Bin Capacity (FT3)],
     ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Occupied Volume (FT3)],
     ROUND(b.Volume - COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Available Capacity (FT3)],
     CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Capacity Utilization %]
@@ -3772,8 +3783,35 @@ GROUP BY i.Material, i.Plant
 HAVING {having_cond}
 ORDER BY [Total Stock Qty] DESC"""
 
+        if field == "TotalCapacity":
+            entity_val = "BIN"
+            metric_val = "BIN_CAPACITY"
+        elif field == "BinUtilizationPct":
+            entity_val = "BIN"
+            metric_val = "BIN_UTILIZATION"
+        elif field == "AvailableCapacity":
+            entity_val = "BIN"
+            metric_val = "AVAILABLE_CAPACITY"
+        elif field == "Volume":
+            entity_val = "BIN"
+            metric_val = "OCCUPIED_VOLUME"
+        else:
+            entity_val = "MATERIAL"
+            metric_val = "INVENTORY_QUANTITY"
+
+        rf_op = rf.get("operator", "BETWEEN")
+        rf_lower = rf.get("lower")
+        rf_upper = rf.get("upper")
         query_plan = {
             "intent": "RANGE_QUERY",
+            "entity": entity_val,
+            "metric": metric_val,
+            "operation": "FILTER",
+            "operator": rf_op,
+            "lower_bound": rf_lower,
+            "upper_bound": rf_upper,
+            "range_filter": f"{rf_op} {rf_lower} {rf_upper}".strip(),
+            "response_mode": "TABLE",
             "range_filters": range_filters,
             "field": field
         }
@@ -3785,7 +3823,8 @@ ORDER BY [Total Stock Qty] DESC"""
             "chart_x": "Material" if field == "UnrestrictedQty" else ("Bin" if field in ["BinUtilizationPct", "TotalCapacity", "AvailableCapacity", "Volume"] else None),
             "chart_y": "Total Stock Qty" if field == "UnrestrictedQty" else ("UtilizationPct" if field == "BinUtilizationPct" else (f"{field} (FT3)" if "Capacity" in field or field == "Volume" else None)),
             "intent": "range_query",
-            "metric": f"{field.lower()}_range",
+            "metric": metric_val,
+            "entity": entity_val,
             "filters": {"plant": plant_cand} if plant_cand else {},
             "time_range": "current",
             "output_type": "text" if is_single_statement_requested else ("bar_chart" if is_explicit_chart else "table"),
@@ -5648,12 +5687,30 @@ async def generate_sql(question: str, history: list[dict], retry_context: dict |
 
 def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     """Creates clear, grounded summary from database rows."""
+    q_lower = question.lower()
     if not rows:
+        rf_list = parse_range_filters(q_lower)
+        if rf_list and any(b in q_lower for b in ["bin", "bins", "storage", "location"]):
+            rf = rf_list[0]
+            if rf.get("field") == "TotalCapacity":
+                op = rf.get("operator", "BETWEEN")
+                low = rf.get("lower")
+                up = rf.get("upper")
+                if op == "BETWEEN" and low is not None and up is not None:
+                    rf_desc = f"between {low:,.0f} and {up:,.0f} FT³"
+                elif op in ["GT", "GTE"] and low is not None:
+                    rf_desc = f"above {low:,.0f} FT³" if not rf.get("inclusive") else f"at least {low:,.0f} FT³"
+                elif op in ["LT", "LTE"] and up is not None:
+                    rf_desc = f"below {up:,.0f} FT³" if not rf.get("inclusive") else f"at most {up:,.0f} FT³"
+                else:
+                    rf_desc = "the specified range"
+                plant_val = extract_single_plant_safe(q_lower)
+                plant_str = f" in Plant {plant_val}" if plant_val else ""
+                return f"No bins found with configured capacity **{rf_desc}**{plant_str} (warehouse bin capacities currently range from 3.07 to 80.00 FT³)."
         return "No matching warehouse records were found for your query in the database."
 
     count = len(rows)
     cols = list(rows[0].keys())
-    q_lower = question.lower()
     is_single_statement_requested = is_single_line_requested(q_lower)
 
     # 0_NONEXISTENT_QUERY. Queries asking for nonexistent records/entities
@@ -6086,7 +6143,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         return "\n".join(lines)
 
     # 0A_CAP_8. Capacity Summary: "Give me a capacity summary", "Warehouse capacity summary"
-    if "Capacity Utilization %" in cols and "Available Capacity (FT3)" in cols and "Plant" in cols and len(rows) >= 2 and "Rank" not in cols and not any(k in q_lower for k in ["compare", "versus", "vs"]):
+    if "Capacity Utilization %" in cols and "Available Capacity (FT3)" in cols and "Total Bins" in cols and "Bin" not in cols and len(rows) >= 2 and "Rank" not in cols and not any(k in q_lower for k in ["compare", "versus", "vs"]):
         tot_cap_all = sum(r.get("Total Capacity (FT3)", 0.0) for r in rows)
         tot_occ_all = sum(r.get("Occupied Volume (FT3)", 0.0) for r in rows)
         tot_avail_all = sum(r.get("Available Capacity (FT3)", 0.0) for r in rows)
@@ -6134,7 +6191,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         return "\n".join(lines)
 
     # 0A_CAP_10. Capacity Range Query: "Bins between 400 and 600 FT3 total capacity", "Bins with 100 to 300 FT3 free space"
-    if ("Total Capacity (FT3)" in cols or "Available Capacity (FT3)" in cols) and "Bin" in cols and any(k in q_lower for k in ["between", "from", "at least", "above", "more than", "below", "under", "less than"]):
+    if ("Total Capacity (FT3)" in cols or "Available Capacity (FT3)" in cols or "Bin Capacity (FT3)" in cols) and "Bin" in cols and any(k in q_lower for k in ["between", "from", "at least", "above", "more than", "below", "under", "less than", "range", ">=", "<="]):
         rf_list = parse_range_filters(question)
         if rf_list:
             from .validator import validate_and_filter_range_rows
@@ -6142,13 +6199,13 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
             rows = valid_rows
             count = len(rows)
             rf = rf_list[0]
-            metric_name = "total capacity" if rf.get("field") == "TotalCapacity" else ("occupied volume" if rf.get("field") == "Volume" else "available capacity")
+            metric_name = "configured bin capacity" if rf.get("field") == "TotalCapacity" else ("occupied volume" if rf.get("field") == "Volume" else "available capacity")
             if rf["operator"] == "BETWEEN":
                 rf_desc = f"between {rf['lower']:,.0f} and {rf['upper']:,.0f} FT³ {metric_name}"
             elif rf["operator"] in ["GT", "GTE"]:
-                rf_desc = f"at least {rf['lower']:,.0f} FT³ {metric_name}"
+                rf_desc = f"at least {rf['lower']:,.0f} FT³ {metric_name}" if rf.get("inclusive") else f"above {rf['lower']:,.0f} FT³ {metric_name}"
             elif rf["operator"] in ["LT", "LTE"]:
-                rf_desc = f"up to {rf['upper']:,.0f} FT³ {metric_name}"
+                rf_desc = f"up to {rf['upper']:,.0f} FT³ {metric_name}" if rf.get("inclusive") else f"below {rf['upper']:,.0f} FT³ {metric_name}"
             else:
                 rf_desc = f"in the specified {metric_name} range"
             plant_val = extract_single_plant_safe(q_lower)

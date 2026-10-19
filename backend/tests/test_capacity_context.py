@@ -346,3 +346,63 @@ def test_entity_preservation_find_bins():
     assert "bins in plant 1258" in ans.lower()
     assert "individual bin level" in ans.lower()
 
+
+def test_bin_capacity_range_query_semantics():
+    """Targeted Test: BIN + CAPACITY + RANGE queries must resolve strictly to:
+    entity = BIN, metric = BIN_CAPACITY, operation = FILTER, operator = BETWEEN / GT / LT,
+    response_mode = TABLE. Must never be misclassified as bin utilization or inventory quantity.
+    """
+    # 1. Target query: Between 1000 and 5000
+    q1 = "Find bins with capacity between 1000 and 5000"
+    plan1 = deterministic_warehouse_sql_generator(q1)
+    assert plan1["intent"] == "range_query"
+    assert plan1["metric"] == "BIN_CAPACITY"
+    assert plan1["output_type"] == "table"
+    qp1 = plan1["query_plan"]
+    assert qp1["entity"] == "BIN"
+    assert qp1["metric"] == "BIN_CAPACITY"
+    assert qp1["operation"] == "FILTER"
+    assert qp1["operator"] == "BETWEEN"
+    assert qp1["lower_bound"] == 1000.0
+    assert qp1["upper_bound"] == 5000.0
+    assert qp1["response_mode"] == "TABLE"
+
+    # Natural-language forms
+    for q_var in [
+        "Show bins with capacity from 1000 to 5000",
+        "List bins having capacity between 1000 and 5000",
+        "Which bins have capacity in the range 1000-5000?",
+        "Find storage bins with capacity from 1000 to 5000",
+        "Show bins whose capacity is between 1000 and 5000",
+        "Find bins with capacity >= 1000 and <= 5000",
+        "Show bins with capacity greater than or equal to 1000 and less than or equal to 5000",
+        "List bins between 1000 and 5000 capacity",
+    ]:
+        p = deterministic_warehouse_sql_generator(q_var)
+        assert p["query_plan"]["entity"] == "BIN", f"Failed entity for {q_var}"
+        assert p["query_plan"]["metric"] == "BIN_CAPACITY", f"Failed metric for {q_var}"
+        assert p["query_plan"]["operator"] == "BETWEEN", f"Failed operator for {q_var}"
+        assert p["query_plan"]["lower_bound"] == 1000.0
+        assert p["query_plan"]["upper_bound"] == 5000.0
+
+    # Single-sided capacity queries
+    p_above = deterministic_warehouse_sql_generator("Find bins with capacity above 1000")
+    assert p_above["query_plan"]["entity"] == "BIN"
+    assert p_above["query_plan"]["metric"] == "BIN_CAPACITY"
+    assert p_above["query_plan"]["operator"] == "GT"
+    assert p_above["query_plan"]["lower_bound"] == 1000.0
+
+    p_below = deterministic_warehouse_sql_generator("Find bins with capacity below 5000")
+    assert p_below["query_plan"]["entity"] == "BIN"
+    assert p_below["query_plan"]["metric"] == "BIN_CAPACITY"
+    assert p_below["query_plan"]["operator"] == "LT"
+    assert p_below["query_plan"]["upper_bound"] == 5000.0
+
+    # DB Execution and Answer formatting for 0 rows
+    rows1, _ = execute_readonly(plan1["sql"])
+    assert len(rows1) == 0
+    ans1 = format_deterministic_answer(q1, rows1)
+    assert "No bins found with configured capacity" in ans1
+    assert "between 1,000 and 5,000 FT³" in ans1
+
+
