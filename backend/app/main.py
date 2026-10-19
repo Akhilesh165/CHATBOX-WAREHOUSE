@@ -324,8 +324,7 @@ async def chat_endpoint(req: ChatRequest):
     
     is_invalid = bool(
         (isinstance(generated, dict) and generated.get("is_invalid_query")) or
-        (isinstance(generated, dict) and generated.get("intent") == "no_matching_records") or
-        (not rows and not is_multi_table)
+        (isinstance(generated, dict) and generated.get("intent") == "no_matching_records")
     )
 
     if is_invalid:
@@ -338,7 +337,7 @@ async def chat_endpoint(req: ChatRequest):
         except Exception as ans_err:
             logger.warning(f"Answer generation error, falling back to structured summary: {ans_err}")
             if not rows:
-                answer = "No matching warehouse records were found for your query in the database."
+                answer = format_deterministic_answer(resolved_query_for_answer, rows)
             else:
                 answer = f"Found {len(rows)} matching record(s). Please review the data table below for details."
     
@@ -363,7 +362,7 @@ async def chat_endpoint(req: ChatRequest):
         logger.warning(f"optimize_response_format error: {opt_err}")
         opt = {}
     
-    if single_line_mode or number_only_mode or is_invalid:
+    if single_line_mode or number_only_mode or is_invalid or (not rows and not is_multi_table):
         rows = []
         table_datasets = []
         chart_type = "none"

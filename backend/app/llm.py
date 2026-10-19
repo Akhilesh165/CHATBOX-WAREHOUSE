@@ -7402,7 +7402,7 @@ GROUP BY Plant"""
 async def generate_answer(question: str, sql: str, rows: list[dict]) -> str:
     """Generate grounded, human-readable summary of query results."""
     if not rows:
-        return "No matching warehouse records were found for your query in the database."
+        return format_deterministic_answer(question, rows)
     
     cols = list(rows[0].keys()) if rows else []
     q_lower = question.lower()
