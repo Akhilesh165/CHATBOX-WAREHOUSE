@@ -247,7 +247,7 @@ def validate_query_result(question: str, query_plan: dict | None, sql: str, rows
     if is_missing_master_req:
         if any(c in cols for c in ["TotalUniqueMaterials", "TotalActiveBins", "TotalUnrestrictedQuantity", "PlantCount"]) and "Inventory Qty" not in cols and "Material" not in cols:
             return False, "User requested: Material-level exception list for missing volume master records. Returned: Warehouse-level inventory summary. These do not satisfy the requested cross-table validation task."
-        if rows and "Material" not in cols and "MaterialCode" not in cols:
+        if rows and "Material" not in cols and "MaterialCode" not in cols and not any(c in cols for c in ["Missing Materials Count", "Missing Volume Percentage", "Missing Volume Materials Count", "Status"]):
             return False, "User requested: Material-level exception records for missing volume master. Returned: Non-material entity. These do not satisfy the requested cross-table validation task."
 
     # 1. Missing Physical Dimensions / Data Quality
@@ -265,14 +265,20 @@ def validate_query_result(question: str, query_plan: dict | None, sql: str, rows
     if is_missing_dim_req:
         if any(c in cols for c in ["TotalUniqueMaterials", "TotalActiveBins", "TotalUnrestrictedQuantity", "PlantCount"]) and "Quality Issue" not in cols and "Length" not in cols:
             return False, "User requested: Material-level missing-dimension records. Returned: Warehouse-level inventory summary. These do not satisfy the requested analytical task."
-        if rows and "Material" not in cols and "MaterialCode" not in cols:
+        if rows and "Material" not in cols and "MaterialCode" not in cols and not any(c in cols for c in ["Missing Materials Count", "Missing Volume Percentage", "Missing Volume Materials Count", "Status"]):
             return False, "User requested: Material-level missing-dimension records. Returned: Non-material entity. These do not satisfy the requested analytical task."
 
     # 2. Top / Bottom Bins Ranking
     is_plant_query = bool(re.search(r"\b(?:plants?|plnts?|facility|facilities)\b", q_lower))
-    is_ranking_req = (
-        any(k in q_lower for k in ["top", "bottom", "most utilized", "least utilized", "lowest utilized", "highest utilized", "lowest ones", "least ones", "emptiest bins"]) or (
-            ("most" in q_lower or "least" in q_lower or "top" in q_lower or "bottom" in q_lower or "highest" in q_lower or "lowest" in q_lower) and
+    is_almost_full_val = any(k in q_lower for k in [
+        "almost full", "nearly full", "near full", "close to full", "close to being full",
+        "close to full capacity", "almost at capacity", "near full capacity",
+        "nearly at 100% utilization", "nearly at 100%", "almost at 100%"
+    ])
+    is_ranking_req = not is_almost_full_val and (
+        any(k in q_lower for k in ["most utilized", "least utilized", "lowest utilized", "highest utilized", "lowest ones", "least ones", "emptiest bins"]) or
+        bool(re.search(r"\b(?:top|bottom)\b", q_lower)) or (
+            bool(re.search(r"\b(?:most|least|top|bottom|highest|lowest)\b", q_lower)) and
             ("utiliz" in q_lower or "capacit" in q_lower or "occup" in q_lower or "full" in q_lower or "bin" in q_lower or "bins" in q_lower or "ones" in q_lower) and
             not any(m in q_lower for m in ["material", "sku", "product", "goods"])
         )

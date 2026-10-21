@@ -1068,24 +1068,58 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         ("volume master" in q_lower or "material master" in q_lower or "volume-master" in q_lower or "material volume master" in q_lower) and
         ("missing" in q_lower or "absent" in q_lower or "not present" in q_lower or "doesn't exist" in q_lower or "does not exist" in q_lower or "don't exist" in q_lower or "no record" in q_lower or "no entry" in q_lower or "no entries" in q_lower or "not maintained" in q_lower or "not in" in q_lower or "do not have" in q_lower or "dont have" in q_lower or "lack" in q_lower or "lacking" in q_lower or "without" in q_lower or "no matching" in q_lower or "unmatched" in q_lower)
     )
-    is_fresh_mat_vol = is_mat_entity and not is_fresh_missing_master and any(k in q_lower for k in [
+    is_missing_vol_kw = any(k in q_lower for k in [
+        "missing volume", "missing physical", "missing dimension", "missing dimensions", "missing physical dimensions",
+        "without volume", "no volume", "don't have volume", "dont have volume", "do not have volume",
+        "without physical", "no physical", "missing from volume master", "no volume master", "no volume master entry",
+        "missing volume details", "missing volume information", "without volume data", "lack volume", "lacking volume"
+    ]) and any(k in q_lower for k in ["inventory", "material", "materials", "sku", "skus", "item", "items"])
+    is_pct_kw = any(k in q_lower for k in [
+        "percentage", "percent", "pct", "%", "how many percent", "what percentage", "what percent"
+    ])
+    is_fresh_missing_vol_pct = is_missing_vol_kw and is_pct_kw
+
+    is_fresh_mat_vol = is_mat_entity and not is_fresh_missing_master and not is_fresh_missing_vol_pct and any(k in q_lower for k in [
         "volume", "consuming", "space consuming", "consuming most", "volume consumption", "highest space", "occupying highest volume",
         "share of total", "percentage of our total", "percentage of total", "highest percentage", "footprint",
         "cubic capacity", "take up", "occupy", "occupying", "room in the warehouse", "proportion of bin", "storage space",
         "largest volume footprint", "highest proportion", "biggest share", "most room", "consuming the highest percentage"
-    ]) and not any(k in q_lower for k in ["volume master", "material master", "missing", "without dimension", "no record", "no entry", "do not have", "dont have"])
+    ]) and not any(k in q_lower for k in ["volume master", "material master", "missing", "without dimension", "no record", "no entry", "do not have", "dont have", "don't have", "without volume", "no volume"])
     is_fresh_dq = any(k in q_lower for k in [
         "data quality", "quality check", "missing dimension", "incomplete dimension", "without dimension",
         "don't have dimension", "dont have dimension", "cross-dataset", "cross dataset", "unmaintained dimension",
         "missing physical", "incomplete physical", "validation for material volume", "missing length", "missing width",
         "missing height", "no dimension", "no physical dimension", "physical measurements", "material size and cubic volume",
         "check data quality", "without physical size", "incomplete dimensions"
-    ])
+    ]) and not is_fresh_missing_vol_pct
     is_plant_keyword = bool(re.search(r"\b(?:plants?|plnts?|facility|facilities)\b", q_lower))
     is_plant_extreme_req = is_plant_keyword and any(k in q_lower for k in ["lowest", "least", "minimum", "min", "bottom", "worst", "highest", "most", "maximum", "max", "top", "best"]) and any(k in q_lower for k in ["utiliz", "occupan", "capacity", "fill", "full"])
+    is_fresh_almost_full = any(k in q_lower for k in [
+        "almost full", "nearly full", "near full", "close to full", "close to being full",
+        "close to full capacity", "almost at capacity", "near full capacity",
+        "nearly at 100% utilization", "nearly at 100%", "almost at 100%"
+    ]) and not any(k in q_lower for k in ["over capacity", "over-capacity", "over utilized", "over-utilized", "greater than 100", "above 100", "> 100", ">= 100"])
+    is_fresh_over_capacity = any(k in q_lower for k in [
+        "over capacity", "over-capacity", "over capacity bins", "full or over capacity",
+        "over-utilized bins", "over utilized bins", "exceeding capacity", "exceeds capacity"
+    ]) or any(k in q_lower for k in ["full or over", "at or over 100", "100% or more"])
+
+    is_fresh_avail_cap_by_plant = any(k in q_lower for k in [
+        "by plant", "for each plant", "plant-wise", "plant wise",
+        "each plant", "every plant", "across plants", "of each plant", "compare plants"
+    ]) and any(k in q_lower for k in [
+        "available capacity", "free capacity", "remaining capacity", "unused capacity",
+        "available space", "free space", "remaining space"
+    ])
+    is_fresh_plant_inventory = (
+        any(k in q_lower for k in ["plant-wise", "plant wise", "by plant", "for each plant", "each plant", "across plants", "of each plant", "plants"]) and
+        any(k in q_lower for k in ["inventory", "stock", "quantity", "stock quantity", "inventory quantity", "units"]) and
+        not any(k in q_lower for k in ["capacity", "utiliz", "occupan", "empty", "missing", "dimension", "master", "difference", "between", "from"]) and
+        not any(k in q_lower for k in ["rank", "ranking", "top", "bottom", "highest", "lowest"])
+    )
     is_fresh_empty = any(k in q_lower for k in ["empty bin", "empty bins", "show me empty", "list empty", "putaway", "put-away", "vacant bin", "free bin", "available for immediate put-away", "where can i put", "put new inventory", "place incoming"]) and not any(k in q_lower for k in ["how many", "count", "compare", "versus", "vs", "difference between", "their empty bins", "how much capacity", "how much space", "how much volume", "available capacity", "total capacity"])
-    is_fresh_top_bins = ("top" in q_lower or "most" in q_lower) and any(k in q_lower for k in ["utilized bin", "utilised bin", "fullest bin", "capacity bin"]) and not is_mat_entity and not is_plant_extreme_req
-    is_fresh_least_bins = ("bottom" in q_lower or "least" in q_lower or "emptiest" in q_lower or "lowest" in q_lower) and any(k in q_lower for k in ["utilized bin", "utilised bin", "bins", "locations", "capacity"]) and not is_mat_entity and not is_plant_extreme_req
+    is_fresh_top_bins = bool(re.search(r"\b(?:top|most|fullest)\b", q_lower)) and any(k in q_lower for k in ["utilized bin", "utilised bin", "fullest bin", "capacity bin"]) and not is_mat_entity and not is_plant_extreme_req and not is_fresh_almost_full and not is_fresh_over_capacity
+    is_fresh_least_bins = bool(re.search(r"\b(?:bottom|least|lowest|emptiest)\b", q_lower)) and any(k in q_lower for k in ["utilized bin", "utilised bin", "bins", "locations", "capacity"]) and not is_mat_entity and not is_plant_extreme_req and not is_fresh_almost_full and not is_fresh_over_capacity
     is_fresh_plant_count = is_plant_keyword and any(k in q_lower for k in ["how many", "count", "number of", "total plants", "active plants"])
     is_fresh_records_count = (
         any(k in q_lower for k in [
@@ -1126,7 +1160,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             ("total" in q_lower or "how much" in q_lower or "how many units" in q_lower or "overall quantity" in q_lower) and
             not any(w in q_lower for w in ["per bin", "bin utilization", "empty", "difference", "division", "volume master", "missing", "trend", "record", "records", "rows", "material", "materials", "sku", "skus"])
         )
-    ) and not is_fresh_records_count and not is_fresh_mat_count and not any(k in q_lower for k in ["summary", "overview", "dashboard", "breakdown", "by plant", "across plants", "record", "records"])
+    ) and not is_fresh_records_count and not is_fresh_mat_count and not is_fresh_plant_inventory and not any(k in q_lower for k in ["summary", "overview", "dashboard", "breakdown", "by plant", "across plants", "plant-wise", "record", "records"])
     is_fresh_consolidation = any(k in q_lower for k in ["consolidat", "free up", "same material", "duplicate bin", "multiple bin"])
     is_fresh_diff = any(k in q_lower for k in ["difference", "zws", "unrestrictedqty2"])
     is_fresh_div = any(k in q_lower for k in ["division", "material group"])
@@ -1135,7 +1169,8 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     is_all_plants_util = (
         is_util_keyword and
         any(k in q_lower for k in ["all plants", "across plants", "by plant", "each plant", "every plant", "plants", "compare plants", "across all", "whole warehouse", "entire warehouse", "network", "overall"]) and
-        not new_plant
+        not new_plant and
+        not is_fresh_avail_cap_by_plant
     )
     is_fresh_util = is_all_plants_util or any(k in q_lower for k in [
         "overall warehouse bin utilization", "facility fill", "fill rate", "overall bin fill", "space utilization rate",
@@ -1215,7 +1250,8 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         not any(k in q_lower for k in ["how many", "count of bins", "number of bins", "total bins", "unused", "zero inventory", "no inventory", "zero stock", "no stock", "accept new", "incoming", "empty", "vacant", "putaway", "put-away"]) and
         not is_unsupported_nonexistent_query(q_lower) and
         not any(neg in q_lower for neg in ["do not exist", "don't exist", "dont exist", "nonexistent", "non-existent", "not in the database", "not present in"]) and
-        not parse_range_filters(q_lower)
+        not parse_range_filters(q_lower) and
+        not is_fresh_almost_full and not is_fresh_over_capacity
     )
 
     if compound_cap_info:
@@ -1257,6 +1293,14 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["topic"] = "plant_bin_utilization_detail"
         state["filters"]["plant"] = new_plant or state.get("filters", {}).get("plant")
         state["aggregation"] = "summary"
+    elif is_fresh_avail_cap_by_plant:
+        state["entity"] = "plant"
+        state["metric"] = "AVAILABLE_CAPACITY"
+        state["ranking"] = None
+        state["topic"] = "plant_available_capacity"
+        state["aggregation"] = "aggregation"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["limit"] = None
     elif is_fresh_util:
         state["entity"] = "bin"
         state["metric"] = "warehouse_utilization"
@@ -1370,14 +1414,24 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         is_plant_keyword and
         any(k in q_lower for k in ["available capacity", "free capacity", "remaining capacity", "available volume", "free volume", "free space", "available storage space", "most available space", "least available space", "unused capacity", "unused space"])
     ):
-        is_least = any(k in q_lower for k in ["least", "lowest", "bottom", "minimum", "smallest"])
-        state["entity"] = "plant"
-        state["metric"] = "available_capacity"
-        state["ranking"] = "lowest" if is_least else "highest"
-        state["topic"] = "plant_available_capacity_ranking"
-        state["limit"] = new_limit or 4
-        state["aggregation"] = "list"
-        state["filters"] = {}
+        has_rank_kw = any(k in q_lower for k in ["rank", "ranking", "top", "bottom", "highest", "lowest", "most", "least", "best", "worst"])
+        if has_rank_kw:
+            is_least = any(k in q_lower for k in ["least", "lowest", "bottom", "minimum", "smallest"])
+            state["entity"] = "plant"
+            state["metric"] = "available_capacity"
+            state["ranking"] = "lowest" if is_least else "highest"
+            state["topic"] = "plant_available_capacity_ranking"
+            state["limit"] = new_limit or 4
+            state["aggregation"] = "list"
+            state["filters"] = {}
+        else:
+            state["entity"] = "plant"
+            state["metric"] = "AVAILABLE_CAPACITY"
+            state["ranking"] = None
+            state["topic"] = "plant_available_capacity"
+            state["aggregation"] = "aggregation"
+            state["filters"] = {"plant": new_plant} if new_plant else {}
+            state["limit"] = None
     elif (
         is_plant_keyword and
         any(k in q_lower for k in ["empty bin", "empty bins", "number of empty bins", "count of empty bins", "most empty bins", "fewest empty bins"]) and
@@ -1468,6 +1522,15 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["topic"] = "top_and_bottom_bins"
         state["filters"] = {"plant": new_plant} if new_plant else {}
         state["limit"] = new_limit or 10
+    elif is_fresh_missing_vol_pct:
+        state["entity"] = "material"
+        state["metric"] = "MISSING_VOLUME_PERCENTAGE"
+        state["condition"] = "NO_MATCHING_VOLUME_RECORD"
+        state["ranking"] = None
+        state["topic"] = "materials_missing_volume_percentage"
+        state["aggregation"] = "summary"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["limit"] = None
     elif is_fresh_mat_vol:
         state["entity"] = "material"
         state["metric"] = "volume_share"
@@ -1483,6 +1546,32 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["aggregation"] = "list"
         state["filters"] = {"plant": new_plant} if new_plant else {}
         state["limit"] = new_limit
+    elif is_fresh_almost_full:
+        state["entity"] = "bin"
+        state["metric"] = "BIN_UTILIZATION"
+        state["condition"] = "NEAR_FULL"
+        state["ranking"] = None
+        state["topic"] = "almost_full_bins"
+        state["aggregation"] = "list"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["limit"] = new_limit
+    elif is_fresh_over_capacity:
+        state["entity"] = "bin"
+        state["metric"] = "BIN_UTILIZATION"
+        state["condition"] = "OVER_CAPACITY"
+        state["ranking"] = None
+        state["topic"] = "over_capacity_bins"
+        state["aggregation"] = "list"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["limit"] = new_limit
+    elif is_fresh_plant_inventory:
+        state["entity"] = "plant"
+        state["metric"] = "TOTAL_INVENTORY_QUANTITY"
+        state["ranking"] = None
+        state["topic"] = "plant_inventory"
+        state["aggregation"] = "aggregation"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["limit"] = None
     elif is_fresh_top_bins:
         state["entity"] = "bin"
         state["metric"] = "utilization"
@@ -1597,6 +1686,14 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["filters"] = {"plant": new_plant} if new_plant else {}
         state["aggregation"] = "list"
         state["ranking"] = None
+    elif is_fresh_avail_cap_by_plant:
+        state["entity"] = "plant"
+        state["metric"] = "AVAILABLE_CAPACITY"
+        state["ranking"] = None
+        state["topic"] = "plant_available_capacity"
+        state["aggregation"] = "aggregation"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["limit"] = None
     elif is_fresh_util:
         state["topic"] = "warehouse_utilization"
         state["filters"] = {"plant": new_plant} if new_plant else {}
@@ -2086,7 +2183,7 @@ GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit"""
         }
 
     # A. INTENT A: MATERIALS MISSING FROM VOLUME MASTER (Rule DQ-001 - Cross-Table Validation)
-    is_missing_master_record = any(k in q_lower for k in [
+    is_missing_master_record = state.get("topic") == "materials_missing_volume_percentage" or any(k in q_lower for k in [
         "missing from the volume master", "missing from volume master", "not in the volume master",
         "not in volume master", "missing in volume master", "exist in inventory master but not",
         "exists in inventory master but not", "exist in inventory but missing from", "exists in inventory but missing from",
@@ -2097,16 +2194,98 @@ GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit"""
         "do not have corresponding volume master", "dont have corresponding volume master",
         "do not have volume master", "dont have volume master", "no corresponding volume master",
         "without corresponding volume master", "missing corresponding volume master",
-        "no master entry", "no master entries", "not maintained in volume master"
+        "no master entry", "no master entries", "not maintained in volume master",
+        "missing volume information", "missing volume info", "missing physical volume", "missing volume data",
+        "without volume data", "missing volume details"
     ]) or (
         ("inventory" in q_lower or "material" in q_lower or "materials" in q_lower or "sku" in q_lower or "skus" in q_lower or "item" in q_lower or "items" in q_lower or "product" in q_lower or "goods" in q_lower) and
-        ("volume master" in q_lower or "material master" in q_lower or "volume-master" in q_lower or "material volume master" in q_lower) and
+        ("volume master" in q_lower or "material master" in q_lower or "volume-master" in q_lower or "material volume master" in q_lower or "volume information" in q_lower or "physical volume" in q_lower or "volume data" in q_lower) and
         ("missing" in q_lower or "absent" in q_lower or "not present" in q_lower or "doesn't exist" in q_lower or "does not exist" in q_lower or "don't exist" in q_lower or "no record" in q_lower or "no entry" in q_lower or "no entries" in q_lower or "not maintained" in q_lower or "not in" in q_lower or "do not have" in q_lower or "dont have" in q_lower or "lack" in q_lower or "lacking" in q_lower or "without" in q_lower or "no matching" in q_lower or "unmatched" in q_lower)
+    ) or (
+        any(c in q_lower for c in ["percentage", "percent", "pct", "%", "how many percent", "what percentage", "what percent"]) and (
+            "missing physical dimensions" in q_lower or "physical dimension" in q_lower or "without physical dimensions" in q_lower or "missing dimensions" in q_lower
+        )
     )
 
     if is_missing_master_record:
         plant_filter = f" AND i.Plant = '{plant_cand}'" if plant_cand else ""
         filters = {"plant": plant_cand} if plant_cand else {}
+        is_pct_request = (
+            state.get("topic") == "materials_missing_volume_percentage" or
+            state.get("metric") == "MISSING_VOLUME_PERCENTAGE" or
+            any(c in q_lower for c in ["percentage", "percent", "pct", "%", "how many percent", "what percentage", "what percent"])
+        )
+
+        if is_pct_request:
+            plant_sub_filter = f" WHERE Plant = '{plant_cand}'" if plant_cand else ""
+            if is_explicit_chart:
+                sql_missing_pct_chart = f"""SELECT 
+    CASE WHEN v.MaterialCode IS NULL OR v.Volume IS NULL OR v.Volume <= 0 THEN 'Missing Volume Info' ELSE 'Has Volume Info' END AS [Status],
+    COUNT(DISTINCT i.Material) AS [Material Count],
+    ROUND(CAST(COUNT(DISTINCT i.Material) AS FLOAT) * 100.0 / (SELECT COUNT(DISTINCT Material) FROM dbo.ZWMS_INVENTORY{plant_sub_filter}), 2) AS [Percentage (%)]
+FROM dbo.ZWMS_INVENTORY i
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER v ON i.Material = v.MaterialCode{plant_filter}
+GROUP BY CASE WHEN v.MaterialCode IS NULL OR v.Volume IS NULL OR v.Volume <= 0 THEN 'Missing Volume Info' ELSE 'Has Volume Info' END"""
+                query_plan = {
+                    "entity": "MATERIAL",
+                    "metric": "MISSING_VOLUME_PERCENTAGE",
+                    "operation": "PERCENTAGE",
+                    "numerator": "inventory materials without matching physical-volume data",
+                    "denominator": "total inventory materials",
+                    "filters": filters,
+                    "group_by": ["Status"],
+                    "ranking": None,
+                    "limit": None,
+                    "response_mode": "GRAPH"
+                }
+                return {
+                    "sql": sql_missing_pct_chart,
+                    "query_plan": query_plan,
+                    "chart_type": "bar",
+                    "chart_title": f"Inventory Materials Volume Master Status (%){f' — Plant {plant_cand}' if plant_cand else ''}",
+                    "chart_x": "Status",
+                    "chart_y": "Percentage (%)",
+                    "intent": "materials_missing_volume_percentage",
+                    "metric": "missing_volume_percentage",
+                    "filters": filters,
+                    "time_range": "current",
+                    "output_type": "bar_chart",
+                    "conversation_state": state
+                }
+            else:
+                sql_missing_pct = f"""SELECT 
+    COUNT(DISTINCT CASE WHEN v.MaterialCode IS NULL OR v.Volume IS NULL OR v.Volume <= 0 THEN i.Material END) AS [Missing Volume Materials Count],
+    COUNT(DISTINCT i.Material) AS [Total Inventory Materials Count],
+    ROUND(CAST(COUNT(DISTINCT CASE WHEN v.MaterialCode IS NULL OR v.Volume IS NULL OR v.Volume <= 0 THEN i.Material END) AS FLOAT) * 100.0 / NULLIF(COUNT(DISTINCT i.Material), 0), 2) AS [Missing Volume Percentage]
+FROM dbo.ZWMS_INVENTORY i
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER v ON i.Material = v.MaterialCode{plant_filter}"""
+                query_plan = {
+                    "entity": "MATERIAL",
+                    "metric": "MISSING_VOLUME_PERCENTAGE",
+                    "operation": "PERCENTAGE",
+                    "numerator": "inventory materials without matching physical-volume data",
+                    "denominator": "total inventory materials",
+                    "filters": filters,
+                    "group_by": None,
+                    "ranking": None,
+                    "limit": None,
+                    "response_mode": "SUMMARY"
+                }
+                return {
+                    "sql": sql_missing_pct,
+                    "query_plan": query_plan,
+                    "chart_type": "none",
+                    "chart_title": f"Percentage of Inventory Materials Missing Volume Information{f' — Plant {plant_cand}' if plant_cand else ''}",
+                    "chart_x": None,
+                    "chart_y": None,
+                    "intent": "materials_missing_volume_percentage",
+                    "metric": "missing_volume_percentage",
+                    "filters": filters,
+                    "time_range": "current",
+                    "output_type": "text",
+                    "conversation_state": state
+                }
+
         is_count_request = any(c in q_lower for c in ["how many", "count", "number of", "total count", "how much", "how many items", "how many materials", "how many inventory items"])
         
         if is_count_request:
@@ -2221,19 +2400,22 @@ ORDER BY [Inventory Qty] DESC"""
         }
 
     # B. INTENT B: DATA QUALITY CHECK & MISSING PHYSICAL DIMENSIONS
-    is_dq_intent = state.get("topic") == "data_quality" or any(k in q_lower for k in [
-        "data quality", "quality check", "missing dimension", "missing physical", "missing volume",
-        "incomplete dimension", "incomplete physical", "missing length", "missing width", "missing height",
-        "no dimension", "no dimensions", "without dimension", "without dimensions", "without physical size",
-        "don't have dimension", "dont have dimension", "do not have dimension",
-        "don't have dimensions", "dont have dimensions", "do not have dimensions",
-        "lack dimension", "lack dimensions", "unmaintained dimension", "physical measurements", "measurements",
-        "dimension completeness", "cross-dataset", "cross dataset", "unmatched record", "unmatched material",
-        "unmaintained volume", "physical dimension"
-    ]) or (
-        ("dimension" in q_lower or "dimensions" in q_lower or "volume" in q_lower or "length" in q_lower or "width" in q_lower or "height" in q_lower or "physical" in q_lower or "size" in q_lower or "measurement" in q_lower or "measurements" in q_lower or "attribute" in q_lower or "attributes" in q_lower) and
-        ("missing" in q_lower or "incomplete" in q_lower or "null" in q_lower or "blank" in q_lower or "quality" in q_lower or "check" in q_lower or "exception" in q_lower or "validate" in q_lower or "validation" in q_lower or "without" in q_lower or "absent" in q_lower or "not defined" in q_lower or "not maintained" in q_lower or "unavailable" in q_lower or "don't" in q_lower or "dont" in q_lower or "do not" in q_lower or "no " in q_lower or "lack" in q_lower or "lacking" in q_lower or "not populated" in q_lower or "without length" in q_lower or "without width" in q_lower)
-    )
+    is_dq_intent = (
+        state.get("topic") == "data_quality" or
+        any(k in q_lower for k in [
+            "data quality", "quality check", "missing dimension", "missing physical", "missing volume",
+            "incomplete dimension", "incomplete physical", "missing length", "missing width", "missing height",
+            "no dimension", "no dimensions", "without dimension", "without dimensions", "without physical size",
+            "don't have dimension", "dont have dimension", "do not have dimension",
+            "don't have dimensions", "dont have dimensions", "do not have dimensions",
+            "lack dimension", "lack dimensions", "unmaintained dimension", "physical measurements", "measurements",
+            "dimension completeness", "cross-dataset", "cross dataset", "unmatched record", "unmatched material",
+            "unmaintained volume", "physical dimension"
+        ]) or (
+            ("dimension" in q_lower or "dimensions" in q_lower or "volume" in q_lower or "length" in q_lower or "width" in q_lower or "height" in q_lower or "physical" in q_lower or "size" in q_lower or "measurement" in q_lower or "measurements" in q_lower or "attribute" in q_lower or "attributes" in q_lower) and
+            ("missing" in q_lower or "incomplete" in q_lower or "null" in q_lower or "blank" in q_lower or "quality" in q_lower or "check" in q_lower or "exception" in q_lower or "validate" in q_lower or "validation" in q_lower or "without" in q_lower or "absent" in q_lower or "not defined" in q_lower or "not maintained" in q_lower or "unavailable" in q_lower or "don't" in q_lower or "dont" in q_lower or "do not" in q_lower or "no " in q_lower or "lack" in q_lower or "lacking" in q_lower or "not populated" in q_lower or "without length" in q_lower or "without width" in q_lower)
+        )
+    ) and state.get("topic") != "materials_missing_volume_percentage" and not any(c in q_lower for c in ["percentage", "percent", "pct", "%"])
     if is_dq_intent:
         plant_filter = f" WHERE i.Plant = '{plant_cand}'" if plant_cand else ""
         filters = {"plant": plant_cand} if plant_cand else {}
@@ -2456,6 +2638,122 @@ ORDER BY [UtilizationNum] DESC, [CapacityNum] ASC"""
             "conversation_state": state
         }
 
+    # Targeted Analyzed Queries: "Find bins that are almost full" (80% <= util < 100%) and "over capacity" (util >= 100%)
+    is_almost_full_req = (
+        state.get("topic") == "almost_full_bins" or
+        state.get("condition") == "NEAR_FULL" or
+        (
+            any(k in q_lower for k in [
+                "almost full", "nearly full", "near full", "close to full", "close to being full",
+                "close to full capacity", "almost at capacity", "near full capacity",
+                "nearly at 100% utilization", "nearly at 100%", "almost at 100%"
+            ]) and not any(k in q_lower for k in ["over capacity", "over-capacity", "over utilized", "over-utilized", "greater than 100", "above 100", "> 100", ">= 100"])
+        )
+    )
+
+    is_over_capacity_req = (
+        state.get("topic") == "over_capacity_bins" or
+        state.get("condition") == "OVER_CAPACITY" or
+        any(k in q_lower for k in [
+            "over capacity", "over-capacity", "over capacity bins", "full or over capacity",
+            "over-utilized bins", "over utilized bins", "exceeding capacity", "exceeds capacity",
+            "full or over", "at or over 100", "100% or more"
+        ])
+    )
+
+    if is_almost_full_req:
+        plant_filter = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
+        n_limit = state.get("limit") or new_limit
+        top_clause = f"TOP {n_limit} " if n_limit else ""
+        sql_almost_full = f"""SELECT {top_clause}
+    b.BinLocation AS [Bin],
+    b.Plant AS [Plant],
+    COALESCE(b.StorageLocation, 'N/A') AS [Storage Location],
+    ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 2) AS [Occupied Volume],
+    CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Bin Capacity],
+    CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %],
+    ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1) AS [Utilization]
+FROM dbo.ZWMS_BIN_MASTER b 
+JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant 
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode 
+WHERE b.Volume > 0{plant_filter} 
+GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit 
+HAVING SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) >= 80.0
+   AND SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) < 100.0
+ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) DESC"""
+        query_plan = {
+            "entity": "BIN",
+            "metric": "BIN_UTILIZATION",
+            "operation": "FILTER",
+            "condition": "NEAR_FULL",
+            "threshold": "80% <= utilization < 100%",
+            "filters": {"plant": plant_cand} if plant_cand else {},
+            "group_by": ["Bin", "Plant", "Storage Location"],
+            "ranking": None,
+            "limit": n_limit,
+            "response_mode": "GRAPH" if is_explicit_chart else "TABLE"
+        }
+        return {
+            "sql": sql_almost_full,
+            "query_plan": query_plan,
+            "chart_type": "bar" if is_explicit_chart else "none",
+            "chart_title": f"Almost Full Bins (80% - 100% Utilization){f' — Plant {plant_cand}' if plant_cand else ''}",
+            "chart_x": "Bin" if is_explicit_chart else None,
+            "chart_y": "Utilization" if is_explicit_chart else None,
+            "intent": "almost_full_bins",
+            "metric": "bin_utilization",
+            "filters": {"plant": plant_cand} if plant_cand else {},
+            "time_range": "current",
+            "output_type": "bar_chart" if is_explicit_chart else "table",
+            "conversation_state": state
+        }
+
+    if is_over_capacity_req:
+        plant_filter = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
+        n_limit = state.get("limit") or new_limit
+        top_clause = f"TOP {n_limit} " if n_limit else ""
+        sql_over_capacity = f"""SELECT {top_clause}
+    b.BinLocation AS [Bin],
+    b.Plant AS [Plant],
+    COALESCE(b.StorageLocation, 'N/A') AS [Storage Location],
+    ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 2) AS [Occupied Volume],
+    CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Bin Capacity],
+    CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %],
+    ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1) AS [Utilization]
+FROM dbo.ZWMS_BIN_MASTER b 
+JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant 
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode 
+WHERE b.Volume > 0{plant_filter} 
+GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit 
+HAVING SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) >= 100.0
+ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) DESC"""
+        query_plan = {
+            "entity": "BIN",
+            "metric": "BIN_UTILIZATION",
+            "operation": "FILTER",
+            "condition": "OVER_CAPACITY",
+            "threshold": "utilization >= 100%",
+            "filters": {"plant": plant_cand} if plant_cand else {},
+            "group_by": ["Bin", "Plant", "Storage Location"],
+            "ranking": None,
+            "limit": n_limit,
+            "response_mode": "GRAPH" if is_explicit_chart else "TABLE"
+        }
+        return {
+            "sql": sql_over_capacity,
+            "query_plan": query_plan,
+            "chart_type": "bar" if is_explicit_chart else "none",
+            "chart_title": f"Over-Capacity Bins (>= 100% Utilization){f' — Plant {plant_cand}' if plant_cand else ''}",
+            "chart_x": "Bin" if is_explicit_chart else None,
+            "chart_y": "Utilization" if is_explicit_chart else None,
+            "intent": "over_capacity_bins",
+            "metric": "bin_utilization",
+            "filters": {"plant": plant_cand} if plant_cand else {},
+            "time_range": "current",
+            "output_type": "bar_chart" if is_explicit_chart else "table",
+            "conversation_state": state
+        }
+
     # ENTITY PRESERVATION: "Find bins..." query must remain at bin level
     is_find_bins_req = (
         (
@@ -2465,6 +2763,7 @@ ORDER BY [UtilizationNum] DESC, [CapacityNum] ASC"""
         ) and not is_unsupported_nonexistent_query(resolved_q.lower())
         and not any(neg in resolved_q.lower() for neg in ["do not exist", "don't exist", "dont exist", "nonexistent", "non-existent", "not in the database", "not present in"])
         and not parse_range_filters(resolved_q)
+        and not is_almost_full_req and not is_over_capacity_req
     )
     if is_find_bins_req and not is_mat_entity:
         plant_filter_fb = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
@@ -2792,13 +3091,13 @@ ORDER BY BinUtilizationPct DESC"""
         ("bottom" in q_lower or "least" in q_lower or "emptiest" in q_lower)
     )
     has_rank = any(k in q_lower for k in ["rank", "ranking", "rankings", "sort", "order by"])
-    has_top = (
+    has_top = not is_almost_full_req and not is_over_capacity_req and (
         state.get("ranking") == "highest" or
         state.get("topic") in ["top_utilized_bins", "bin_available_capacity_ranking"] or
-        any(k in q_lower for k in ["top", "most", "highest", "fullest", "most capacity", "capacity usage", "fullest bins", "most full", "most occupied", "highest utilization"]) or
+        (bool(re.search(r"\b(?:top|most|highest|fullest)\b", q_lower)) or any(k in q_lower for k in ["most capacity", "capacity usage", "fullest bins", "most full", "most occupied", "highest utilization"])) or
         (has_rank and any(b in q_lower for b in ["bin", "bins"]) and not any(k in q_lower for k in ["least", "lowest", "bottom"]))
     )
-    has_bottom = state.get("ranking") == "lowest" or state.get("topic") == "least_utilized_bins" or any(k in q_lower for k in ["bottom", "least", "lowest", "emptiest", "unused capacity", "emptiest bins", "least full", "least occupied", "lowest utilization", "least empty", "least utiliz"])
+    has_bottom = not is_almost_full_req and not is_over_capacity_req and (state.get("ranking") == "lowest" or state.get("topic") == "least_utilized_bins" or any(k in q_lower for k in ["bottom", "least", "lowest", "emptiest", "unused capacity", "emptiest bins", "least full", "least occupied", "lowest utilization", "least empty", "least utiliz"]))
     is_plant_level_extreme = (
         bool(re.search(r"\b(?:plants?|plnts?|facility|facilities)\b", q_lower)) and
         (
@@ -2841,7 +3140,7 @@ ORDER BY BinUtilizationPct DESC"""
             "capacity_summary", "plant_capacity", "empty_bins_capacity",
             "referential_bins_capacity", "single_bin_capacity",
             "compound_capacity_utilization", "compound_capacity_clarification", "find_bins_list",
-            "plant_empty_bins_ranking"
+            "plant_empty_bins_ranking", "almost_full_bins", "over_capacity_bins"
         ]
         and not parse_compound_capacity_utilization(resolved_q)
         and not parse_range_filters(resolved_q)
@@ -4628,7 +4927,7 @@ WHERE Volume > 0"""
 
     # 6. TOTAL AVAILABLE CAPACITY (Total Capacity - Occupied Volume): "How much space is left?", "How much capacity is still available?", "Show available capacity"
     is_avail_cap_req = (
-        state.get("topic") == "available_capacity" or
+        state.get("topic") in ["available_capacity", "plant_available_capacity"] or
         (
             any(k in q_lower for k in [
                 "how much space is left", "how much capacity is still available", "show available capacity",
@@ -4639,9 +4938,62 @@ WHERE Volume > 0"""
             ]) or
             q_lower.strip() in ["available capacity", "free capacity", "remaining capacity", "unused capacity"]
         ) and
-        not any(k in q_lower for k in ["utiliz", "occupan", "%", "rank", "ranking", "bins by", "plants by", "compared to", "versus", "vs", "compare", "occupied compared"])
+        not any(k in q_lower for k in ["utiliz", "occupan", "%", "rank", "ranking", "bins by", "plants by", "compared to", "versus", "vs", "occupied compared"])
     )
     if is_avail_cap_req:
+        is_by_plant = (
+            state.get("topic") == "plant_available_capacity" or
+            any(p in q_lower for p in ["by plant", "for each plant", "plant-wise", "plant wise", "each plant", "every plant", "across plants", "of each plant", "compare plants"]) or
+            bool(plant_cand)
+        )
+        if is_by_plant:
+            plant_filter_cte = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
+            sql_plant_avail_cap = f"""WITH PlantCap AS (
+    SELECT 
+        b.BinLocation,
+        b.Plant,
+        b.Volume AS BinVol,
+        COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) AS OccVol
+    FROM dbo.ZWMS_BIN_MASTER b
+    LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+    LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+    WHERE b.Volume > 0{plant_filter_cte}
+    GROUP BY b.BinLocation, b.Plant, b.Volume
+)
+SELECT 
+    Plant,
+    ROUND(SUM(BinVol), 2) AS [Total Capacity (FT3)],
+    ROUND(SUM(OccVol), 2) AS [Occupied Volume (FT3)],
+    ROUND(SUM(BinVol) - SUM(OccVol), 2) AS [Available Capacity (FT3)]
+FROM PlantCap
+GROUP BY Plant
+ORDER BY [Available Capacity (FT3)] DESC"""
+
+            query_plan = {
+                "entity": "PLANT",
+                "metric": "AVAILABLE_CAPACITY",
+                "operation": "AGGREGATION",
+                "group_by": "PLANT",
+                "filters": {"plant": plant_cand} if plant_cand else {},
+                "ranking": None,
+                "limit": None,
+                "response_mode": "GRAPH" if is_explicit_chart else "TABLE"
+            }
+            return {
+                "sql": sql_plant_avail_cap,
+                "query_plan": query_plan,
+                "chart_type": "bar" if is_explicit_chart else "none",
+                "chart_title": f"Available Capacity by Plant (FT3){f' — Plant {plant_cand}' if plant_cand else ''}",
+                "chart_x": "Plant" if is_explicit_chart else None,
+                "chart_y": "Available Capacity (FT3)" if is_explicit_chart else None,
+                "intent": "plant_available_capacity",
+                "metric": "available_capacity",
+                "filters": {"plant": plant_cand} if plant_cand else {},
+                "time_range": "current",
+                "output_type": "bar_chart" if is_explicit_chart else "table",
+                "conversation_state": state
+            }
+
         plant_filter_cap = f" WHERE b.Plant = '{plant_cand}'" if plant_cand else ""
         sql_avail_cap = f"""WITH Cap AS (
     SELECT 
@@ -4817,8 +5169,20 @@ LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
 WHERE b.Plant = '{plant_val}' 
 GROUP BY b.Plant"""
 
+            query_plan = {
+                "entity": "BIN",
+                "metric": "BIN_UTILIZATION",
+                "operation": "ANALYZE",
+                "filters": {"plant": plant_val},
+                "group_by": None,
+                "ranking": None,
+                "limit": None,
+                "response_mode": "GRAPH" if is_explicit_chart else ("DETAIL" if is_detail_requested else "SUMMARY")
+            }
+
             return {
                 "sql": sql_plant_summary,
+                "query_plan": query_plan,
                 "chart_type": "bar" if is_explicit_chart else "none",
                 "chart_title": f"Plant {plant_val} Bin Utilization Summary",
                 "chart_x": "Plant" if is_explicit_chart else None,
@@ -4915,8 +5279,19 @@ ORDER BY BinUtilizationPct {order_dir}"""
         # 4. MULTI-PLANT OR WAREHOUSE-WIDE BIN UTILIZATION
         plant_filter = f" WHERE b.Plant = '{plant_cand}'" if (plant_cand and not is_all_plants_request) else ""
         filters = {"plant": plant_cand} if plant_filter else {}
+        query_plan = {
+            "entity": "BIN",
+            "metric": "BIN_UTILIZATION",
+            "operation": "ANALYZE",
+            "group_by": "PLANT",
+            "filters": filters,
+            "ranking": None,
+            "limit": None,
+            "response_mode": "GRAPH" if is_explicit_chart else "SUMMARY"
+        }
         return {
             "sql": f"SELECT b.Plant, COUNT(DISTINCT b.BinLocation) AS TotalBins, COUNT(DISTINCT i.BinNo) AS OccupiedBins, (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS EmptyBins, ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS BinUtilizationPct, ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS BinOccupancyPct, ROUND(SUM(b.Volume), 2) AS TotalBinCapacityVolume, ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS OccupiedBinVolume, ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END) * 100.0 / NULLIF(SUM(b.Volume), 0), 2) AS VolumeUtilizationPct FROM dbo.ZWMS_BIN_MASTER b LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant{plant_filter} GROUP BY b.Plant ORDER BY BinUtilizationPct DESC",
+            "query_plan": query_plan,
             "chart_type": "none" if is_single_statement_requested else "bar",
             "chart_title": "Warehouse Bin Utilization by Plant (%)",
             "chart_x": None if is_single_statement_requested else "Plant",
@@ -5421,6 +5796,44 @@ ORDER BY SUM(UnrestrictedQty) {order_dir}"""
             "conversation_state": state
         }
 
+    # N4A. PLANT-WISE INVENTORY QUANTITY: "Show plant-wise inventory", "Show plant-wise inventory as a graph"
+    is_plant_inv_req = (
+        state.get("topic") == "plant_inventory" or
+        (
+            any(k in q_lower for k in ["plant-wise", "plant wise", "by plant", "for each plant", "each plant", "across plants", "of each plant"]) and
+            any(k in q_lower for k in ["inventory", "stock", "quantity", "stock quantity", "inventory quantity", "units"]) and
+            not any(k in q_lower for k in ["capacity", "utiliz", "occupan", "empty", "missing", "dimension", "master", "difference", "between", "from"]) and
+            not any(k in q_lower for k in ["rank", "ranking", "top", "bottom", "highest", "lowest"])
+        )
+    )
+    if is_plant_inv_req:
+        plant_filter_pi = f" WHERE Plant = '{plant_cand}'" if plant_cand else ""
+        filters_pi = {"plant": plant_cand} if plant_cand else {}
+        query_plan = {
+            "entity": "PLANT",
+            "metric": "TOTAL_INVENTORY_QUANTITY",
+            "operation": "AGGREGATION",
+            "group_by": "PLANT",
+            "filters": filters_pi,
+            "ranking": None,
+            "limit": None,
+            "response_mode": "GRAPH" if is_explicit_chart else "TABLE"
+        }
+        return {
+            "sql": f"SELECT Plant AS [Plant], SUM(UnrestrictedQty) AS [Total Inventory Quantity], COUNT(DISTINCT Material) AS [Total Unique Materials], COUNT(DISTINCT BinNo) AS [Total Active Bins] FROM dbo.ZWMS_INVENTORY{plant_filter_pi} GROUP BY Plant ORDER BY [Total Inventory Quantity] DESC",
+            "query_plan": query_plan,
+            "chart_type": "bar" if is_explicit_chart else "none",
+            "chart_title": f"Plant-Wise Inventory Quantity{f' — Plant {plant_cand}' if plant_cand else ''}",
+            "chart_x": "Plant" if is_explicit_chart else None,
+            "chart_y": "Total Inventory Quantity" if is_explicit_chart else None,
+            "intent": "plant_inventory",
+            "metric": "total_inventory_quantity",
+            "filters": filters_pi,
+            "time_range": "current",
+            "output_type": "bar_chart" if is_explicit_chart else "table",
+            "conversation_state": state
+        }
+
     # N4. TOTAL INVENTORY QUANTITY (Concept A - SUM(UnrestrictedQty))
     is_total_inv_intent = (
         state.get("topic") == "total_inventory_quantity" or
@@ -5762,8 +6175,29 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         ]
         return "\n".join(lines)
 
+    # 0A_ALMOST_FULL. Almost full bins (80% <= util < 100%) and over capacity bins (>= 100%)
+    is_almost_full_q = any(k in q_lower for k in [
+        "almost full", "nearly full", "near full", "close to full", "close to being full",
+        "close to full capacity", "almost at capacity", "near full capacity",
+        "nearly at 100% utilization", "nearly at 100%", "almost at 100%"
+    ]) and not any(k in q_lower for k in ["over capacity", "over-capacity", "over utilized", "over-utilized", "greater than 100", "above 100", "> 100", ">= 100"])
+    if is_almost_full_q and "Bin" in cols and ("Utilization %" in cols or "Utilization" in cols):
+        plant_val = extract_single_plant_safe(q_lower)
+        plant_str = f" in Plant {plant_val}" if plant_val else ""
+        return f"Found **{len(rows)}** bins operating near full capacity (between 80% and 100% utilization){plant_str}."
+
+    is_over_cap_q = any(k in q_lower for k in [
+        "over capacity", "over-capacity", "over capacity bins", "full or over capacity",
+        "over-utilized bins", "over utilized bins", "exceeding capacity", "exceeds capacity",
+        "full or over", "at or over 100", "100% or more"
+    ])
+    if is_over_cap_q and "Bin" in cols and ("Utilization %" in cols or "Utilization" in cols):
+        plant_val = extract_single_plant_safe(q_lower)
+        plant_str = f" in Plant {plant_val}" if plant_val else ""
+        return f"Found **{len(rows)}** bins operating at or over capacity (>= 100% utilization){plant_str}."
+
     # 0A_FIND_BINS. Entity Preservation: "Find bins..."
-    if "Bin" in cols and any(q_lower.startswith(p) or f" {p}" in q_lower for p in ["find bins", "find bin", "search bins", "look for bins", "list bins", "show bins", "get bins"]) and not any(k in q_lower for k in ["between", "from", "utiliz"]):
+    if "Bin" in cols and any(q_lower.startswith(p) or f" {p}" in q_lower for p in ["find bins", "find bin", "search bins", "look for bins", "list bins", "show bins", "get bins"]) and not any(k in q_lower for k in ["between", "from", "utiliz", "almost full", "nearly full", "near full", "close to full", "close to being full", "over capacity", "over-capacity"]):
         plant_val = extract_single_plant_safe(q_lower)
         plant_str = f" in Plant {plant_val}" if plant_val else ""
         total_matching = rows[0].get("TotalMatching") if (rows and "TotalMatching" in rows[0]) else len(rows)
@@ -5882,6 +6316,65 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
             lines.append(f"- **Plant {p}**: **{q:,.0f} units** across {m:,} materials and {b:,} occupied bins.")
         lines.append("\n💡 *The matching plants are displayed in the **Data Table** below.*")
         return "\n".join(lines)
+
+    # 0A_MISSING_VOL_PCT. Missing volume information percentage / summary
+    if "Missing Volume Percentage" in cols:
+        pct = rows[0].get("Missing Volume Percentage", 0.0)
+        miss_count = rows[0].get("Missing Volume Materials Count", 0)
+        tot_count = rows[0].get("Total Inventory Materials Count", 0)
+        plant_val = extract_single_plant_safe(q_lower)
+        plant_str = f" for Plant {plant_val}" if plant_val else ""
+        return f"**{pct:.2f}%** of inventory materials are missing volume information ({miss_count:,} out of {tot_count:,} materials){plant_str}."
+
+    if "Status" in cols and ("Percentage (%)" in cols or "Material Count" in cols) and any("missing" in str(s).lower() for s in [r.get("Status", "") for r in rows]):
+        missing_row = next((r for r in rows if "missing" in str(r.get("Status", "")).lower()), None)
+        if missing_row:
+            pct = missing_row.get("Percentage (%)", 0.0)
+            miss_count = missing_row.get("Material Count", 0)
+            return f"**{pct:.2f}%** of inventory materials are missing volume information ({miss_count:,} materials)."
+
+    # 0A_ALMOST_FULL. Almost full bins (80% <= util < 100%) and over capacity bins (>= 100%)
+    is_almost_full_q = any(k in q_lower for k in [
+        "almost full", "nearly full", "near full", "close to full", "close to being full",
+        "close to full capacity", "almost at capacity", "near full capacity",
+        "nearly at 100% utilization", "nearly at 100%", "almost at 100%"
+    ]) and not any(k in q_lower for k in ["over capacity", "over-capacity", "over utilized", "over-utilized", "greater than 100", "above 100", "> 100", ">= 100"])
+    if is_almost_full_q and "Bin" in cols and ("Utilization %" in cols or "Utilization" in cols):
+        plant_val = extract_single_plant_safe(q_lower)
+        plant_str = f" in Plant {plant_val}" if plant_val else ""
+        return f"Found **{len(rows)}** bins operating near full capacity (between 80% and 100% utilization){plant_str}."
+
+    is_over_cap_q = any(k in q_lower for k in [
+        "over capacity", "over-capacity", "over capacity bins", "full or over capacity",
+        "over-utilized bins", "over utilized bins", "exceeding capacity", "exceeds capacity",
+        "full or over", "at or over 100", "100% or more"
+    ])
+    if is_over_cap_q and "Bin" in cols and ("Utilization %" in cols or "Utilization" in cols):
+        plant_val = extract_single_plant_safe(q_lower)
+        plant_str = f" in Plant {plant_val}" if plant_val else ""
+        return f"Found **{len(rows)}** bins operating at or over capacity (>= 100% utilization){plant_str}."
+
+    # 0A_PLANT_AVAIL_CAP. Available Capacity by Plant
+    if (
+        "Available Capacity (FT3)" in cols and "Total Capacity (FT3)" in cols and "Plant" in cols
+        and "Bin" not in cols
+        and "Total Bins" not in cols
+        and not any(k in q_lower for k in ["compare", "versus", "vs", "which plant", "difference between", "summary", "warehouse capacity"])
+    ):
+        if len(rows) > 1:
+            tot_avail = sum(r.get("Available Capacity (FT3)", 0) for r in rows)
+            return f"Showing available capacity across **{len(rows)} operational plants** (total available: **{tot_avail:,.2f} FT³**)."
+        else:
+            p = rows[0].get("Plant")
+            avail = rows[0].get("Available Capacity (FT3)", 0)
+            tot_cap = rows[0].get("Total Capacity (FT3)", 0)
+            occ = rows[0].get("Total Occupied Volume (FT3)", rows[0].get("Occupied Volume (FT3)", 0))
+            return f"Plant {p} has **{avail:,.2f} FT³** available capacity (Total Capacity: {tot_cap:,.2f} FT³, Occupied Volume: {occ:,.2f} FT³)."
+
+    # 0A_PLANT_INV. Plant-Wise Inventory Quantity
+    if "Total Inventory Quantity" in cols and "Plant" in cols and "Storage Location" not in cols and "Bin" not in cols and "Rank" not in cols and len(rows) > 1 and not any(k in q_lower for k in ["between", "from", "range", ">", "<"]):
+        tot_qty = sum(r.get("Total Inventory Quantity", 0) for r in rows)
+        return f"Showing inventory quantities across **{len(rows)} operational plants** (totaling **{tot_qty:,.0f} units**)."
 
     # 0A0. Specific Bin Lookups (Plant, Occupancy, Quantity, Materials)
     bin_cand_matches = re.findall(r"(?:bin\s*[:#-]?\s*([a-z0-9_-]{2,25})|\b(b\d{3,5})\b)", q_lower, re.IGNORECASE)
@@ -7545,6 +8038,94 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
             "chart_y": "Total Inventory Quantity",
             "metric": "TOTAL_INVENTORY_QUANTITY",
             "intent": "plant_inventory_range",
+            "time_range": "current"
+        }
+
+    if generated.get("intent") in ["almost_full_bins", "over_capacity_bins"]:
+        is_explicit_chart_in_q = any(k in q_lower for k in [
+            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart",
+            "show me a graph", "give me a chart", "draw a chart", "create a chart", "plot a chart"
+        ])
+        return {
+            "output_type": "bar_chart" if is_explicit_chart_in_q else "table",
+            "chart_type": "bar" if is_explicit_chart_in_q else "none",
+            "chart_title": generated.get("chart_title", "Bin Utilization"),
+            "chart_x": "Bin",
+            "chart_y": "Utilization" if "Utilization" in cols else "Occupied Volume",
+            "metric": "BIN_UTILIZATION",
+            "intent": generated.get("intent"),
+            "time_range": "current"
+        }
+
+    if generated.get("intent") == "materials_missing_volume_percentage" or "Missing Volume Percentage" in cols:
+        is_explicit_chart_in_q = any(k in q_lower for k in [
+            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart",
+            "show me a graph", "give me a chart", "draw a chart", "create a chart", "plot a chart"
+        ])
+        if is_explicit_chart_in_q or "Status" in cols:
+            return {
+                "output_type": "bar_chart",
+                "chart_type": "bar",
+                "chart_title": generated.get("chart_title", "Inventory Materials Missing Volume Information (%)"),
+                "chart_x": "Status" if "Status" in cols else "Material",
+                "chart_y": "Percentage (%)" if "Percentage (%)" in cols else "Missing Volume Percentage",
+                "metric": "MISSING_VOLUME_PERCENTAGE",
+                "intent": "materials_missing_volume_percentage",
+                "time_range": "current"
+            }
+        return {
+            "output_type": "text",
+            "chart_type": "none",
+            "metric": "MISSING_VOLUME_PERCENTAGE",
+            "intent": "materials_missing_volume_percentage",
+            "time_range": "current"
+        }
+
+    if generated.get("intent") == "plant_available_capacity" or ("Available Capacity (FT3)" in cols and "Plant" in cols and len(rows) > 1):
+        is_explicit_chart_in_q = any(k in q_lower for k in [
+            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart",
+            "show me a graph", "give me a chart", "draw a chart", "create a chart", "plot a chart"
+        ])
+        if is_explicit_chart_in_q:
+            return {
+                "output_type": "bar_chart",
+                "chart_type": "bar",
+                "chart_title": generated.get("chart_title", "Available Capacity by Plant (FT3)"),
+                "chart_x": "Plant",
+                "chart_y": "Available Capacity (FT3)",
+                "metric": "AVAILABLE_CAPACITY",
+                "intent": "plant_available_capacity",
+                "time_range": "current"
+            }
+        return {
+            "output_type": "table",
+            "chart_type": "none",
+            "metric": "AVAILABLE_CAPACITY",
+            "intent": "plant_available_capacity",
+            "time_range": "current"
+        }
+
+    if generated.get("intent") == "plant_inventory" or ("Total Inventory Quantity" in cols and "Plant" in cols and "Storage Location" not in cols and "Bin" not in cols and "Rank" not in cols and len(rows) > 1 and not any(k in q_lower for k in ["between", "from", "range", ">", "<"])):
+        is_explicit_chart_in_q = any(k in q_lower for k in [
+            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart",
+            "show me a graph", "give me a chart", "draw a chart", "create a chart", "plot a chart"
+        ])
+        if is_explicit_chart_in_q:
+            return {
+                "output_type": "bar_chart",
+                "chart_type": "bar",
+                "chart_title": generated.get("chart_title", "Plant-Wise Inventory Quantity"),
+                "chart_x": "Plant",
+                "chart_y": "Total Inventory Quantity",
+                "metric": "TOTAL_INVENTORY_QUANTITY",
+                "intent": "plant_inventory",
+                "time_range": "current"
+            }
+        return {
+            "output_type": "table",
+            "chart_type": "none",
+            "metric": "TOTAL_INVENTORY_QUANTITY",
+            "intent": "plant_inventory",
             "time_range": "current"
         }
 
