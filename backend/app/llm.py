@@ -740,35 +740,56 @@ def is_elliptical_followup(q_lower: str) -> bool:
     # 2. Affirmative expansions / drilldowns / detail
     if any(q_strip.startswith(w) for w in ["yes", "yeah", "sure", "please", "expand", "yep"]):
         return True
-    if q_strip in [
+    if any(k in q_strip for k in [
         "detailed version", "detailed analysis", "generate detail", "show detail", "detailed breakdown",
-        "generate detailed", "detailed", "in detail", "explain", "deep dive", "elaborate",
-        "more detail", "more details", "break it down", "expand on this"
-    ] or any(q_strip.startswith(w) for w in ["explain this", "explain that", "expand on", "break down", "drill down"]):
+        "generate detailed", "in detail", "deep dive", "more detail", "more details",
+        "break it down", "expand on this", "detailed view", "detailed form"
+    ]) or q_strip in ["detailed", "explain", "elaborate"]:
         return True
     
+    # 2B. Presentation / Format modifiers (count, names, percentage)
+    if any(k in q_strip for k in [
+        "only the count", "only count", "just the count", "count only", "give me only the count", "give only the count",
+        "only names", "only the names", "names only", "just the names", "show only the names",
+        "only percentage", "only the percentage", "percentage only", "just the percentage", "show only the percentage",
+        "just the number", "only the number", "number only", "give me only the number", "give only the number", "show only the number"
+    ]) or q_strip in ["count", "names", "percentage"]:
+        return True
+
     # 3. Pronoun / anaphora references
-    if any(p in q_strip for p in ["for this", "of this", "about this", "for that", "of that", "these", "those", "for them", "of them", "do they", "they have", "do these", "these have", "do those", "those have", "their total"]):
+    if any(p in q_strip for p in [
+        "for this", "of this", "about this", "for that", "of that", "these", "those", "for them", "of them",
+        "do they", "they have", "do these", "these have", "do those", "those have", "their total",
+        "those two", "these two", "both", "the two", "ones",
+        "other plant", "the other plant", "other one", "another plant",
+        "same thing", "the same", "the same thing", "the previous result", "the above", "instead"
+    ]):
         return True
     
     # 4. Elliptical questions and conversational pivots
     if any(q_strip.startswith(p) for p in [
         "what about", "and what about", "how about", "and how about",
         "and for", "only for", "only in", "just for", "just in",
-        "and in", "now for", "and the", "what if", "only materials"
+        "and in", "now for", "and the", "what if", "only materials",
+        "compare those", "compare these", "compare them", "compare both", "compare the two",
+        "now show"
     ]):
         return True
     if re.search(r"^(?:only in|only for|just in|just for|in|for)?\s*(?:plant\s+)?\d{3,5}\.?$", q_strip):
         return True
     
     # 5. Incremental adjustments, polarity shifts, ranking pivots, or follow-up counts
+    if re.search(r"\b(?:make|change|switch|set)\s+(?:it\s+)?(?:to\s+)?(?:top\s+|bottom\s+)?\d+\b", q_strip):
+        return True
+    if re.search(r"^(?:show|give|fetch|display)?\s*(?:the\s+)?(?:top|bottom|highest|lowest|least|most)\s+\d+\.?$", q_strip):
+        return True
     if re.search(r"\b(?:show|give|fetch|display)?\s*(?:top|bottom|highest|lowest)?\s*\d{1,3}\s+instead\b", q_strip):
         return True
     if any(k in q_strip for k in [
         "reverse it", "reverse the ranking", "reverse order", "flip the ranking", "flip order", "in reverse order", "reverse",
         "instead", "next 10", "show more", "sort by", "ones",
         "least utilized ones", "lowest utilized ones", "most utilized ones",
-        "show least utilized", "bottom 10", "top 10", "least ones", "most ones",
+        "show least utilized", "bottom 10", "top 10", "bottom 5", "top 5", "least ones", "most ones",
         "lowest ones", "highest ones", "bottom ones", "top ones",
         "how many are there", "what is the count", "how many are in there", "how many?", "how many",
         "only materials", "top materials"
@@ -806,11 +827,16 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     state = {
         "entity": "inventory",
         "metric": "total_inventory",
+        "operation": "aggregation",
         "ranking": None,
         "limit": new_limit,
         "condition": None,
         "aggregation": "list",
         "filters": {},
+        "plants": [],
+        "active_plant": None,
+        "comparison_entities": [],
+        "response_mode": "TABLE",
         "topic": "inventory_summary"
     }
 
@@ -826,18 +852,71 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         for uq in user_queries:
             uq_lower = uq.lower()
             
-            # Plant filter in history
-            if any(k in uq_lower for k in ["all plants", "across plants", "by plant", "each plant", "every plant", "plants", "compare plants", "across all", "whole warehouse", "entire warehouse", "network", "overall"]):
+            # Plant filter and ordered tracking in history
+            pm_val = extract_single_plant_safe(uq_lower)
+            if any(k in uq_lower for k in ["all plants", "across plants", "by plant", "each plant", "every plant", "plants", "compare plants", "across all", "whole warehouse", "entire warehouse", "network", "overall", "bin utilization", "warehouse utilization"]) and not pm_val:
                 state["filters"].pop("plant", None)
-            else:
-                pm_val = extract_single_plant_safe(uq_lower)
-                if pm_val:
-                    state["filters"]["plant"] = pm_val
+                state["active_plant"] = None
+            elif pm_val:
+                state["filters"]["plant"] = pm_val
+                state["active_plant"] = pm_val
+                if pm_val not in state["plants"]:
+                    state["plants"].append(pm_val)
+                if len(state["plants"]) >= 2:
+                    state["comparison_entities"] = [{"type": "plant", "value": p} for p in state["plants"][-2:]]
 
             # Limit in history
             hist_lim = extract_explicit_limit(uq_lower)
             if hist_lim:
                 state["limit"] = hist_lim
+
+            # Check other plant in history
+            if any(k in uq_lower for k in ["other plant", "the other plant"]):
+                if len(state["plants"]) >= 2:
+                    last_p = state.get("active_plant")
+                    cands = [p for p in state["plants"][-2:] if p != last_p]
+                    other_p = cands[0] if cands else state["plants"][0]
+                    state["active_plant"] = other_p
+                    state["filters"]["plant"] = other_p
+                    if state.get("topic") == "plant_comparison":
+                        state["topic"] = "plant_inventory"
+                        state["operation"] = "aggregation"
+                        state["response_mode"] = "TABLE"
+
+            # Check comparison triggers in history
+            if any(k in uq_lower for k in ["compare those two", "compare these two", "compare those", "compare them", "compare both", "compare the two"]) or (uq_lower.strip() in ["compare", "compare two"]):
+                state["entity"] = "plant"
+                state["operation"] = "comparison"
+                state["topic"] = "plant_comparison"
+                if len(state["plants"]) >= 2:
+                    state["comparison_entities"] = [{"type": "plant", "value": p} for p in state["plants"][-2:]]
+                    state["filters"]["plants"] = [p for p in state["plants"][-2:]]
+
+            # Check presentation / format modifiers in history
+            if any(k in uq_lower for k in ["detailed version", "in detail", "show detail", "detailed breakdown", "detailed"]):
+                state["response_mode"] = "DETAIL"
+            elif any(k in uq_lower for k in ["only count", "only the count", "just the count", "count only", "give me only the count"]):
+                state["response_mode"] = "COUNT"
+            elif any(k in uq_lower for k in ["only names", "only the names", "names only", "just the names", "show only the names"]):
+                state["response_mode"] = "NAMES_ONLY"
+            elif any(k in uq_lower for k in ["only percentage", "only the percentage", "percentage only", "just the percentage", "show only the percentage"]):
+                state["response_mode"] = "PERCENTAGE_ONLY"
+            elif any(k in uq_lower for k in ["graph", "chart", "visualize", "plot", "with graph", "as graph"]):
+                state["response_mode"] = "GRAPH"
+                state["is_explicit_chart_request"] = True
+
+            # Check plant inventory in history
+            if any(k in uq_lower for k in ["inventory of plant", "plant inventory", "stock in plant", "stock of plant", "inventory in plant"]) or (
+                any(k in uq_lower for k in ["inventory", "stock", "units", "inventory quantity"]) and
+                any(k in uq_lower for k in ["plant", "facility", "1258", "7228", "1266", "1268"]) and
+                not any(k in uq_lower for k in ["rank", "ranking", "top", "bottom", "capacity", "utiliz", "empty", "compare", "between"])
+            ):
+                state["entity"] = "plant"
+                state["metric"] = "TOTAL_INVENTORY_QUANTITY"
+                state["topic"] = "plant_inventory"
+                state["operation"] = "aggregation"
+                state["condition"] = None
+                state["aggregation"] = "aggregation"
 
             # Check topic signatures
             if (
@@ -907,7 +986,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                 state["topic"] = "plant_bin_utilization_detail"
                 state["condition"] = None
                 state["aggregation"] = "summary"
-            elif any(k in uq_lower for k in ["overall warehouse", "warehouse space utilization", "warehouse bin utilization", "overall bin utilization", "warehouse utilization", "space utilization rate", "how full", "across plants", "fill percentage", "warehouse fullness", "running out of storage"]):
+            elif any(k in uq_lower for k in ["bin utilization", "overall warehouse", "warehouse space utilization", "warehouse bin utilization", "overall bin utilization", "warehouse utilization", "space utilization rate", "how full", "across plants", "fill percentage", "warehouse fullness", "running out of storage"]):
                 state["entity"] = "bin"
                 state["metric"] = "warehouse_utilization"
                 state["topic"] = "warehouse_utilization"
@@ -1112,11 +1191,8 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         "available space", "free space", "remaining space"
     ])
     is_fresh_plant_inventory = (
-        any(k in q_lower for k in ["plant-wise", "plant wise", "by plant", "for each plant", "each plant", "across plants", "of each plant", "plants"]) and
-        any(k in q_lower for k in ["inventory", "stock", "quantity", "stock quantity", "inventory quantity", "units"]) and
-        not any(k in q_lower for k in ["capacity", "utiliz", "occupan", "empty", "missing", "dimension", "master", "difference", "between", "from"]) and
-        not any(k in q_lower for k in ["rank", "ranking", "top", "bottom", "highest", "lowest"])
-    )
+        any(k in q_lower for k in ["plant-wise", "plant wise", "by plant", "for each plant", "each plant", "across plants", "of each plant", "plants", "inventory of plant", "plant inventory", "stock in plant", "stock of plant", "inventory in plant"])
+    ) and not any(k in q_lower for k in ["total inventory in plant", "total stock in plant", "capacity", "utiliz", "occupan", "empty", "missing", "dimension", "master", "difference", "between", "from"]) and not any(k in q_lower for k in ["rank", "ranking", "top", "bottom", "highest", "lowest", "compare", "versus", "vs"])
     is_fresh_empty = any(k in q_lower for k in ["empty bin", "empty bins", "show me empty", "list empty", "putaway", "put-away", "vacant bin", "free bin", "available for immediate put-away", "where can i put", "put new inventory", "place incoming"]) and not any(k in q_lower for k in ["how many", "count", "compare", "versus", "vs", "difference between", "their empty bins", "how much capacity", "how much space", "how much volume", "available capacity", "total capacity"])
     is_fresh_top_bins = bool(re.search(r"\b(?:top|most|fullest)\b", q_lower)) and any(k in q_lower for k in ["utilized bin", "utilised bin", "fullest bin", "capacity bin"]) and not is_mat_entity and not is_plant_extreme_req and not is_fresh_almost_full and not is_fresh_over_capacity
     is_fresh_least_bins = bool(re.search(r"\b(?:bottom|least|lowest|emptiest)\b", q_lower)) and any(k in q_lower for k in ["utilized bin", "utilised bin", "bins", "locations", "capacity"]) and not is_mat_entity and not is_plant_extreme_req and not is_fresh_almost_full and not is_fresh_over_capacity
@@ -1230,7 +1306,8 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     
     is_followup_for_detail = is_followup and (
         (state.get("topic") in ["plant_bin_utilization_detail", "plant_bin_utilization_summary"] and (is_affirmative_followup or is_explicit_chart_request)) or
-        (any(k in q_lower for k in ["generate detailed bin utilization", "detailed bin utilization analysis", "storage location breakdown", "detailed version of this analysis", "sloc breakdown", "detailed version"]) and is_plant_scope)
+        (any(k in q_lower for k in ["generate detailed bin utilization", "detailed bin utilization analysis", "storage location breakdown", "detailed version of this analysis", "sloc breakdown"]) and is_plant_scope) or
+        ("detailed version" in q_lower and is_plant_scope and state.get("topic") in ["plant_bin_utilization_detail", "plant_bin_utilization_summary", "warehouse_utilization"])
     )
     is_fresh_plant_bin_util_detail = (
         any(k in q_lower for k in ["utiliz", "occupan", "capacity", "how full", "space utilization", "bin fill", "fullness", "fill rate"]) and
@@ -1565,13 +1642,18 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["filters"] = {"plant": new_plant} if new_plant else {}
         state["limit"] = new_limit
     elif is_fresh_plant_inventory:
-        state["entity"] = "plant"
+        state["entity"] = "plant" if new_plant else "inventory"
         state["metric"] = "TOTAL_INVENTORY_QUANTITY"
+        state["operation"] = "aggregation"
         state["ranking"] = None
         state["topic"] = "plant_inventory"
         state["aggregation"] = "aggregation"
         state["filters"] = {"plant": new_plant} if new_plant else {}
         state["limit"] = None
+        if new_plant:
+            state["active_plant"] = new_plant
+            if new_plant not in state["plants"]:
+                state["plants"].append(new_plant)
     elif is_fresh_top_bins:
         state["entity"] = "bin"
         state["metric"] = "utilization"
@@ -1719,17 +1801,61 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         # It's a modifier / follow-up
         if new_plant:
             state["filters"]["plant"] = new_plant
+            state["active_plant"] = new_plant
+            if new_plant not in state["plants"]:
+                state["plants"].append(new_plant)
+            if len(state["plants"]) >= 2:
+                state["comparison_entities"] = [{"type": "plant", "value": p} for p in state["plants"][-2:]]
+
+        # Check other plant
+        if any(k in q_lower for k in ["other plant", "the other plant", "other one"]):
+            if len(state["plants"]) >= 2:
+                last_p = state.get("active_plant")
+                cands = [p for p in state["plants"][-2:] if p != last_p]
+                other_p = cands[0] if cands else state["plants"][0]
+                state["active_plant"] = other_p
+                state["filters"]["plant"] = other_p
+                if state.get("topic") == "plant_comparison":
+                    state["topic"] = "plant_inventory"
+                    state["operation"] = "aggregation"
+                    state["response_mode"] = "TABLE"
+
+        # Check comparison triggers
+        if any(k in q_lower for k in ["compare those two", "compare these two", "compare those", "compare them", "compare both", "compare the two"]) or (q_lower.strip() in ["compare", "compare two"]):
+            state["entity"] = "plant"
+            state["operation"] = "comparison"
+            state["topic"] = "plant_comparison"
+            if len(state["plants"]) >= 2:
+                state["comparison_entities"] = [{"type": "plant", "value": p} for p in state["plants"][-2:]]
+                state["filters"]["plants"] = [p for p in state["plants"][-2:]]
+
+        # Check presentation / format modifiers
+        if any(k in q_lower for k in ["detailed version", "in detail", "show detail", "detailed breakdown", "detailed", "give details"]):
+            state["response_mode"] = "DETAIL"
+        elif any(k in q_lower for k in ["only count", "only the count", "just the count", "count only", "give me only the count"]):
+            state["response_mode"] = "COUNT"
+            if state.get("condition") == "empty" or state.get("topic") in ["putaway_bins", "empty_bins_count"]:
+                state["topic"] = "empty_bins_count"
+                state["aggregation"] = "count"
+        elif any(k in q_lower for k in ["only names", "only the names", "names only", "just the names", "show only the names"]):
+            state["response_mode"] = "NAMES_ONLY"
+        elif any(k in q_lower for k in ["only percentage", "only the percentage", "percentage only", "just the percentage", "show only the percentage"]):
+            state["response_mode"] = "PERCENTAGE_ONLY"
+
         if new_limit:
             state["limit"] = new_limit
-        if any(k in q_lower for k in ["graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart", "histogram"]):
+        if any(k in q_lower for k in ["graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart", "histogram", "with graph", "as graph"]):
             state["is_explicit_chart_request"] = True
+            state["response_mode"] = "GRAPH"
 
         # Handle "How many are there?" / "What is the count?"
         is_count_query = any(k in q_lower for k in ["how many", "count", "number of", "total count", "what is the count", "how many are there"])
         if is_count_query:
             state["aggregation"] = "count"
+            state["response_mode"] = "COUNT"
             if state["condition"] == "empty" or state["topic"] in ["putaway_bins", "empty_bins_count"]:
                 state["topic"] = "empty_bins_count"
+                state["operation"] = "COUNT"
             elif state["topic"] in ["data_quality", "materials_missing_from_volume_master"]:
                 state["topic"] = "data_quality_count"
 
@@ -1751,8 +1877,9 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                 state["topic"] = "least_utilized_bins" if state["ranking"] == "lowest" else "top_utilized_bins"
 
         # 1. "What about the lowest ones?" / "least ones" -> flip to lowest ranking
-        elif any(k in q_lower for k in ["least utilized", "lowest utilized", "least ones", "lowest ones", "least", "bottom", "emptiest"]):
+        elif any(k in q_lower for k in ["least utilized ones", "lowest utilized ones", "least utilized", "lowest utilized", "least ones", "lowest ones", "least", "bottom", "emptiest"]):
             state["ranking"] = "lowest"
+            state["direction"] = "ASC"
             state["aggregation"] = "list"
             if state.get("entity") == "plant":
                 if state.get("topic") == "plant_occupied_volume_ranking" or "volume" in state.get("metric", ""):
@@ -1766,12 +1893,17 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             elif state.get("entity") == "storage_location":
                 state["topic"] = "storage_location_ranking"
             else:
+                state["entity"] = "bin"
+                state["metric"] = "BIN_UTILIZATION"
                 state["topic"] = "least_utilized_bins"
 
         # 2. "Show me the top 5 instead" / "top 5" -> flip to highest ranking
-        elif is_followup and any(k in q_lower for k in ["top", "most", "highest", "fullest"]) and ("instead" in q_lower or "most" in q_lower or "top" in q_lower or "highest" in q_lower):
+        elif is_followup and any(k in q_lower for k in ["top", "most", "highest", "fullest", "most utilized", "most utilized ones"]):
             state["ranking"] = "highest"
+            state["direction"] = "DESC"
             state["aggregation"] = "list"
+            if new_limit:
+                state["limit"] = new_limit
             if state.get("entity") == "plant":
                 if state.get("topic") == "plant_occupied_volume_ranking" or "volume" in state.get("metric", ""):
                     state["topic"] = "plant_occupied_volume_ranking"
@@ -1784,10 +1916,12 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             elif state.get("entity") == "storage_location":
                 state["topic"] = "storage_location_ranking"
             else:
+                state["entity"] = "bin"
+                state["metric"] = "BIN_UTILIZATION"
                 state["topic"] = "top_utilized_bins"
 
-        # 3. "Show 5 instead" (without explicit top/bottom) -> preserve existing ranking polarity (e.g. if currently least_utilized_bins, keep it least_utilized_bins with limit 5)
-        elif "instead" in q_lower and new_limit:
+        # 3. "Show 5 instead" (without explicit top/bottom) -> preserve existing ranking polarity
+        elif new_limit:
             state["limit"] = new_limit
             if state.get("topic") not in ["top_utilized_bins", "least_utilized_bins", "top_and_bottom_bins", "plant_occupied_volume_ranking", "material_quantity_ranking", "storage_location_ranking"]:
                 if state.get("ranking") == "lowest":
@@ -1893,6 +2027,13 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             state["resolved_query"] = f"capacity of bin {state['filters'].get('bin', '')}".strip()
         elif state["topic"] == "bin_capacity_list":
             state["resolved_query"] = f"show capacity of bins{plant_clause}"
+        elif state["topic"] == "plant_comparison":
+            p1 = state["plants"][-2] if len(state.get("plants", [])) >= 2 else (state.get("filters", {}).get("plants", [None, None])[0] or "1258")
+            p2 = state["plants"][-1] if len(state.get("plants", [])) >= 2 else (state.get("filters", {}).get("plants", [None, None])[1] or "7228")
+            state["resolved_query"] = f"compare plant {p1} and plant {p2} total inventory quantity"
+        elif state["topic"] == "plant_inventory":
+            plant_val = state["filters"].get("plant", "")
+            state["resolved_query"] = f"total inventory quantity in plant {plant_val}".strip()
         elif state["topic"] in ["referential_bins_capacity", "compound_capacity_utilization", "compound_capacity_clarification", "find_bins_list"]:
             state["resolved_query"] = question
         else:
@@ -3288,12 +3429,19 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volum
             return {
                 "sql": sql_bottom,
                 "query_plan": {
+                    "entity": "BIN",
+                    "metric": "BIN_UTILIZATION",
+                    "operation": "RANKING",
                     "intent": "RANKING",
                     "rank_direction": "ASC",
+                    "ranking_direction": "ASC",
                     "rank_metric": "BinUtilization",
                     "rank_entity": "Bin",
                     "limit": n_val,
-                    "rank_scope": rank_scope
+                    "ranking_limit": n_val,
+                    "rank_scope": rank_scope,
+                    "filters": filters,
+                    "response_mode": state.get("response_mode", "TABLE")
                 },
                 "chart_type": "bar" if is_explicit_chart else "none",
                 "chart_title": f"{n_val} Least Utilized Bins{plant_title_suffix}",
@@ -3377,12 +3525,19 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volum
             return {
                 "sql": sql_top,
                 "query_plan": {
+                    "entity": "BIN",
+                    "metric": "BIN_UTILIZATION",
+                    "operation": "RANKING",
                     "intent": "RANKING",
                     "rank_direction": "DESC",
+                    "ranking_direction": "DESC",
                     "rank_metric": "BinUtilization",
                     "rank_entity": "Bin",
                     "limit": n_val,
-                    "rank_scope": rank_scope
+                    "ranking_limit": n_val,
+                    "rank_scope": rank_scope,
+                    "filters": filters,
+                    "response_mode": state.get("response_mode", "TABLE")
                 },
                 "chart_type": "bar" if is_explicit_chart else "none",
                 "chart_title": f"Top {n_val} Most Utilized Bins{plant_title_suffix}",
@@ -3546,6 +3701,13 @@ LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
 WHERE (i.BinNo IS NULL OR i.UnrestrictedQty = 0){plant_filter}"""
             return {
                 "sql": sql_count,
+                "query_plan": {
+                    "entity": "BIN",
+                    "metric": "EMPTY_BIN",
+                    "operation": "COUNT",
+                    "filters": filters,
+                    "response_mode": "COUNT"
+                },
                 "chart_type": "none",
                 "chart_title": f"Total Empty Bins{plant_suffix}",
                 "chart_x": None,
@@ -3576,6 +3738,13 @@ GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit
 ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
         return {
             "sql": sql_empty_list,
+            "query_plan": {
+                "entity": "BIN",
+                "metric": "EMPTY_BIN",
+                "operation": "FILTER",
+                "filters": filters,
+                "response_mode": state.get("response_mode", "TABLE")
+            },
             "chart_type": "none",
             "chart_title": f"Empty Bins{plant_suffix}",
             "chart_x": None,
@@ -3634,13 +3803,16 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
     is_ranking_in_q = any(k in q_lower for k in ["rank", "ranking", "rankings", "order by", "sort by"])
     is_comparison_query = not is_ranking_in_q and not range_filters_pre and (
         (
-            len(all_plants_unique) >= 2 and
-            any(k in q_lower for k in [
-                "compare", "versus", "vs", "comparison", "difference between",
-                "their total inventory", "their bins", "their unique materials",
-                "their materials", "their storage locations", "their empty bins",
-                "their occupied bins", "their top materials"
-            ])
+            len(all_plants_unique) >= 2 and (
+                state.get("topic") == "plant_comparison" or
+                state.get("operation") == "comparison" or
+                any(k in q_lower for k in [
+                    "compare", "versus", "vs", "comparison", "difference between",
+                    "their total inventory", "their bins", "their unique materials",
+                    "their materials", "their storage locations", "their empty bins",
+                    "their occupied bins", "their top materials"
+                ])
+            )
         ) or (
             len(all_plants_unique) >= 2 and any(k in q_lower for k in ["between", "and"]) and not any(k in q_lower for k in ["between 100", "between 1", "between 2", "between 5", "between 10", "between 50"])
         )
@@ -3802,7 +3974,24 @@ ORDER BY [Total Capacity (FT3)] DESC"""
             comp_subject = "capacity"
             metrics = ["total_capacity", "occupied_volume", "available_capacity"]
 
-        # 10. Default / Overall Plant Comparison
+        # 10. Inherited Comparison (Follow-up) OR Default Overview Comparison
+        elif is_followup and (
+            state.get("comparison_subject") in ["total_inventory", "inventory"] or
+            state.get("metric") in ["TOTAL_INVENTORY_QUANTITY", "total_inventory"] or
+            state.get("topic") in ["plant_inventory", "plant_comparison"]
+        ):
+            sql_comp = f"""SELECT 
+    Plant,
+    SUM(UnrestrictedQty) AS [Total Inventory Quantity],
+    COUNT(DISTINCT Material) AS [Unique Materials],
+    COUNT(DISTINCT BinNo) AS [Occupied Bins]
+FROM dbo.ZWMS_INVENTORY
+WHERE Plant IN ({plants_in_str})
+GROUP BY Plant
+ORDER BY [Total Inventory Quantity] DESC"""
+            comp_subject = "total_inventory"
+            metrics = ["inventory_quantity", "unique_materials", "occupied_bins"]
+
         else:
             sql_comp = f"""SELECT 
     b.Plant,
@@ -3827,12 +4016,18 @@ ORDER BY b.Plant"""
             metrics = ["total_inventory_quantity", "unique_materials", "total_bins", "occupied_bins", "empty_bins", "bin_utilization"]
 
         query_plan = {
+            "entity": "PLANT",
+            "metric": "TOTAL_INVENTORY_QUANTITY" if comp_subject == "total_inventory" else comp_subject,
+            "operation": "COMPARISON",
             "intent": "COMPARISON",
             "comparison_entities": comp_entities,
             "comparison_subject": comp_subject,
             "metrics": metrics,
-            "group_by": ["Plant"]
+            "plants": target_plants,
+            "group_by": ["Plant"],
+            "response_mode": state.get("response_mode", "TABLE")
         }
+        is_text_mode = is_single_statement_requested or state.get("response_mode") in ["COUNT", "NAMES_ONLY", "PERCENTAGE_ONLY"]
         return {
             "sql": sql_comp,
             "query_plan": query_plan,
@@ -3844,7 +4039,7 @@ ORDER BY b.Plant"""
             "metric": f"{comp_subject}_comparison",
             "filters": {"plants": target_plants},
             "time_range": "current",
-            "output_type": "text" if is_single_statement_requested else ("bar_chart" if is_explicit_chart else "table"),
+            "output_type": "text" if is_text_mode else ("bar_chart" if is_explicit_chart else "table"),
             "conversation_state": state
         }
 
@@ -6148,6 +6343,44 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
             if target_plant not in valid_plants and target_plant not in ["2024", "2025", "2026"]:
                 return "No matching warehouse records were found for your query in the database."
 
+    # 0A_NAMES_ONLY. Return only the entity names when requested
+    if any(k in q_lower for k in ["only names", "only the names", "names only", "just the names", "show only the names"]):
+        if "Plant" in cols:
+            unique_plants = list(dict.fromkeys(str(r.get("Plant")) for r in rows if r.get("Plant")))
+            return ", ".join(f"Plant {p}" for p in unique_plants)
+        elif "Material" in cols:
+            unique_mats = list(dict.fromkeys(str(r.get("Material")) for r in rows if r.get("Material")))
+            return ", ".join(unique_mats)
+        elif "Bin" in cols or "BinLocation" in cols:
+            unique_bins = list(dict.fromkeys(str(r.get("Bin") or r.get("BinLocation")) for r in rows if r.get("Bin") or r.get("BinLocation")))
+            return ", ".join(unique_bins)
+        elif "Storage Location" in cols or "StorageLocation" in cols:
+            unique_slocs = list(dict.fromkeys(str(r.get("Storage Location") or r.get("StorageLocation")) for r in rows if r.get("Storage Location") or r.get("StorageLocation")))
+            return ", ".join(unique_slocs)
+
+    # 0A_PERCENTAGE_ONLY. Percentage share when percentage mode is requested without switching metrics
+    if any(k in q_lower for k in ["only percentage", "only the percentage", "percentage only", "just the percentage", "show only the percentage"]):
+        if "Plant" in cols and len(rows) >= 2:
+            num_col = next((c for c in ["Total Inventory Quantity", "Total Inventory Qty", "Total Stock Qty", "UnrestrictedQty"] if c in cols), None)
+            if num_col:
+                tot = sum(float(r.get(num_col, 0) or 0) for r in rows)
+                if tot > 0:
+                    pct_items = [f"Plant {r.get('Plant')}: {(float(r.get(num_col, 0) or 0) / tot) * 100:.2f}%" for r in rows]
+                    return f"{' | '.join(pct_items)} (share of total inventory across compared plants)."
+            pct_col = next((c for c in cols if "%" in c or "Percentage" in c or "Pct" in c), None)
+            if pct_col:
+                return " | ".join(f"Plant {r.get('Plant')}: {r.get(pct_col)}" for r in rows)
+
+    # 0A_COUNT_ONLY. Count when count mode is requested
+    if any(k in q_lower for k in ["only count", "only the count", "just the count", "count only", "give me only the count"]):
+        if "Plant" in cols and len(rows) >= 2:
+            num_col = next((c for c in ["Total Inventory Quantity", "Total Inventory Qty", "Total Stock Qty", "UnrestrictedQty"] if c in cols), None)
+            if num_col:
+                tot = sum(float(r.get(num_col, 0) or 0) for r in rows)
+                breakdown = ", ".join(f"Plant {r.get('Plant')}: {float(r.get(num_col, 0) or 0):,.0f}" for r in rows)
+                return f"Total count: **{tot:,.0f} units** across {len(rows)} plants ({breakdown})."
+            return f"Total count: **{len(rows)} matching entities**."
+
     # 0A_CLARIFICATION. Predefined threshold clarification rule
     if "clarification_needed" in cols:
         return "To find matching bins, please specify the thresholds for capacity (e.g., maximum bin volume in FT³) and utilization (e.g., minimum utilization percentage). No default thresholds are currently defined."
@@ -6372,7 +6605,11 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
             return f"Plant {p} has **{avail:,.2f} FT³** available capacity (Total Capacity: {tot_cap:,.2f} FT³, Occupied Volume: {occ:,.2f} FT³)."
 
     # 0A_PLANT_INV. Plant-Wise Inventory Quantity
-    if "Total Inventory Quantity" in cols and "Plant" in cols and "Storage Location" not in cols and "Bin" not in cols and "Rank" not in cols and len(rows) > 1 and not any(k in q_lower for k in ["between", "from", "range", ">", "<"]):
+    if (
+        "Total Inventory Quantity" in cols and "Plant" in cols and "Storage Location" not in cols and "Bin" not in cols and "Rank" not in cols and len(rows) > 1
+        and not any(k in q_lower for k in ["between", "from", "range", ">", "<", "compare", "comparison", "versus", "vs", "detail", "detailed", "those two"])
+        and "Unique Materials" not in cols
+    ):
         tot_qty = sum(r.get("Total Inventory Quantity", 0) for r in rows)
         return f"Showing inventory quantities across **{len(rows)} operational plants** (totaling **{tot_qty:,.0f} units**)."
 
@@ -7339,7 +7576,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     # 0F. Total Unique Materials / SKU Count (Concept C - COUNT(DISTINCT Material))
     if ("Unique Materials Count" in cols or "Total Unique Materials" in cols) and "total_inventory" not in cols and "TotalUnrestrictedQuantity" not in cols:
         count_val = rows[0].get("Unique Materials Count", rows[0].get("Total Unique Materials", 0))
-        plant_val = extract_single_plant_safe(q_lower)
+        plant_val = extract_single_plant_safe(q_lower) or (rows and rows[0].get("Plant"))
         if plant_val:
             return f"There are **{count_val:,}** unique materials in Plant {plant_val}."
         return f"There are **{count_val:,}** unique materials in inventory."
@@ -7347,7 +7584,7 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     # 0G. Total Inventory Quantity (Concept A - SUM(UnrestrictedQty))
     if ("total_inventory" in cols or "Total Unrestricted Quantity" in cols or "TotalUnrestrictedQuantity" in cols) and "Total Unique Materials" not in cols and "TotalUniqueMaterials" not in cols:
         tot_val = rows[0].get("total_inventory", rows[0].get("Total Unrestricted Quantity", rows[0].get("TotalUnrestrictedQuantity", 0.0)))
-        plant_val = extract_single_plant_safe(q_lower)
+        plant_val = extract_single_plant_safe(q_lower) or (rows and rows[0].get("Plant"))
         if plant_val:
             return f"Total inventory in Plant {plant_val} is **{tot_val:,.0f}** units."
         return f"Total warehouse inventory is **{tot_val:,.0f}** units."
@@ -7954,6 +8191,14 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
 
     # 0B. Plant Comparison
     if generated.get("intent") == "plant_comparison" or "COMPARISON" in str(generated.get("query_plan", {}).get("intent", "")):
+        if generated.get("output_type") == "text" or generated.get("query_plan", {}).get("response_mode") in ["COUNT", "NAMES_ONLY", "PERCENTAGE_ONLY"] or any(k in q_lower for k in ["only count", "only the count", "just the count", "only names", "only the names", "names only", "just the names", "only percentage", "only the percentage", "percentage only", "just the percentage"]):
+            return {
+                "output_type": "text",
+                "chart_type": "none",
+                "metric": generated.get("metric", "plant_comparison"),
+                "intent": "plant_comparison",
+                "time_range": "current"
+            }
         is_explicit_chart_in_q = any(k in q_lower for k in [
             "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart",
             "show me a graph", "give me a chart", "draw a chart", "create a chart", "plot a chart"
