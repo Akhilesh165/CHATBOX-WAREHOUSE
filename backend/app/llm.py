@@ -43,6 +43,36 @@ def clean_llm_json(raw_text: str) -> dict[str, Any]:
     
     return json.loads(text)
 
+def normalize_query_typos(text: str) -> str:
+    """Normalizes common typos and transliterations in warehouse queries without altering IDs or numeric values."""
+    if not text:
+        return ""
+    typo_patterns = [
+        (r'\butlizat(?:ion|ions|on|ons)\b', 'utilization'),
+        (r'\butilizat(?:on|ons)\b', 'utilization'),
+        (r'\butlization\b', 'utilization'),
+        (r'\butlizations\b', 'utilization'),
+        (r'\butilzation\b', 'utilization'),
+        (r'\butilzations\b', 'utilization'),
+        (r'\butillization\b', 'utilization'),
+        (r'\butillizations\b', 'utilization'),
+        (r'\butilisations?\b', 'utilization'),
+        (r'\butlisations?\b', 'utilization'),
+        (r'\boccypied\b', 'occupied'),
+        (r'\boccupenc(?:y|ies)\b', 'occupancy'),
+        (r'\bcapcit(?:y|ies)\b', 'capacity'),
+        (r'\binvetor(?:y|ies)\b', 'inventory'),
+        (r'\bmaterals?\b', 'materials'),
+        (r'\bmateral\b', 'material'),
+        (r'\blocatons?\b', 'locations'),
+        (r'\bplnts?\b', 'plants'),
+        (r'\bplnt\b', 'plant'),
+    ]
+    res = text
+    for pattern, repl in typo_patterns:
+        res = re.sub(pattern, repl, res, flags=re.IGNORECASE)
+    return res
+
 def extract_explicit_plants(text: str) -> list[str]:
     """Extract every plant explicitly requested, including chained forms like
     'Plant 1258 and 1268', 'plants 1258, 1268 & 7228', and repeated 'Plant N'.
@@ -814,11 +844,13 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     - topic (active analytical intent)
     - resolved_query (semantic query string)
     """
-    q_lower = question.lower().strip()
+    q_clean = normalize_query_typos(question)
+    q_lower = q_clean.lower().strip()
     is_followup = is_elliptical_followup(q_lower) and bool(history)
     
     # Extract any explicit plant filter in the current question safely
-    new_plant = extract_single_plant_safe(q_lower)
+    explicit_plants = extract_explicit_plants(q_lower)
+    new_plant = explicit_plants[0] if len(explicit_plants) == 1 else None
 
     # Extract any explicit limit in the current question safely
     new_limit = extract_explicit_limit(q_lower)
@@ -833,12 +865,17 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         "condition": None,
         "aggregation": "list",
         "filters": {},
-        "plants": [],
-        "active_plant": None,
-        "comparison_entities": [],
+        "plants": list(explicit_plants) if len(explicit_plants) >= 2 else ([new_plant] if new_plant else []),
+        "active_plant": new_plant or (explicit_plants[-1] if explicit_plants else None),
+        "comparison_entities": [{"type": "plant", "value": p} for p in explicit_plants] if len(explicit_plants) >= 2 else [],
         "response_mode": "TABLE",
         "topic": "inventory_summary"
     }
+    if len(explicit_plants) >= 2:
+        state["filters"]["plants"] = list(explicit_plants)
+        state["operation"] = "comparison"
+        state["topic"] = "plant_comparison"
+        state["entity"] = "plant"
 
     # Only inherit prior history state if this question is a true conversational follow-up
     if is_followup and history:
@@ -850,20 +887,32 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
 
         # Reconstruct prior state by traversing user history in order
         for uq in user_queries:
-            uq_lower = uq.lower()
+            uq_clean = normalize_query_typos(uq)
+            uq_lower = uq_clean.lower()
             
             # Plant filter and ordered tracking in history
-            pm_val = extract_single_plant_safe(uq_lower)
-            if any(k in uq_lower for k in ["all plants", "across plants", "by plant", "each plant", "every plant", "plants", "compare plants", "across all", "whole warehouse", "entire warehouse", "network", "overall", "bin utilization", "warehouse utilization"]) and not pm_val:
+            hist_plants = extract_explicit_plants(uq_lower)
+            if len(hist_plants) >= 2:
+                state["plants"] = list(hist_plants)
+                state["comparison_entities"] = [{"type": "plant", "value": p} for p in hist_plants]
+                state["filters"]["plants"] = list(hist_plants)
                 state["filters"].pop("plant", None)
-                state["active_plant"] = None
-            elif pm_val:
-                state["filters"]["plant"] = pm_val
-                state["active_plant"] = pm_val
-                if pm_val not in state["plants"]:
-                    state["plants"].append(pm_val)
-                if len(state["plants"]) >= 2:
-                    state["comparison_entities"] = [{"type": "plant", "value": p} for p in state["plants"][-2:]]
+                state["active_plant"] = hist_plants[-1]
+                state["operation"] = "comparison"
+                state["topic"] = "plant_comparison"
+                state["entity"] = "plant"
+            else:
+                pm_val = extract_single_plant_safe(uq_lower)
+                if any(k in uq_lower for k in ["all plants", "across plants", "by plant", "each plant", "every plant", "plants", "compare plants", "across all", "whole warehouse", "entire warehouse", "network", "overall", "bin utilization", "warehouse utilization"]) and not pm_val:
+                    state["filters"].pop("plant", None)
+                    state["active_plant"] = None
+                elif pm_val:
+                    state["filters"]["plant"] = pm_val
+                    state["active_plant"] = pm_val
+                    if pm_val not in state["plants"]:
+                        state["plants"].append(pm_val)
+                    if len(state["plants"]) >= 2:
+                        state["comparison_entities"] = [{"type": "plant", "value": p} for p in state["plants"][-2:]]
 
             # Limit in history
             hist_lim = extract_explicit_limit(uq_lower)
@@ -1311,6 +1360,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     )
     is_fresh_plant_bin_util_detail = (
         any(k in q_lower for k in ["utiliz", "occupan", "capacity", "how full", "space utilization", "bin fill", "fullness", "fill rate"]) and
+        len(explicit_plants) < 2 and
         (new_plant is not None or (is_plant_scope and is_followup and state.get("topic") in ["plant_bin_utilization_detail", "warehouse_utilization"])) and
         not is_overall_network_request and
         not any(w in q_lower for w in ["all", "compare", "network", "plants", "overall", "facility", "across", "each", "every", "by plant", "across plants"]) and
@@ -1320,6 +1370,11 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
 
     if is_explicit_chart_request:
         state["is_explicit_chart_request"] = True
+
+    is_util_comparison = (
+        any(k in q_lower for k in ["utiliz", "occupan", "how full", "fill rate", "space utilization", "bin utilization", "capacity utilization"]) and
+        (len(explicit_plants) >= 2 or (is_followup and len(state.get("comparison_entities", [])) >= 2 and not new_plant))
+    )
 
     compound_cap_info = parse_compound_capacity_utilization(q_lower)
     is_find_bins = (
@@ -1331,7 +1386,19 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         not is_fresh_almost_full and not is_fresh_over_capacity
     )
 
-    if compound_cap_info:
+    if is_util_comparison:
+        state["entity"] = "plant"
+        state["metric"] = "bin_utilization"
+        state["comparison_subject"] = "bin_utilization"
+        state["operation"] = "comparison"
+        state["topic"] = "plant_comparison"
+        if len(explicit_plants) >= 2:
+            state["plants"] = list(explicit_plants)
+            state["comparison_entities"] = [{"type": "plant", "value": p} for p in explicit_plants]
+            state["filters"]["plants"] = list(explicit_plants)
+            state["filters"].pop("plant", None)
+            state["active_plant"] = explicit_plants[-1]
+    elif compound_cap_info:
         state["entity"] = "bin"
         if compound_cap_info.get("needs_clarification"):
             state["topic"] = "compound_capacity_clarification"
@@ -1930,7 +1997,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                     state["topic"] = "top_utilized_bins"
 
     # Construct clean resolved query from state
-    if not is_followup:
+    if not is_followup or len(explicit_plants) >= 2:
         state["resolved_query"] = question
     else:
         plant_clause = f" in plant {state['filters']['plant']}" if state['filters'].get('plant') else ""
@@ -2030,7 +2097,21 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         elif state["topic"] == "plant_comparison":
             p1 = state["plants"][-2] if len(state.get("plants", [])) >= 2 else (state.get("filters", {}).get("plants", [None, None])[0] or "1258")
             p2 = state["plants"][-1] if len(state.get("plants", [])) >= 2 else (state.get("filters", {}).get("plants", [None, None])[1] or "7228")
-            state["resolved_query"] = f"compare plant {p1} and plant {p2} total inventory quantity"
+            subj = state.get("comparison_subject") or ("bin_utilization" if state.get("metric") == "bin_utilization" else "total inventory quantity")
+            if subj == "bin_utilization":
+                state["resolved_query"] = f"compare bin utilization of plant {p1} and plant {p2}"
+            elif subj == "materials":
+                state["resolved_query"] = f"compare unique materials of plant {p1} and plant {p2}"
+            elif subj == "empty_bins":
+                state["resolved_query"] = f"compare empty bins of plant {p1} and plant {p2}"
+            elif subj == "occupied_bins":
+                state["resolved_query"] = f"compare occupied bins of plant {p1} and plant {p2}"
+            elif subj == "capacity":
+                state["resolved_query"] = f"compare capacity of plant {p1} and plant {p2}"
+            elif subj == "storage_locations":
+                state["resolved_query"] = f"compare storage locations of plant {p1} and plant {p2}"
+            else:
+                state["resolved_query"] = f"compare plant {p1} and plant {p2} total inventory quantity"
         elif state["topic"] == "plant_inventory":
             plant_val = state["filters"].get("plant", "")
             state["resolved_query"] = f"total inventory quantity in plant {plant_val}".strip()
@@ -2053,6 +2134,7 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
     Dynamically maps warehouse business concepts (Entities, Metrics, Dimensions, Calculations, Rankings)
     to safe SQL Server queries according to the Warehouse BI Semantic Layer without hardcoded question lists.
     """
+    question = normalize_query_typos(question)
     state = extract_and_update_conversation_state(question, history)
     resolved_q = state.get("resolved_query", question)
     q_lower = resolved_q.lower()
@@ -3792,12 +3874,18 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
     # =========================================================================
     # SECTION COMP: GENERALIZED COMPARISON ENGINE (Plants, Materials, Bins, SLocs)
     # =========================================================================
-    all_plants_mentioned = re.findall(r"\b(1258|1266|1268|7228)\b", q_lower)
-    all_plants_unique = list(dict.fromkeys(all_plants_mentioned))
-    if len(all_plants_unique) < 2 and state.get("comparison_entities"):
-        saved_plants = [e["value"] for e in state["comparison_entities"] if e.get("type") == "plant"]
-        if len(saved_plants) >= 2:
-            all_plants_unique = saved_plants
+    explicit_plants_in_gen = extract_explicit_plants(q_lower)
+    if len(explicit_plants_in_gen) >= 2:
+        all_plants_unique = explicit_plants_in_gen
+    else:
+        all_plants_mentioned = re.findall(r"\b(1258|1266|1268|7228)\b", q_lower)
+        all_plants_unique = list(dict.fromkeys(all_plants_mentioned))
+        if len(all_plants_unique) < 2 and state.get("comparison_entities"):
+            saved_plants = [e["value"] for e in state["comparison_entities"] if e.get("type") == "plant"]
+            if len(saved_plants) >= 2:
+                all_plants_unique = saved_plants
+        elif len(all_plants_unique) < 2 and len(state.get("plants", [])) >= 2:
+            all_plants_unique = state["plants"][-2:]
 
     range_filters_pre = parse_range_filters(resolved_q)
     is_ranking_in_q = any(k in q_lower for k in ["rank", "ranking", "rankings", "order by", "sort by"])
@@ -3814,7 +3902,9 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
                 ])
             )
         ) or (
-            len(all_plants_unique) >= 2 and any(k in q_lower for k in ["between", "and"]) and not any(k in q_lower for k in ["between 100", "between 1", "between 2", "between 5", "between 10", "between 50"])
+            len(all_plants_unique) >= 2 and (
+                any(k in q_lower for k in ["between", "and", "utiliz", "capacity", "how full"])
+            ) and not any(k in q_lower for k in ["between 100", "between 1", "between 2", "between 5", "between 10", "between 50"])
         )
     )
 
@@ -3855,7 +3945,9 @@ ORDER BY [Unique Materials Count] DESC"""
             metrics = ["unique_materials", "inventory_quantity", "occupied_bins"]
 
         # 3. Bin Utilization
-        elif any(k in q_lower for k in ["bin utilization", "utilization", "how full", "fill rate", "space utilization", "occupancy rate", "capacity utilization"]):
+        elif any(k in q_lower for k in ["bin utilization", "utilization", "how full", "fill rate", "space utilization", "occupancy rate", "capacity utilization"]) or (
+            state.get("comparison_subject") == "bin_utilization" or state.get("metric") in ["BIN_UTILIZATION", "bin_utilization", "utilization"]
+        ):
             sql_comp = f"""SELECT 
     b.Plant AS [Plant], 
     CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(SUM(b.Volume), 0), 1), '%') AS [Bin Utilization %],
@@ -3977,8 +4069,7 @@ ORDER BY [Total Capacity (FT3)] DESC"""
         # 10. Inherited Comparison (Follow-up) OR Default Overview Comparison
         elif is_followup and (
             state.get("comparison_subject") in ["total_inventory", "inventory"] or
-            state.get("metric") in ["TOTAL_INVENTORY_QUANTITY", "total_inventory"] or
-            state.get("topic") in ["plant_inventory", "plant_comparison"]
+            state.get("metric") in ["TOTAL_INVENTORY_QUANTITY", "total_inventory"]
         ):
             sql_comp = f"""SELECT 
     Plant,
@@ -6295,6 +6386,7 @@ async def generate_sql(question: str, history: list[dict], retry_context: dict |
 
 def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     """Creates clear, grounded summary from database rows."""
+    question = normalize_query_typos(question)
     q_lower = question.lower()
     if not rows:
         rf_list = parse_range_filters(q_lower)
@@ -8131,11 +8223,16 @@ GROUP BY Plant"""
 
 async def generate_answer(question: str, sql: str, rows: list[dict]) -> str:
     """Generate grounded, human-readable summary of query results."""
+    question = normalize_query_typos(question)
     if not rows:
         return format_deterministic_answer(question, rows)
     
     cols = list(rows[0].keys()) if rows else []
     q_lower = question.lower()
+
+    # Authoritative Plant Bin Utilization Comparison & Multi-Plant Comparisons
+    if "Bin Utilization %" in cols and "Occupied Volume" in cols and "Total Capacity" in cols and "Available Capacity" in cols and "Plant" in cols:
+        return format_deterministic_answer(question, rows)
     is_single_metric_query = (
         len(rows) == 1 and (
             len(cols) == 1 or
@@ -8165,6 +8262,7 @@ async def generate_answer(question: str, sql: str, rows: list[dict]) -> str:
 
 def optimize_response_format(question: str, rows: list[dict], generated: dict[str, Any]) -> dict[str, Any]:
     """Automatically evaluates question and SQL result dataset to select the best output_type and visualization."""
+    question = normalize_query_typos(question)
     q_lower = question.lower()
     row_count = len(rows)
     cols = list(rows[0].keys()) if rows else []

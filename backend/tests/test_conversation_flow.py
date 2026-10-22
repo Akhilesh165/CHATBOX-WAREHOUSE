@@ -255,4 +255,73 @@ def test_conversation_4_plant_comparison_and_format_modifiers():
     assert plan8.get("metric") == "TOTAL_INVENTORY_QUANTITY"
 
 
+def test_multi_plant_bin_utilization_comparison_and_typo_consistency():
+    # 1. Standard query with typo: "bin utlization of plant 1268 and 1258"
+    res1 = deterministic_warehouse_sql_generator("bin utlization of plant 1268 and 1258")
+    assert res1["intent"] == "plant_comparison"
+    assert res1["metric"] == "bin_utilization_comparison"
+    plan1 = res1.get("query_plan", {})
+    assert plan1.get("entity") == "PLANT"
+    assert plan1.get("metric") == "bin_utilization"
+    assert plan1.get("comparison_subject") == "bin_utilization"
+    assert set(plan1.get("plants", [])) == {"1268", "1258"}
+    assert plan1.get("operation") == "COMPARISON"
+    assert "Bin Utilization %" in res1["sql"]
+    assert "Available Capacity" in res1["sql"]
+
+    # 2. Query with detail modifier: "show the bin utlization of plant 1268 and 1258 in detail"
+    res2 = deterministic_warehouse_sql_generator("show the bin utlization of plant 1268 and 1258 in detail")
+    assert res2["intent"] == "plant_comparison"
+    assert res2["metric"] == "bin_utilization_comparison"
+    plan2 = res2.get("query_plan", {})
+    assert plan2.get("entity") == "PLANT"
+    assert plan2.get("metric") == "bin_utilization"
+    assert plan2.get("comparison_subject") == "bin_utilization"
+    assert set(plan2.get("plants", [])) == {"1268", "1258"}
+    assert plan2.get("operation") == "COMPARISON"
+
+    # Both must generate identical SQL queries
+    assert res1["sql"].strip() == res2["sql"].strip()
+
+    # 3. Follow-up sequence: Q1 followed by Q2
+    h1 = [
+        {"role": "user", "content": "bin utlization of plant 1268 and 1258"},
+        {"role": "assistant", "content": "..."}
+    ]
+    res3 = deterministic_warehouse_sql_generator("show the bin utlization of plant 1268 and 1258 in detail", h1)
+    assert res3["intent"] == "plant_comparison"
+    assert res3["metric"] == "bin_utilization_comparison"
+    plan3 = res3.get("query_plan", {})
+    assert plan3.get("comparison_subject") == "bin_utilization"
+    assert set(plan3.get("plants", [])) == {"1268", "1258"}
+    assert res3["sql"].strip() == res1["sql"].strip()
+
+    # 4. Answers formatted from rows must match exactly
+    mock_rows = [
+        {
+            "Plant": 1268,
+            "Bin Utilization %": "33.5%",
+            "BinUtilizationPct": 33.53,
+            "Occupied Volume": 332200.12,
+            "Total Capacity": 990690.12,
+            "Available Capacity": 658490.0,
+        },
+        {
+            "Plant": 1258,
+            "Bin Utilization %": "20.3%",
+            "BinUtilizationPct": 20.29,
+            "Occupied Volume": 105011.35,
+            "Total Capacity": 517531.0,
+            "Available Capacity": 412519.65,
+        },
+    ]
+    ans1 = format_deterministic_answer("bin utlization of plant 1268 and 1258", mock_rows)
+    ans2 = format_deterministic_answer("show the bin utlization of plant 1268 and 1258 in detail", mock_rows)
+    assert ans1 == ans2
+    assert "Plant Utilization Comparison" in ans1
+    assert "Plant 1268" in ans1 and "33.5%" in ans1
+    assert "Plant 1258" in ans1 and "20.3%" in ans1
+
+
+
 
