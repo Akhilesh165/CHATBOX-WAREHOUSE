@@ -748,13 +748,69 @@ def is_single_line_requested(q_lower: str, intent: str = "", rows_count: int = 0
     return False
 
 
+def is_detail_or_graph_requested(question: str) -> bool:
+    """Checks if the question explicitly asks for details, explanation, or visual/graphical presentation.
+    Includes triggers: detail, explain, show me with, with graph, or with graph, chart, visualize, etc.
+    """
+    if not question:
+        return False
+    q = normalize_query_typos(question).lower()
+    
+    # 1. Visual / Chart triggers
+    if any(re.search(r'\b' + re.escape(w) + r'\b', q) for w in [
+        "graph", "graphs", "chart", "charts", "visualize", "visualization", "visualised", "visualized",
+        "plot", "plots", "bar chart", "line chart", "pie chart", "histogram", "graphical"
+    ]):
+        return True
+    if any(k in q for k in [
+        "with graph", "or with graph", "with a graph", "or with a graph",
+        "with chart", "or with chart", "with a chart", "or with a chart",
+        "show me with", "show with", "in graph", "as graph", "in chart", "as chart"
+    ]):
+        return True
+        
+    # 2. Detail & Explain triggers
+    if any(re.search(r'\b' + re.escape(w) + r'\b', q) for w in [
+        "detail", "details", "detailed", "explain", "explained", "explaining", "explanation", "elaborate"
+    ]):
+        return True
+    if any(k in q for k in [
+        "in detail", "detailed version", "detailed breakdown", "detailed analysis",
+        "detail form", "detailed form", "deep dive", "break it down"
+    ]):
+        return True
+
+    return False
+
+
+def is_explicit_chart_only_requested(question: str) -> bool:
+    """Checks strictly for graph/chart/visualization keywords."""
+    if not question:
+        return False
+    q = normalize_query_typos(question).lower()
+    if any(re.search(r'\b' + re.escape(w) + r'\b', q) for w in [
+        "graph", "graphs", "chart", "charts", "visualize", "visualization", "visualised", "visualized",
+        "plot", "plots", "bar chart", "line chart", "pie chart", "histogram", "graphical"
+    ]):
+        return True
+    if any(k in q for k in [
+        "with graph", "or with graph", "with a graph", "or with a graph",
+        "with chart", "or with chart", "with a chart", "or with a chart",
+        "show me with graph", "show with graph", "show me with chart", "show with chart"
+    ]):
+        return True
+    return False
+
+
 def is_elliptical_followup(q_lower: str) -> bool:
     """Detects if a user question is an elliptical follow-up that relies on prior conversation context."""
     q_strip = q_lower.strip()
     
     # 1. Visualization triggers
     if any(k in q_strip for k in [
-        "show me a graph", "show me with graph", "show me with a graph", "show with graph", "show with a graph",
+        "or with graph", "or with a graph", "with graph", "with a graph", "in graph", "as graph", "in a graph",
+        "or with chart", "or with a chart", "with chart", "with a chart", "in chart", "as chart", "in a chart",
+        "show me with", "show with", "show me with graph", "show me with a graph", "show with graph", "show with a graph",
         "show as graph", "show as a graph", "show it with graph", "show it with a graph", "show it as graph", "show it as a graph",
         "show this with graph", "show this with a graph", "show this as graph", "show this as a graph", "show this in graph",
         "show in a graph", "show in graph", "show graph", "give me a chart", "give me a graph", "give me the graph", "give me the chart",
@@ -764,7 +820,7 @@ def is_elliptical_followup(q_lower: str) -> bool:
         "plot a chart", "draw a graph", "visualize the comparison", "give me a chart of the top 10", "graph it", "chart it",
         "display as graph", "display as chart", "display with graph", "display with chart", "display visually",
         "plot the trend", "without a chart", "no chart", "without chart"
-    ]):
+    ]) or q_strip in ["graph", "chart", "visualize", "plot", "graphs", "charts"]:
         return True
     
     # 2. Affirmative expansions / drilldowns / detail
@@ -773,8 +829,9 @@ def is_elliptical_followup(q_lower: str) -> bool:
     if any(k in q_strip for k in [
         "detailed version", "detailed analysis", "generate detail", "show detail", "detailed breakdown",
         "generate detailed", "in detail", "deep dive", "more detail", "more details",
-        "break it down", "expand on this", "detailed view", "detailed form"
-    ]) or q_strip in ["detailed", "explain", "elaborate"]:
+        "break it down", "expand on this", "detailed view", "detailed form",
+        "explain this", "explain in detail", "explain with graph", "explain with chart", "elaborate on this"
+    ]) or any(w in q_strip.split() for w in ["detailed", "explain", "elaborate"]):
         return True
     
     # 2B. Presentation / Format modifiers (count, names, percentage)
@@ -1340,13 +1397,15 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     is_plant_scope = bool(new_plant or (state.get("filters", {}).get("plant") if is_followup else None))
     
     # Visualization Triggers according to Visualization Rules:
-    is_explicit_chart_request = any(k in q_lower for k in [
-        "show me a graph", "show graph", "give me a chart", "visualize this", "show this in graph",
-        "create a chart", "can you graph this", "show me a graph for this", "can you visualize this",
-        "show this in graphical form", "draw a chart", "plot this", "visualize", "graph for this",
-        "chart for this", "graph of this", "chart of this", "show chart", "give chart", "make a chart",
-        "plot a chart", "draw a graph"
-    ])
+    is_explicit_chart_request = (
+        any(k in q_lower for k in [
+            "show me a graph for this", "show me a graph", "show graph", "give me a chart", "visualize this", "show this in graph",
+            "create a chart", "can you graph this", "can you visualize this",
+            "show this in graphical form", "draw a chart", "plot this", "visualize", "graph for this",
+            "chart for this", "graph of this", "chart of this", "show chart", "give chart", "make a chart",
+            "plot a chart", "draw a graph"
+        ]) and not any(k in q_lower for k in ["show me with graph", "show with graph", "or with graph"])
+    )
     
     is_affirmative_followup = (
         any(w in q_lower.split() for w in ["yes", "yeah", "sure", "please", "expand", "yep", "do"]) or
@@ -1897,7 +1956,10 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                 state["filters"]["plants"] = [p for p in state["plants"][-2:]]
 
         # Check presentation / format modifiers
-        if any(k in q_lower for k in ["detailed version", "in detail", "show detail", "detailed breakdown", "detailed", "give details"]):
+        if any(k in q_lower for k in [
+            "detailed version", "in detail", "show detail", "detailed breakdown", "detailed", "give details",
+            "explain", "explained", "explanation", "elaborate", "show me with", "show with"
+        ]):
             state["response_mode"] = "DETAIL"
         elif any(k in q_lower for k in ["only count", "only the count", "just the count", "count only", "give me only the count"]):
             state["response_mode"] = "COUNT"
@@ -1911,7 +1973,11 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
 
         if new_limit:
             state["limit"] = new_limit
-        if any(k in q_lower for k in ["graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart", "histogram", "with graph", "as graph"]):
+        if any(k in q_lower for k in [
+            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart", "histogram",
+            "with graph", "or with graph", "as graph", "in graph", "with chart", "or with chart",
+            "show me with graph", "show with graph", "explain with graph", "show me with", "show with"
+        ]) or q_lower.strip() in ["graph", "chart", "visualize", "plot", "graphs", "charts"]:
             state["is_explicit_chart_request"] = True
             state["response_mode"] = "GRAPH"
 
@@ -2174,11 +2240,18 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
     # 2. BUSINESS METRIC & INTENT RESOLUTION
     is_explicit_chart = bool(
         state.get("is_explicit_chart_request") or
+        is_explicit_chart_only_requested(question) or
         any(k in question.lower() for k in [
-            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart", "histogram"
+            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart", "histogram",
+            "with graph", "or with graph", "with a graph", "or with a graph",
+            "with chart", "or with chart", "with a chart", "or with a chart",
+            "show me with graph", "show with graph", "show me with chart", "show with chart"
         ]) or
         any(k in q_lower for k in [
-            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart", "histogram"
+            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart", "histogram",
+            "with graph", "or with graph", "with a graph", "or with a graph",
+            "with chart", "or with chart", "with a chart", "or with a chart",
+            "show me with graph", "show with graph", "show me with chart", "show with chart"
         ])
     )
     is_single_statement_requested = any(s in q_lower for s in [
@@ -2194,9 +2267,10 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
         ) and not any(d in q_lower for d in ["top 10", "top 5", "bottom 10", "bottom 5", "ranking", "table", "list", "breakdown", "detailed", "detail form"])
         and not any(b in q_lower for b in ["which bins", "whic bins", "what bins"])
     )
-    is_detail_requested = any(d in q_lower for d in [
+    is_detail_requested = is_detail_or_graph_requested(question) or any(d in q_lower for d in [
         "detail", "details", "detailed", "in detail", "detail form", "detailed form",
-        "breakdown", "itemized", "full list", "table form", "ranking form"
+        "breakdown", "itemized", "full list", "table form", "ranking form",
+        "explain", "explained", "explanation", "elaborate", "show me with", "show with"
     ])
 
     # 0_INVALID. Nonexistent entities & invalid plants intercept (Master Context Rule)
@@ -8297,17 +8371,30 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
                 "intent": "plant_comparison",
                 "time_range": "current"
             }
-        is_explicit_chart_in_q = any(k in q_lower for k in [
-            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart",
-            "show me a graph", "give me a chart", "draw a chart", "create a chart", "plot a chart"
-        ])
-        if is_explicit_chart_in_q:
+        is_graph_or_detail = (
+            is_detail_or_graph_requested(question)
+            or (generated.get("chart_type") in ["bar", "line", "pie"] and generated.get("output_type") in ["bar_chart", "line_chart", "pie_chart"])
+            or generated.get("query_plan", {}).get("response_mode") in ["DETAIL", "GRAPH"]
+        )
+        if is_graph_or_detail and len(rows) > 1:
+            y_col = (
+                "UtilizationPct" if "UtilizationPct" in cols else (
+                    "BinUtilizationPct" if "BinUtilizationPct" in cols else (
+                        "Bin Utilization %" if "Bin Utilization %" in cols else (
+                            "Total Inventory Quantity" if "Total Inventory Quantity" in cols else (
+                                cols[1] if len(cols) > 1 else cols[0]
+                            )
+                        )
+                    )
+                )
+            )
+            chart_title = generated.get("chart_title") or ("Plant Bin Utilization Comparison (%)" if any(u in str(y_col).lower() for u in ["utiliz", "%"]) else "Plant Comparison")
             return {
                 "output_type": "bar_chart",
                 "chart_type": "bar",
-                "chart_title": generated.get("chart_title", "Plant Comparison"),
+                "chart_title": chart_title,
                 "chart_x": "Plant",
-                "chart_y": cols[1] if len(cols) > 1 else None,
+                "chart_y": y_col,
                 "metric": generated.get("metric", "plant_comparison"),
                 "intent": "plant_comparison",
                 "time_range": "current"
@@ -8322,11 +8409,12 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
 
     # 0C. Range Queries
     if generated.get("intent") == "range_query" or "RANGE" in str(generated.get("query_plan", {}).get("intent", "")):
-        is_explicit_chart_in_q = any(k in q_lower for k in [
-            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart",
-            "show me a graph", "give me a chart", "draw a chart", "create a chart", "plot a chart"
-        ])
-        if is_explicit_chart_in_q:
+        is_graph_or_detail = (
+            is_detail_or_graph_requested(question)
+            or (generated.get("chart_type") in ["bar", "line", "pie"] and generated.get("output_type") in ["bar_chart", "line_chart", "pie_chart"])
+            or generated.get("query_plan", {}).get("response_mode") in ["DETAIL", "GRAPH"]
+        )
+        if is_graph_or_detail and len(rows) > 1:
             return {
                 "output_type": "bar_chart",
                 "chart_type": "bar",
@@ -8357,11 +8445,12 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
         }
 
     if generated.get("intent") == "materials_quantity_threshold":
-        is_explicit_chart_in_q = any(k in q_lower for k in ["graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart"]) or generated.get("chart_type") == "bar"
+        is_graph_or_detail = is_detail_or_graph_requested(question) or generated.get("chart_type") == "bar"
         is_single_stmt = is_single_line_requested(q_lower)
+        is_chart = is_graph_or_detail and len(rows) > 1 and not is_single_stmt
         return {
-            "output_type": "bar_chart" if is_explicit_chart_in_q else ("text" if is_single_stmt else "table"),
-            "chart_type": "bar" if is_explicit_chart_in_q else "none",
+            "output_type": "bar_chart" if is_chart else ("text" if is_single_stmt else "table"),
+            "chart_type": "bar" if is_chart else "none",
             "chart_title": generated.get("chart_title", "Materials Filtered by Quantity"),
             "chart_x": "Material",
             "chart_y": "Total Stock Quantity",
@@ -8371,11 +8460,12 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
         }
 
     if generated.get("intent") == "plant_inventory_range":
-        is_explicit_chart_in_q = any(k in q_lower for k in ["graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart"]) or generated.get("chart_type") == "bar"
+        is_graph_or_detail = is_detail_or_graph_requested(question) or generated.get("chart_type") == "bar"
         is_single_stmt = is_single_line_requested(q_lower)
+        is_chart = is_graph_or_detail and len(rows) > 1 and not is_single_stmt
         return {
-            "output_type": "bar_chart" if is_explicit_chart_in_q else ("text" if is_single_stmt else "table"),
-            "chart_type": "bar" if is_explicit_chart_in_q else "none",
+            "output_type": "bar_chart" if is_chart else ("text" if is_single_stmt else "table"),
+            "chart_type": "bar" if is_chart else "none",
             "chart_title": generated.get("chart_title", "Plants with Inventory in Range"),
             "chart_x": "Plant",
             "chart_y": "Total Inventory Quantity",
@@ -8385,13 +8475,11 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
         }
 
     if generated.get("intent") in ["almost_full_bins", "over_capacity_bins"]:
-        is_explicit_chart_in_q = any(k in q_lower for k in [
-            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart",
-            "show me a graph", "give me a chart", "draw a chart", "create a chart", "plot a chart"
-        ])
+        is_graph_or_detail = is_detail_or_graph_requested(question) or generated.get("chart_type") in ["bar", "line", "pie"]
+        is_chart = is_graph_or_detail and len(rows) > 1
         return {
-            "output_type": "bar_chart" if is_explicit_chart_in_q else "table",
-            "chart_type": "bar" if is_explicit_chart_in_q else "none",
+            "output_type": "bar_chart" if is_chart else "table",
+            "chart_type": "bar" if is_chart else "none",
             "chart_title": generated.get("chart_title", "Bin Utilization"),
             "chart_x": "Bin",
             "chart_y": "Utilization" if "Utilization" in cols else "Occupied Volume",
@@ -8425,11 +8513,8 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
         }
 
     if generated.get("intent") == "plant_available_capacity" or ("Available Capacity (FT3)" in cols and "Plant" in cols and len(rows) > 1):
-        is_explicit_chart_in_q = any(k in q_lower for k in [
-            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart",
-            "show me a graph", "give me a chart", "draw a chart", "create a chart", "plot a chart"
-        ])
-        if is_explicit_chart_in_q:
+        is_graph_or_detail = is_detail_or_graph_requested(question) or generated.get("chart_type") in ["bar", "line", "pie"]
+        if is_graph_or_detail and len(rows) > 1:
             return {
                 "output_type": "bar_chart",
                 "chart_type": "bar",
@@ -8449,11 +8534,8 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
         }
 
     if generated.get("intent") == "plant_inventory" or ("Total Inventory Quantity" in cols and "Plant" in cols and "Storage Location" not in cols and "Bin" not in cols and "Rank" not in cols and len(rows) > 1 and not any(k in q_lower for k in ["between", "from", "range", ">", "<"])):
-        is_explicit_chart_in_q = any(k in q_lower for k in [
-            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart",
-            "show me a graph", "give me a chart", "draw a chart", "create a chart", "plot a chart"
-        ])
-        if is_explicit_chart_in_q:
+        is_graph_or_detail = is_detail_or_graph_requested(question) or generated.get("chart_type") in ["bar", "line", "pie"]
+        if is_graph_or_detail and len(rows) > 1:
             return {
                 "output_type": "bar_chart",
                 "chart_type": "bar",
@@ -8536,11 +8618,8 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
                 "intent": generated.get("intent", "ranking"),
                 "time_range": "current"
             }
-        is_explicit_chart_in_q = any(k in q_lower for k in [
-            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart",
-            "show me a graph", "give me a chart", "draw a chart", "create a chart", "plot a chart"
-        ])
-        if is_explicit_chart_in_q:
+        is_graph_or_detail = is_detail_or_graph_requested(question) or (generated.get("chart_type") in ["bar", "line", "pie"] and generated.get("output_type") in ["bar_chart", "line_chart", "pie_chart"])
+        if is_graph_or_detail and len(rows) > 1:
             entity_col = "Plant" if "Plant" in cols else ("Bin" if "Bin" in cols else ("Material" if "Material" in cols else (cols[1] if len(cols) > 1 else cols[0])))
             metric_col = cols[2] if len(cols) > 2 else (cols[1] if len(cols) > 1 and cols[1] != entity_col else cols[0])
             return {
@@ -8563,32 +8642,50 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
 
     # 1. Plant Bin Utilization Detail Templates
     if generated.get("intent") == "plant_bin_utilization_detail":
-        is_explicit_chart_in_q = (
-            generated.get("output_type") == "bar_chart" or
-            generated.get("chart_type") in ["bar", "pie", "line"] or
-            any(k in q_lower for k in [
-                "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart",
-                "show me a graph", "show me with graph", "show with graph", "give me a chart"
-            ])
-        )
-        if is_explicit_chart_in_q:
+        if row_count <= 1:
+            is_explicit_chart_in_q = (
+                is_explicit_chart_only_requested(question) or
+                generated.get("output_type") == "bar_chart" or
+                generated.get("chart_type") in ["bar", "pie", "line"]
+            )
+            if is_explicit_chart_in_q:
+                return {
+                    "output_type": "bar_chart",
+                    "chart_type": "bar",
+                    "chart_title": generated.get("chart_title", "Plant Bin Utilization"),
+                    "chart_x": generated.get("chart_x") or "Plant",
+                    "chart_y": generated.get("chart_y") or "Bin Utilization %",
+                    "metric": "plant_bin_utilization",
+                    "intent": "plant_bin_utilization_detail",
+                    "time_range": "current"
+                }
             return {
-                "output_type": "bar_chart",
-                "chart_type": "bar",
-                "chart_title": generated.get("chart_title", "Plant Bin Utilization"),
-                "chart_x": generated.get("chart_x") or "Plant",
-                "chart_y": generated.get("chart_y") or "Bin Utilization %",
+                "output_type": "table",
+                "chart_type": "none",
                 "metric": "plant_bin_utilization",
                 "intent": "plant_bin_utilization_detail",
                 "time_range": "current"
             }
-        return {
-            "output_type": "table",
-            "chart_type": "none",
-            "metric": "plant_bin_utilization",
-            "intent": "plant_bin_utilization_detail",
-            "time_range": "current"
-        }
+        else:
+            is_graph_or_detail = is_detail_or_graph_requested(question) or generated.get("chart_type") in ["bar", "pie", "line"]
+            if is_graph_or_detail:
+                return {
+                    "output_type": "bar_chart",
+                    "chart_type": "bar",
+                    "chart_title": generated.get("chart_title", "Plant Bin Utilization"),
+                    "chart_x": "Storage Location" if "Storage Location" in cols else "Plant",
+                    "chart_y": "UtilizationPct" if "UtilizationPct" in cols else ("Bin Utilization %" if "Bin Utilization %" in cols else cols[1]),
+                    "metric": "plant_bin_utilization",
+                    "intent": "plant_bin_utilization_detail",
+                    "time_range": "current"
+                }
+            return {
+                "output_type": "table",
+                "chart_type": "none",
+                "metric": "plant_bin_utilization",
+                "intent": "plant_bin_utilization_detail",
+                "time_range": "current"
+            }
     if generated.get("intent") == "plant_bin_utilization_detailed_analysis":
         return {
             "output_type": "bar_chart",
@@ -8628,11 +8725,8 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
                 "intent": intent_type,
                 "time_range": "current"
             }
-        is_explicit_chart_in_q = any(k in q_lower for k in [
-            "graph", "chart", "visualize", "plot", "pie chart", "bar chart", "line chart",
-            "show me a graph", "give me a chart", "draw a chart", "create a chart", "plot a chart"
-        ]) or (generated.get("chart_type") in ["bar", "line", "pie"] and generated.get("output_type") in ["bar_chart", "line_chart", "pie_chart"])
-        if is_explicit_chart_in_q:
+        is_graph_or_detail = is_detail_or_graph_requested(question) or (generated.get("chart_type") in ["bar", "line", "pie"] and generated.get("output_type") in ["bar_chart", "line_chart", "pie_chart"])
+        if is_graph_or_detail and row_count > 1:
             return {
                 "output_type": "bar_chart",
                 "chart_type": "bar",
@@ -8789,8 +8883,37 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
             "time_range": "current"
         }
 
-    # 10. Fallback based on chart_type
+    # 10. Fallback based on chart_type or detail/graph request
+    is_graph_or_detail = is_detail_or_graph_requested(question)
+    is_text_mode = is_single_line_requested(q_lower) or is_number_only_requested(q_lower)
     c_type = generated.get("chart_type", "none")
+
+    if not is_text_mode and is_graph_or_detail and row_count > 1 and c_type == "none":
+        cat_candidates = [c for c in cols if any(k in c.lower() for k in ["plant", "bin", "material", "storage", "location", "division", "group", "status", "category", "type", "name", "desc"])]
+        x_col = cat_candidates[0] if cat_candidates else cols[0]
+        num_candidates = [c for c in cols if c != x_col and any(isinstance(r.get(c), (int, float)) for r in rows if r.get(c) is not None)]
+        if not num_candidates:
+            for c in cols:
+                if c != x_col:
+                    val = str(rows[0].get(c, "")).replace("%", "").replace(",", "").strip()
+                    try:
+                        float(val)
+                        num_candidates.append(c)
+                    except ValueError:
+                        pass
+        if num_candidates:
+            y_col = num_candidates[0]
+            return {
+                "output_type": "bar_chart",
+                "chart_type": "bar",
+                "chart_title": generated.get("chart_title", f"{y_col} by {x_col}"),
+                "chart_x": x_col,
+                "chart_y": y_col,
+                "metric": generated.get("metric", "warehouse_metrics"),
+                "intent": generated.get("intent", "warehouse_analysis"),
+                "time_range": "current"
+            }
+
     out_type = "line_chart" if c_type == "line" else "bar_chart" if c_type == "bar" else "pie_chart" if c_type == "pie" else "table"
     return {
         "output_type": out_type,

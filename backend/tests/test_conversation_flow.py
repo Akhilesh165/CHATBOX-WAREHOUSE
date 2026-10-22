@@ -1,5 +1,5 @@
 import pytest
-from backend.app.llm import deterministic_warehouse_sql_generator, format_deterministic_answer
+from backend.app.llm import deterministic_warehouse_sql_generator, format_deterministic_answer, optimize_response_format
 
 def test_conversation_flow_top_then_least_utilized_bins():
     history = [
@@ -321,6 +321,79 @@ def test_multi_plant_bin_utilization_comparison_and_typo_consistency():
     assert "Plant Utilization Comparison" in ans1
     assert "Plant 1268" in ans1 and "33.5%" in ans1
     assert "Plant 1258" in ans1 and "20.3%" in ans1
+
+
+def test_detail_explain_graph_triggers_display_relevant_chart():
+    """Verify that queries containing (detail, explain, show me with, or with graph) display relevant charts along with response."""
+    mock_plants = [
+        {"Plant": 1268, "Bin Utilization %": "33.5%", "BinUtilizationPct": 33.53, "Occupied Volume": 332200.12},
+        {"Plant": 1258, "Bin Utilization %": "20.3%", "BinUtilizationPct": 20.29, "Occupied Volume": 105011.35}
+    ]
+
+    # 1. Plain comparison -> default table without forced chart
+    res_plain = deterministic_warehouse_sql_generator("bin utlization of plant 1268 and 1258")
+    opt_plain = optimize_response_format("bin utlization of plant 1268 and 1258", mock_plants, res_plain)
+    assert opt_plain["chart_type"] == "none"
+    assert opt_plain["output_type"] == "table"
+
+    # 2. 'in detail' -> shows relevant bar chart comparing plants
+    res_detail = deterministic_warehouse_sql_generator("show the bin utlization of plant 1268 and 1258 in detail")
+    opt_detail = optimize_response_format("show the bin utlization of plant 1268 and 1258 in detail", mock_plants, res_detail)
+    assert opt_detail["chart_type"] == "bar"
+    assert opt_detail["output_type"] == "bar_chart"
+    assert opt_detail["chart_x"] == "Plant"
+    assert opt_detail["chart_y"] == "BinUtilizationPct"
+
+    # 3. 'with graph' -> shows relevant bar chart
+    res_w_graph = deterministic_warehouse_sql_generator("show the bin utlization of plant 1268 and 1258 with graph")
+    opt_w_graph = optimize_response_format("show the bin utlization of plant 1268 and 1258 with graph", mock_plants, res_w_graph)
+    assert opt_w_graph["chart_type"] == "bar"
+    assert opt_w_graph["output_type"] == "bar_chart"
+
+    # 4. 'or with graph' -> shows relevant bar chart
+    res_or_graph = deterministic_warehouse_sql_generator("show the bin utlization of plant 1268 and 1258 or with graph")
+    opt_or_graph = optimize_response_format("show the bin utlization of plant 1268 and 1258 or with graph", mock_plants, res_or_graph)
+    assert opt_or_graph["chart_type"] == "bar"
+    assert opt_or_graph["output_type"] == "bar_chart"
+
+    # 5. 'explain' -> shows relevant bar chart
+    res_explain = deterministic_warehouse_sql_generator("explain bin utlization of plant 1268 and 1258")
+    opt_explain = optimize_response_format("explain bin utlization of plant 1268 and 1258", mock_plants, res_explain)
+    assert opt_explain["chart_type"] == "bar"
+    assert opt_explain["output_type"] == "bar_chart"
+
+    # 6. 'show me with graph' on rankings
+    mock_bins = [{"Bin": f"B{i}", "Utilization %": f"{90-i}%"} for i in range(10)]
+    res_rank_graph = deterministic_warehouse_sql_generator("show top 10 most utilized bins show me with graph")
+    opt_rank_graph = optimize_response_format("show top 10 most utilized bins show me with graph", mock_bins, res_rank_graph)
+    assert opt_rank_graph["chart_type"] == "bar"
+    assert opt_rank_graph["output_type"] == "bar_chart"
+    assert opt_rank_graph["chart_x"] == "Bin"
+
+    # 7. 'explain' on materials threshold
+    mock_mats = [{"Material": f"M{i}", "Total Stock Quantity": 1500} for i in range(5)]
+    res_mat = deterministic_warehouse_sql_generator("explain materials with inventory above 1000")
+    opt_mat = optimize_response_format("explain materials with inventory above 1000", mock_mats, res_mat)
+    assert opt_mat["chart_type"] == "bar"
+    assert opt_mat["output_type"] == "bar_chart"
+    assert opt_mat["chart_x"] == "Material"
+
+
+def test_detail_explain_graph_followup_inheritance():
+    """Verify follow-up queries with (detail, explain, show me with, or with graph) inherit context and activate relevant charts."""
+    h = [
+        {"role": "user", "content": "show top 10 most utilized bins"},
+        {"role": "assistant", "content": "Here are the top 10 most utilized bins..."}
+    ]
+    mock_bins = [{"Bin": f"B{i}", "Utilization %": f"{90-i}%"} for i in range(10)]
+
+    for trigger in ["or with graph", "with graph", "show me with graph", "explain in detail", "explain", "show the detailed version"]:
+        res = deterministic_warehouse_sql_generator(trigger, history=h)
+        assert res["intent"] in ["top_utilized_bins", "plant_bin_utilization_detailed_analysis"]
+        opt = optimize_response_format(trigger, mock_bins, res)
+        assert opt["chart_type"] == "bar", f"Failed chart_type for trigger: {trigger}"
+        assert opt["output_type"] == "bar_chart", f"Failed output_type for trigger: {trigger}"
+
 
 
 
