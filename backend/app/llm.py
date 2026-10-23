@@ -138,9 +138,16 @@ def extract_explicit_limit(q_lower: str) -> Optional[int]:
         val = int(m.group(1))
         if val not in [2024, 2025, 2026, 1258, 1266, 1268, 7228]:
             return val
+
+    # 2B. Number before ranking adjective: "10 most", "10 least", "5 highest", "5 lowest"
+    m_rev = re.search(r"\b(\d{1,3})\s+(?:most|least|highest|lowest|fullest|emptiest|best|worst|top|bottom)\b(?!\s*%)", q_lower)
+    if m_rev:
+        val = int(m_rev.group(1))
+        if val not in [2024, 2025, 2026, 1258, 1266, 1268, 7228]:
+            return val
             
     # 3. Explicit action + quantity + optional entity: "show 5 empty bins", "give me 10 materials", "display 20 rows", "list 5 bins", "show 5"
-    m2 = re.search(r"\b(?:show|give\s+me|display|list|fetch)\s+(\d{1,3})(?:\s+(?:completely\s+|active\s+|empty\s+|vacant\s+)?(?:bins?|materials?|records?|rows?|items?|results?))?\b(?!\s*%)", q_lower)
+    m2 = re.search(r"\b(?:show|give\s+me|display|list|fetch)\s+(?:the\s+)?(\d{1,3})(?:\s+(?:completely\s+|active\s+|empty\s+|vacant\s+)?(?:bins?|materials?|records?|rows?|items?|results?))?\b(?!\s*%)", q_lower)
     if m2:
         val = int(m2.group(1))
         if val not in [2024, 2025, 2026, 1258, 1266, 1268, 7228]:
@@ -806,6 +813,15 @@ def is_elliptical_followup(q_lower: str) -> bool:
     """Detects if a user question is an elliptical follow-up that relies on prior conversation context."""
     q_strip = q_lower.strip()
     
+    # 0. Standalone combined rankings and complete multi-intent warehouse queries are NOT follow-ups
+    has_both_kw = (
+        any(w in q_strip for w in ["top", "most", "fullest", "highest"]) and
+        any(w in q_strip for w in ["bottom", "least", "emptiest", "lowest"]) and
+        any(b in q_strip for b in ["bin", "bins", "location", "locations", "racks", "rack"])
+    )
+    if has_both_kw:
+        return False
+    
     # 1. Visualization triggers
     if any(k in q_strip for k in [
         "or with graph", "or with a graph", "with graph", "with a graph", "in graph", "as graph", "in a graph",
@@ -876,7 +892,7 @@ def is_elliptical_followup(q_lower: str) -> bool:
         "reverse it", "reverse the ranking", "reverse order", "flip the ranking", "flip order", "in reverse order", "reverse",
         "instead", "next 10", "show more", "sort by", "ones",
         "least utilized ones", "lowest utilized ones", "most utilized ones",
-        "show least utilized", "bottom 10", "top 10", "bottom 5", "top 5", "least ones", "most ones",
+        "show least utilized", "least ones", "most ones",
         "lowest ones", "highest ones", "bottom ones", "top ones",
         "how many are there", "what is the count", "how many are in there", "how many?", "how many",
         "only materials", "top materials"
@@ -1234,7 +1250,11 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     # Now apply the current query modifiers on top of previous state
     # 1. Check if current query is a new independent top-level topic
     is_mat_entity = any(m in q_lower for m in ["material", "materials", "sku", "skus", "item", "items", "product", "products", "goods", "stock item", "stock items"])
-    is_fresh_both = ("top" in q_lower or "most" in q_lower or "fullest" in q_lower or "highest" in q_lower) and ("bottom" in q_lower or "least" in q_lower or "emptiest" in q_lower or "lowest" in q_lower) and any(b in q_lower for b in ["bin", "bins", "location", "locations", "racks"])
+    is_fresh_both = (
+        any(w in q_lower for w in ["top", "most", "fullest", "highest", "most full", "most utilized", "highest utilized"]) and
+        any(w in q_lower for w in ["bottom", "least", "emptiest", "lowest", "least full", "least utilized", "lowest utilized", "empty bins"]) and
+        any(b in q_lower for b in ["bin", "bins", "location", "locations", "racks", "rack", "slot", "slots"])
+    )
     is_fresh_missing_master = any(k in q_lower for k in [
         "missing from the volume master", "missing from volume master", "not in the volume master",
         "not in volume master", "missing in volume master", "exist in inventory master but not",
@@ -1431,8 +1451,9 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["is_explicit_chart_request"] = True
 
     is_util_comparison = (
+        not is_fresh_both and
         any(k in q_lower for k in ["utiliz", "occupan", "how full", "fill rate", "space utilization", "bin utilization", "capacity utilization"]) and
-        (len(explicit_plants) >= 2 or (is_followup and len(state.get("comparison_entities", [])) >= 2 and not new_plant))
+        (len(explicit_plants) >= 2 or (is_followup and len(state.get("comparison_entities", [])) >= 2 and not new_plant and any(k in q_lower for k in ["compare", "versus", "vs", "difference", "between"])))
     )
 
     compound_cap_info = parse_compound_capacity_utilization(q_lower)
@@ -1723,8 +1744,17 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["metric"] = "utilization"
         state["ranking"] = "both"
         state["topic"] = "top_and_bottom_bins"
+        state["operation"] = "ranking"
+        state["condition"] = None
+        state["aggregation"] = "list"
         state["filters"] = {"plant": new_plant} if new_plant else {}
         state["limit"] = new_limit or 10
+        if not new_plant:
+            state["plants"] = []
+            state["active_plant"] = None
+            state["comparison_entities"] = []
+            state["filters"].pop("plant", None)
+            state["filters"].pop("plants", None)
     elif is_fresh_missing_vol_pct:
         state["entity"] = "material"
         state["metric"] = "MISSING_VOLUME_PERCENTAGE"
@@ -1789,6 +1819,12 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["aggregation"] = "list"
         state["filters"] = {"plant": new_plant} if new_plant else {}
         state["limit"] = new_limit or 10
+        if not new_plant:
+            state["plants"] = []
+            state["active_plant"] = None
+            state["comparison_entities"] = []
+            state["filters"].pop("plant", None)
+            state["filters"].pop("plants", None)
     elif is_fresh_least_bins:
         state["entity"] = "bin"
         state["metric"] = "utilization"
@@ -1798,6 +1834,12 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["aggregation"] = "list"
         state["filters"] = {"plant": new_plant} if new_plant else {}
         state["limit"] = new_limit or 10
+        if not new_plant:
+            state["plants"] = []
+            state["active_plant"] = None
+            state["comparison_entities"] = []
+            state["filters"].pop("plant", None)
+            state["filters"].pop("plants", None)
     elif is_fresh_consolidation:
         state["topic"] = "consolidation"
         state["filters"] = {"plant": new_plant} if new_plant else {}
@@ -3384,8 +3426,9 @@ ORDER BY BinUtilizationPct DESC"""
 
     # C. TOP N & BOTTOM N BIN UTILIZATION RANKINGS
     has_both = state.get("topic") == "top_and_bottom_bins" or (
-        ("top" in q_lower or "most" in q_lower or "fullest" in q_lower) and
-        ("bottom" in q_lower or "least" in q_lower or "emptiest" in q_lower)
+        any(w in q_lower for w in ["top", "most", "fullest", "highest", "most full", "most utilized", "highest utilized"]) and
+        any(w in q_lower for w in ["bottom", "least", "emptiest", "lowest", "least full", "least utilized", "lowest utilized", "empty bins"]) and
+        any(b in q_lower for b in ["bin", "bins", "location", "locations", "racks", "rack", "slot", "slots"])
     )
     has_rank = any(k in q_lower for k in ["rank", "ranking", "rankings", "sort", "order by"])
     has_top = not is_almost_full_req and not is_over_capacity_req and (
@@ -3514,13 +3557,25 @@ ORDER BY [Available Capacity (FT3)] {order_dir}"""
             }
 
         if has_both:
+            # Extract independent limits if top and bottom limits differ
+            m_top = re.search(r"\b(?:top|most|highest|fullest)\s*(\d{1,3})\b", q_lower)
+            if not m_top:
+                m_top = re.search(r"\b(\d{1,3})\s+(?:most|highest|fullest|top)\b", q_lower)
+            m_bottom = re.search(r"\b(?:bottom|least|lowest|emptiest)\s*(\d{1,3})\b", q_lower)
+            if not m_bottom:
+                m_bottom = re.search(r"\b(\d{1,3})\s+(?:least|lowest|emptiest|bottom)\b", q_lower)
+                
+            n_top = int(m_top.group(1)) if m_top else n_val
+            n_bottom = int(m_bottom.group(1)) if m_bottom else n_val
+
             sql_both = f"""WITH RankedBins AS (
     SELECT 
         b.BinLocation AS Bin,
         b.Plant,
+        ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Occupied Volume],
         CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Bin Capacity],
-        CONCAT(ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %],
-        ROUND(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0), 1) AS RawUtil
+        CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %],
+        ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 1) AS RawUtil
     FROM dbo.ZWMS_BIN_MASTER b
     JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
     LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
@@ -3528,32 +3583,66 @@ ORDER BY [Available Capacity (FT3)] {order_dir}"""
     GROUP BY b.BinLocation, b.Plant, b.Volume, b.VolumeUnit
 ),
 TopBins AS (
-    SELECT TOP {n_val} 'Top {n_val} Most Utilized' AS [Ranking Group], Bin, Plant, [Bin Capacity], [Utilization %], RawUtil
+    SELECT TOP {n_top}
+        ROW_NUMBER() OVER (ORDER BY RawUtil DESC, Bin ASC) AS [Rank],
+        'Top {n_top} Most Utilized' AS [Ranking Group],
+        Bin, Plant, [Bin Capacity], [Occupied Volume], [Utilization %], RawUtil
     FROM RankedBins
-    ORDER BY RawUtil DESC
+    ORDER BY RawUtil DESC, Bin ASC
 ),
 BottomBins AS (
-    SELECT TOP {n_val} 'Bottom {n_val} Least Utilized' AS [Ranking Group], Bin, Plant, [Bin Capacity], [Utilization %], RawUtil
+    SELECT TOP {n_bottom}
+        ROW_NUMBER() OVER (ORDER BY RawUtil ASC, Bin ASC) AS [Rank],
+        'Bottom {n_bottom} Least Utilized' AS [Ranking Group],
+        Bin, Plant, [Bin Capacity], [Occupied Volume], [Utilization %], RawUtil
     FROM RankedBins
-    ORDER BY RawUtil ASC
+    ORDER BY RawUtil ASC, Bin ASC
 )
-SELECT [Ranking Group], Bin, Plant, [Bin Capacity], [Utilization %]
-FROM TopBins
-UNION ALL
-SELECT [Ranking Group], Bin, Plant, [Bin Capacity], [Utilization %]
-FROM BottomBins"""
+SELECT [Ranking Group], [Rank], Bin, Plant, [Bin Capacity], [Occupied Volume], [Utilization %]
+FROM (
+    SELECT 1 AS SortGroup, [Ranking Group], [Rank], Bin, Plant, [Bin Capacity], [Occupied Volume], [Utilization %]
+    FROM TopBins
+    UNION ALL
+    SELECT 2 AS SortGroup, [Ranking Group], [Rank], Bin, Plant, [Bin Capacity], [Occupied Volume], [Utilization %]
+    FROM BottomBins
+) Combined
+ORDER BY SortGroup ASC, [Rank] ASC"""
+
+            chart_title = f"Top {n_top} Most & Top {n_bottom} Least Utilized Bins{plant_title_suffix}"
             return {
                 "sql": sql_both,
                 "query_plan": {
-                    "intent": "RANKING",
+                    "entity": "BIN",
+                    "metric": "BIN_UTILIZATION",
+                    "scope": "ALL_BINS" if not plant_cands else f"PLANT_{plant_cands[0]}",
+                    "filters": filters,
+                    "intent": "COMBINED_RANKING",
+                    "operation": "COMBINED_RANKING",
                     "rank_direction": "BOTH",
+                    "number_of_rankings": 2,
+                    "rankings": [
+                        {
+                            "type": "TOP",
+                            "direction": "DESC",
+                            "metric": "BIN_UTILIZATION",
+                            "limit": n_top,
+                            "label": f"Top {n_top} Most Utilized"
+                        },
+                        {
+                            "type": "LEAST",
+                            "direction": "ASC",
+                            "metric": "BIN_UTILIZATION",
+                            "limit": n_bottom,
+                            "label": f"Top {n_bottom} Least Utilized"
+                        }
+                    ],
                     "rank_metric": "BinUtilization",
                     "rank_entity": "Bin",
                     "limit": n_val,
                     "rank_scope": rank_scope
                 },
                 "chart_type": "bar" if is_explicit_chart else "none",
-                "chart_title": f"Top {n_val} Most & Bottom {n_val} Least Utilized Bins{plant_title_suffix}",
+                "chart_title": chart_title,
                 "chart_x": "Bin" if is_explicit_chart else None,
                 "chart_y": "Utilization %" if is_explicit_chart else None,
                 "intent": "top_and_bottom_bins",
@@ -6615,8 +6704,78 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         ]
         return "\n".join(lines)
 
+    # 0A_COMBINED_BINS. Combined Top & Bottom Bins Ranking
+    if "Ranking Group" in cols or (
+        ("top" in q_lower or "most" in q_lower or "fullest" in q_lower or "highest" in q_lower) and
+        ("bottom" in q_lower or "least" in q_lower or "emptiest" in q_lower or "lowest" in q_lower) and
+        "Bin" in cols and ("Utilization %" in cols or "Utilization" in cols)
+    ):
+        top_rows = [
+            r for r in rows
+            if "Most" in str(r.get("Ranking Group", "")) or "Fullest" in str(r.get("Ranking Group", "")) or
+            ("Top" in str(r.get("Ranking Group", "")) and not any(k in str(r.get("Ranking Group", "")) for k in ["Least", "Bottom", "Emptiest", "Lowest"]))
+        ]
+        bottom_rows = [
+            r for r in rows
+            if any(k in str(r.get("Ranking Group", "")) for k in ["Least", "Bottom", "Emptiest", "Lowest"])
+        ]
+        if not top_rows and not bottom_rows and len(rows) > 1:
+            mid = len(rows) // 2
+            top_rows = rows[:mid]
+            bottom_rows = rows[mid:]
+        
+        top_n = len(top_rows)
+        bottom_n = len(bottom_rows)
+        plant_val = extract_single_plant_safe(q_lower)
+        plant_str = f" in Plant {plant_val}" if plant_val else ""
+        
+        top_leader = top_rows[0].get("Bin", "N/A") if top_rows else "N/A"
+        top_util = top_rows[0].get("Utilization %", "0%") if top_rows else "0%"
+        bottom_leader = bottom_rows[0].get("Bin", "N/A") if bottom_rows else "N/A"
+        bottom_util = bottom_rows[0].get("Utilization %", "0%") if bottom_rows else "0%"
+        
+        single_stmt = f"Top {top_n} most utilized bins{plant_str} lead with **`{top_leader}`** ({top_util}) and top {bottom_n} least utilized bins start at **`{bottom_leader}`** ({bottom_util})."
+        if is_single_statement_requested:
+            return single_stmt
+            
+        lines = [
+            f"### 🏆 Top {top_n} Most Utilized Bins{plant_str}\n",
+            "| Rank | Bin | Plant | Bin Capacity | Occupied Volume | Utilization % |",
+            "|:---:|:---|:---:|:---:|:---:|:---:|"
+        ]
+        for idx, r in enumerate(top_rows, 1):
+            rnk = r.get("Rank", idx)
+            b = r.get("Bin", "N/A")
+            p = r.get("Plant", "-")
+            cap = r.get("Bin Capacity", "-")
+            ov = r.get("Occupied Volume", "-")
+            if isinstance(ov, (int, float)):
+                ov = f"{ov:,.2f} FT³"
+            u = r.get("Utilization %", "-")
+            lines.append(f"| {rnk} | `{b}` | {p} | {cap} | {ov} | **{u}** |")
+            
+        lines.append(f"\n### 📉 Top {bottom_n} Least Utilized Bins{plant_str}\n")
+        lines.append(f"*(Bottom {bottom_n} Least Utilized Bins)*\n")
+        lines.append("| Rank | Bin | Plant | Bin Capacity | Occupied Volume | Utilization % |")
+        lines.append("|:---:|:---|:---:|:---:|:---:|:---:|")
+        for idx, r in enumerate(bottom_rows, 1):
+            rnk = r.get("Rank", idx)
+            if not isinstance(rnk, int) or rnk > bottom_n:
+                rnk = idx
+            b = r.get("Bin", "N/A")
+            p = r.get("Plant", "-")
+            cap = r.get("Bin Capacity", "-")
+            ov = r.get("Occupied Volume", "-")
+            if isinstance(ov, (int, float)):
+                ov = f"{ov:,.2f} FT³"
+            u = r.get("Utilization %", "-")
+            lines.append(f"| {rnk} | `{b}` | {p} | {cap} | {ov} | **{u}** |")
+            
+        lines.append("\n💡 *Both independent rankings are also available in the interactive data table below.*")
+        return "\n".join(lines)
+
     # 0A_COMPARE_BINS. Comparison of Top Utilized Bins across Multiple Plants (Item 7)
-    if "Bin" in cols and ("Utilization %" in cols or "UtilizationPct" in cols) and "Plant" in cols and any(k in q_lower for k in ["compare", "comparison", "versus", "vs"]):
+    if "Ranking Group" not in cols and "Bin" in cols and ("Utilization %" in cols or "UtilizationPct" in cols) and "Plant" in cols and any(k in q_lower for k in ["compare", "comparison", "versus", "vs"]):
         plants = extract_plants(q_lower)
         if len(plants) >= 2:
             plant_groups = {}
@@ -7640,26 +7799,6 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
             f"- **Top Consumer:** Material **`{leader_mat}`** (**{leader_desc}**) accounts for **{leader_vol:,.2f} FT³** (**{leader_pct}** of total warehouse bin capacity).",
             f"- **Ranking Summary:** Ranked by total occupied volume share across active warehouse bins.",
             "\n💡 *The interactive **Bar Chart** and itemized **Results Table** below display all top materials with quantities, total volumes, and exact percentage shares:*"
-        ]
-        return "\n".join(lines)
-
-    # 2. Combined Top & Bottom Bins Ranking
-    if "Ranking Group" in cols:
-        top_rows = [r for r in rows if "Top" in str(r.get("Ranking Group", ""))]
-        bottom_rows = [r for r in rows if "Bottom" in str(r.get("Ranking Group", ""))]
-        top_leader = top_rows[0].get("Bin", "N/A") if top_rows else "N/A"
-        top_util = top_rows[0].get("Utilization %", "0%") if top_rows else "0%"
-        
-        single_stmt = f"Loaded ranking of the **Top {len(top_rows)} Most Utilized Bins** (lead: **`{top_leader}`** at **{top_util}**) and **Bottom {len(bottom_rows)} Least Utilized Bins**."
-        if is_single_statement_requested:
-            return single_stmt
-            
-        lines = [
-            f"### 📊 Top & Bottom Bin Utilization Rankings\n",
-            single_stmt,
-            f"\n- **Most Utilized Leader:** Bin **`{top_leader}`** ({top_util})",
-            f"- **Least Utilized:** Bins with 0.0% – lowest occupancy available for optimization.",
-            f"\n💡 *The full itemized list with capacities and utilization percentages is loaded in the **searchable, paginated Data Table** below (with real-time search, sorting, and CSV export):*"
         ]
         return "\n".join(lines)
 
