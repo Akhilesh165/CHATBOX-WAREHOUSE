@@ -246,16 +246,16 @@ def test_compare_bin_utilization_and_volume_utilization_shows_both():
 def test_bin_utilization_metrics_columns_removed_from_table():
     """Query: 'Show the bin utilization of all plants'
 
-    Verifies that the generated SQL projects ONLY Plant, TotalBins, OccupiedBins, EmptyBins
-    and completely removes BinUtilizationPct, TotalBinCapacityVolume, OccupiedBinVolume,
-    and VolumeUtilizationPct from the table metrics.
+    Verifies that the generated SQL keeps BinUtilizationPct, Plant, TotalBins, OccupiedBins, EmptyBins
+    and completely removes the duplicate BinOccupancyPct and volume metrics (TotalBinCapacityVolume,
+    OccupiedBinVolume, VolumeUtilizationPct) from the table metrics.
     """
     plan = deterministic_warehouse_sql_generator("Show the bin utilization of all plants")
     sql = plan["sql"]
     assert "TotalBins" in sql
     assert "OccupiedBins" in sql
     assert "EmptyBins" in sql
-    assert "BinUtilizationPct" not in sql
+    assert "BinUtilizationPct" in sql
     assert "TotalBinCapacityVolume" not in sql
     assert "OccupiedBinVolume" not in sql
     assert "VolumeUtilizationPct" not in sql
