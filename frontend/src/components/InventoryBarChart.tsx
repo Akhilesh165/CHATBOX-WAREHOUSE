@@ -68,7 +68,7 @@ export const InventoryBarChart: React.FC<InventoryBarChartProps> = ({
 
   // Identify measure (Y) key
   const preferredYKeys = [
-    '% of Total Bin Volume', 'BinUtilizationPct', 'VolumeUtilizationPct', 'BinOccupancyPct',
+    'Bin Utilization %', '% of Total Bin Volume', 'BinUtilizationPct', 'VolumeUtilizationPct', 'BinOccupancyPct',
     'Total Material Volume', 'Total Quantity', 'TotalOccupiedVolume', 'UnrestrictedQty',
     'TotalUnrestrictedQuantity', 'AvgInventoryPerOccupiedBin', 'TotalBins', 'OccupiedBins'
   ];

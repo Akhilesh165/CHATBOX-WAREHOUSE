@@ -3402,12 +3402,12 @@ ORDER BY BinUtilizationPct DESC"""
     COUNT(DISTINCT b.BinLocation) AS TotalBins, 
     COUNT(DISTINCT i.BinNo) AS OccupiedBins, 
     (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS EmptyBins, 
-    ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS BinUtilizationPct 
+    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2), '%') AS [Bin Utilization %] 
 FROM dbo.ZWMS_BIN_MASTER b 
 LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant 
 GROUP BY b.Plant 
-ORDER BY BinUtilizationPct DESC"""
-            chart_y = "BinUtilizationPct"
+ORDER BY ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) DESC"""
+            chart_y = "Bin Utilization %"
         else:
             sql_wf = """SELECT 
     b.Plant, 
@@ -5617,7 +5617,19 @@ ORDER BY COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation),
         is_all_plants_request = any(w in q_lower for w in ["all", "compare", "network", "plants", "overall", "facility", "across all", "whole warehouse", "across", "each", "every", "by plant", "across plants"])
         if plant_cand and not is_all_plants_request:
             plant_val = plant_cand
-            sql_plant_summary = f"""SELECT 
+            if is_bin_utilization_primary(q_lower):
+                sql_plant_summary = f"""SELECT 
+    b.Plant AS [Plant], 
+    COUNT(DISTINCT b.BinLocation) AS [Total Bins], 
+    COUNT(DISTINCT i.BinNo) AS [Occupied Bins], 
+    (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS [Empty Bins], 
+    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2), '%') AS [Bin Utilization %] 
+FROM dbo.ZWMS_BIN_MASTER b 
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant 
+WHERE b.Plant = '{plant_val}' 
+GROUP BY b.Plant"""
+            else:
+                sql_plant_summary = f"""SELECT 
     b.Plant AS [Plant], 
     COUNT(DISTINCT b.BinLocation) AS [Total Bins], 
     COUNT(DISTINCT i.BinNo) AS [Occupied Bins], 
@@ -5752,8 +5764,8 @@ ORDER BY BinUtilizationPct {order_dir}"""
             "response_mode": "GRAPH" if is_explicit_chart else "SUMMARY"
         }
         if is_bin_utilization_primary(q_lower):
-            sql_bin_util = f"SELECT b.Plant, COUNT(DISTINCT b.BinLocation) AS TotalBins, COUNT(DISTINCT i.BinNo) AS OccupiedBins, (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS EmptyBins, ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS BinUtilizationPct FROM dbo.ZWMS_BIN_MASTER b LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant{plant_filter} GROUP BY b.Plant ORDER BY BinUtilizationPct DESC"
-            chart_y = "BinUtilizationPct"
+            sql_bin_util = f"SELECT b.Plant, COUNT(DISTINCT b.BinLocation) AS TotalBins, COUNT(DISTINCT i.BinNo) AS OccupiedBins, (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS EmptyBins, CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2), '%') AS [Bin Utilization %] FROM dbo.ZWMS_BIN_MASTER b LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant{plant_filter} GROUP BY b.Plant ORDER BY ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) DESC"
+            chart_y = "Bin Utilization %"
             chart_title = "Warehouse Bin Utilization by Plant (%)"
         else:
             sql_bin_util = f"SELECT b.Plant, COUNT(DISTINCT b.BinLocation) AS TotalBins, COUNT(DISTINCT i.BinNo) AS OccupiedBins, (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS EmptyBins, ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS BinUtilizationPct, ROUND(SUM(b.Volume), 2) AS TotalBinCapacityVolume, ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS OccupiedBinVolume, ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END) * 100.0 / NULLIF(SUM(b.Volume), 0), 2) AS VolumeUtilizationPct FROM dbo.ZWMS_BIN_MASTER b LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant{plant_filter} GROUP BY b.Plant ORDER BY VolumeUtilizationPct DESC"
@@ -8441,7 +8453,7 @@ GROUP BY Plant"""
         return f"The bin utilization {plant_prefix}is **{bpct}**, with **{ob:,}** of **{tb:,}** total bins currently occupied and **{eb:,}** empty bins available for put-away."
 
     # 5. Bin Utilization and Occupancy Percentage
-    if "BinUtilizationPct" in cols or "VolumeUtilizationPct" in cols or "BinOccupancyPct" in cols or (("TotalBins" in cols or "Total Bins" in cols) and ("OccupiedBins" in cols or "Occupied Bins" in cols) and len(rows) > 1):
+    if "BinUtilizationPct" in cols or "VolumeUtilizationPct" in cols or "BinOccupancyPct" in cols or "Bin Utilization %" in cols or (("TotalBins" in cols or "Total Bins" in cols) and ("OccupiedBins" in cols or "Occupied Bins" in cols) and len(rows) > 1):
 
         plant_val = extract_single_plant_safe(q_lower) or (rows[0].get("Plant") if len(rows) == 1 and rows[0].get("Plant") and str(rows[0].get("Plant")) != "All" else None)
         
@@ -8450,7 +8462,7 @@ GROUP BY Plant"""
             tb = matching_row.get("TotalBins", matching_row.get("Total Bins", 0))
             ob = matching_row.get("OccupiedBins", matching_row.get("Occupied Bins", 0))
             eb = matching_row.get("EmptyBins", matching_row.get("Empty Bins", max(0, tb - ob)))
-            bpct_val = matching_row.get("BinUtilizationPct", matching_row.get("BinOccupancyPct"))
+            bpct_val = matching_row.get("Bin Utilization %", matching_row.get("BinUtilizationPct", matching_row.get("BinOccupancyPct")))
             if bpct_val is not None:
                 bpct = float(str(bpct_val).replace("%", ""))
             else:
@@ -8521,7 +8533,7 @@ GROUP BY Plant"""
                     plant = r.get("Plant", "N/A")
                     tb = r.get("TotalBins", r.get("Total Bins", 0))
                     ob = r.get("OccupiedBins", r.get("Occupied Bins", 0))
-                    bpct_val = r.get("BinUtilizationPct", r.get("BinOccupancyPct"))
+                    bpct_val = r.get("Bin Utilization %", r.get("BinUtilizationPct", r.get("BinOccupancyPct")))
                     if bpct_val is not None:
                         bpct = float(str(bpct_val).replace("%", ""))
                     else:
@@ -8548,7 +8560,8 @@ GROUP BY Plant"""
                 plant = r.get("Plant", "N/A")
                 tb = r.get("TotalBins", 0)
                 ob = r.get("OccupiedBins", 0)
-                bpct = r.get("BinUtilizationPct", r.get("BinOccupancyPct", round((ob * 100.0 / tb), 2) if tb > 0 else 0))
+                bpct_raw = r.get("Bin Utilization %", r.get("BinUtilizationPct", r.get("BinOccupancyPct")))
+                bpct = float(str(bpct_raw).replace("%", "")) if bpct_raw is not None else (round((ob * 100.0 / tb), 2) if tb > 0 else 0)
                 tvol = r.get("TotalBinCapacityVolume", 0)
                 ovol = r.get("OccupiedBinVolume", 0)
                 vpct = r.get("VolumeUtilizationPct", 0)
@@ -8741,9 +8754,9 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
         )
         if is_graph_or_detail and len(rows) > 1:
             y_col = (
-                "UtilizationPct" if "UtilizationPct" in cols else (
-                    "BinUtilizationPct" if "BinUtilizationPct" in cols else (
-                        "Bin Utilization %" if "Bin Utilization %" in cols else (
+                "Bin Utilization %" if "Bin Utilization %" in cols else (
+                    "UtilizationPct" if "UtilizationPct" in cols else (
+                        "BinUtilizationPct" if "BinUtilizationPct" in cols else (
                             "Total Inventory Quantity" if "Total Inventory Quantity" in cols else (
                                 cols[1] if len(cols) > 1 else cols[0]
                             )
@@ -9140,7 +9153,7 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
             return {"output_type": "kpi", "chart_type": "none", "metric": generated.get("metric", "total_inventory"), "intent": generated.get("intent", "inventory_summary"), "time_range": "current"}
 
     # 3. Plant / Warehouse Bin Utilization & Extremes
-    if "BinUtilizationPct" in cols or "VolumeUtilizationPct" in cols:
+    if "Bin Utilization %" in cols or "BinUtilizationPct" in cols or "VolumeUtilizationPct" in cols:
         is_single_stmt = (
             any(s in q_lower for s in ["single statement", "single line", "one line", "concise", "briefly", "in short"]) or
             any(k in q_lower for k in [
@@ -9163,7 +9176,7 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
             "chart_type": "bar",
             "chart_title": generated.get("chart_title", "Warehouse Bin Utilization by Plant (%)"),
             "chart_x": "Plant",
-            "chart_y": "BinUtilizationPct" if "BinUtilizationPct" in cols else "VolumeUtilizationPct",
+            "chart_y": "Bin Utilization %" if "Bin Utilization %" in cols else ("BinUtilizationPct" if "BinUtilizationPct" in cols else "VolumeUtilizationPct"),
             "metric": generated.get("metric", "warehouse_utilization"),
             "intent": generated.get("intent", "bin_utilization"),
             "time_range": "current"
