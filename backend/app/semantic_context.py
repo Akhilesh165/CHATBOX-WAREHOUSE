@@ -582,7 +582,12 @@ WAREHOUSE_SEMANTIC_CONTEXT: Dict[str, Any] = {
             "overall_warehouse_utilization": "Calculate from total occupied and total capacity for complete requested scope. Do NOT average percentages.",
             "plant_specific": "Apply plant filter before calculating the metric.",
             "rankings": "Calculate metric at bin granularity before sorting."
-        }
+        },
+        "response_format_rule": (
+            "For every query whose primary intent is Bin Utilization, the response must show Bin Utilization only. "
+            "Do NOT display Volume Utilization percentage, Occupied volume, Total volume capacity, or any volume-based "
+            "utilization text appended after Bin Utilization. Only show Volume Utilization when explicitly requested."
+        )
     },
 
     # =========================================================================

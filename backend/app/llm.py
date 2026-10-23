@@ -6547,7 +6547,83 @@ async def generate_sql(question: str, history: list[dict], retry_context: dict |
     except Exception:
         return det_plan
 
+def is_volume_utilization_requested(q_lower: str) -> bool:
+    """Checks whether the user explicitly asked for volume-based utilization or volume metrics."""
+    if not q_lower:
+        return False
+    q = q_lower.lower()
+    return (
+        any(k in q for k in [
+            "volume utilization", "volumetric utilization", "volume occupancy",
+            "volume %", "volume percent", "volume percentage", "utilized volume percentage",
+            "occupied volume versus total bin capacity", "occupied volume vs total bin capacity",
+            "occupied volume vs capacity", "occupied volume versus capacity",
+            "occupied volume compared to total bin capacity", "occupied volume compared to capacity",
+            "occupied volume compared to", "occupied volume versus", "occupied volume vs",
+            "volume capacity utilization", "capacity utilization",
+            "space utilization", "bin space", "total bin volume"
+        ]) or
+        ("volume" in q and any(u in q for u in ["utiliz", "occupan"]) and "bin utiliz" not in q and "bin occupan" not in q)
+    )
+
+def is_bin_utilization_primary(q_lower: str) -> bool:
+    """Checks whether the query's primary intent is bin utilization.
+    
+    When True, the response MUST show Bin Utilization only, omitting Volume Utilization,
+    Occupied Volume, Total Volume Capacity, or volume-based utilization text.
+    """
+    if not q_lower:
+        return False
+    q = q_lower.lower()
+    has_vol_util = is_volume_utilization_requested(q)
+    has_bin_util = any(k in q for k in [
+        "bin utiliz", "bin occupan", "bins utilized", "bin utilized",
+        "bins utilization", "bins' utilization"
+    ])
+    # If user explicitly asked for BOTH bin utilization AND volume utilization
+    if has_vol_util and has_bin_util:
+        return False
+    # If user asked for volume utilization specifically
+    if has_vol_util and not has_bin_util:
+        return False
+    # If user asked for bin utilization explicitly
+    if has_bin_util:
+        return True
+    # If user asked about bins and utilization/occupancy/how full without volume/space
+    has_bin = any(b in q for b in ["bin", "bins", "location", "locations", "racks", "rack", "slot", "slots"])
+    has_util = any(u in q for u in ["utiliz", "occupan", "how full", "fill rate", "fullness"])
+    if has_bin and has_util and not any(v in q for v in ["volume", "space", "material", "quantity", "stock"]):
+        return True
+    # General bin utilization queries
+    if any(k in q for k in [
+        "show bin utilization", "overall bin utilization", "bin utilization of all plants",
+        "bin utilization for plant", "detailed bin utilization", "plant bin utilization",
+        "warehouse bin utilization", "storage location bin utilization"
+    ]):
+        return True
+    return False
+
+def sanitize_bin_utilization_response(answer: str, question: str) -> str:
+    """Post-processor that ensures volume utilization is suppressed if primary intent is bin utilization."""
+    if not answer or not is_bin_utilization_primary(question):
+        return answer
+    cleaned = answer
+    cleaned = re.sub(r"\s*\|\s*[\d,.]+%?\s*Volume Utilization[^\n]*", ".", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^\s*[-*]\s*\*\*Volume Utilization:?\*\*.*$\n?", "", cleaned, flags=re.MULTILINE | re.IGNORECASE)
+    cleaned = re.sub(r"^\s*[-*]\s*Volume Utilization:?.*$\n?", "", cleaned, flags=re.MULTILINE | re.IGNORECASE)
+    cleaned = re.sub(r"^\s*[-*]\s*\*\*Total Storage Capacity:?\*\*.*$\n?", "", cleaned, flags=re.MULTILINE | re.IGNORECASE)
+    cleaned = re.sub(r"^\s*[-*]\s*Total Storage Capacity:?.*$\n?", "", cleaned, flags=re.MULTILINE | re.IGNORECASE)
+    cleaned = re.sub(r"\s*\|\s*Occupied:\s*[\d,.]+\s*(?:FT³|ft³)[^\n]*", ".", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*with\s+(?:total\s+)?volume\s+utilization\s+of\s+.*?(?=[,;\n]|\.\s*|\.$)", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*\.\s*\.", ".", cleaned)
+    cleaned = re.sub(r"\s+\.", ".", cleaned)
+    return cleaned.strip()
+
 def format_deterministic_answer(question: str, rows: list[dict]) -> str:
+    res = _format_deterministic_answer_impl(question, rows)
+    return sanitize_bin_utilization_response(res, question)
+
+def _format_deterministic_answer_impl(question: str, rows: list[dict]) -> str:
     """Creates clear, grounded summary from database rows."""
     question = normalize_query_typos(question)
     q_lower = question.lower()
@@ -6738,38 +6814,65 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         if is_single_statement_requested:
             return single_stmt
             
-        lines = [
-            f"### 🏆 Top {top_n} Most Utilized Bins{plant_str}\n",
-            "| Rank | Bin | Plant | Bin Capacity | Occupied Volume | Utilization % |",
-            "|:---:|:---|:---:|:---:|:---:|:---:|"
-        ]
-        for idx, r in enumerate(top_rows, 1):
-            rnk = r.get("Rank", idx)
-            b = r.get("Bin", "N/A")
-            p = r.get("Plant", "-")
-            cap = r.get("Bin Capacity", "-")
-            ov = r.get("Occupied Volume", "-")
-            if isinstance(ov, (int, float)):
-                ov = f"{ov:,.2f} FT³"
-            u = r.get("Utilization %", "-")
-            lines.append(f"| {rnk} | `{b}` | {p} | {cap} | {ov} | **{u}** |")
-            
-        lines.append(f"\n### 📉 Top {bottom_n} Least Utilized Bins{plant_str}\n")
-        lines.append(f"*(Bottom {bottom_n} Least Utilized Bins)*\n")
-        lines.append("| Rank | Bin | Plant | Bin Capacity | Occupied Volume | Utilization % |")
-        lines.append("|:---:|:---|:---:|:---:|:---:|:---:|")
-        for idx, r in enumerate(bottom_rows, 1):
-            rnk = r.get("Rank", idx)
-            if not isinstance(rnk, int) or rnk > bottom_n:
-                rnk = idx
-            b = r.get("Bin", "N/A")
-            p = r.get("Plant", "-")
-            cap = r.get("Bin Capacity", "-")
-            ov = r.get("Occupied Volume", "-")
-            if isinstance(ov, (int, float)):
-                ov = f"{ov:,.2f} FT³"
-            u = r.get("Utilization %", "-")
-            lines.append(f"| {rnk} | `{b}` | {p} | {cap} | {ov} | **{u}** |")
+        is_bin_only = is_bin_utilization_primary(q_lower)
+        if is_bin_only:
+            lines = [
+                f"### 🏆 Top {top_n} Most Utilized Bins{plant_str}\n",
+                "| Rank | Bin | Plant | Utilization % |",
+                "|:---:|:---|:---:|:---:|"
+            ]
+            for idx, r in enumerate(top_rows, 1):
+                rnk = r.get("Rank", idx)
+                b = r.get("Bin", "N/A")
+                p = r.get("Plant", "-")
+                u = r.get("Utilization %", "-")
+                lines.append(f"| {rnk} | `{b}` | {p} | **{u}** |")
+                
+            lines.append(f"\n### 📉 Top {bottom_n} Least Utilized Bins{plant_str}\n")
+            lines.append(f"*(Bottom {bottom_n} Least Utilized Bins)*\n")
+            lines.append("| Rank | Bin | Plant | Utilization % |")
+            lines.append("|:---:|:---|:---:|:---:|")
+            for idx, r in enumerate(bottom_rows, 1):
+                rnk = r.get("Rank", idx)
+                if not isinstance(rnk, int) or rnk > bottom_n:
+                    rnk = idx
+                b = r.get("Bin", "N/A")
+                p = r.get("Plant", "-")
+                u = r.get("Utilization %", "-")
+                lines.append(f"| {rnk} | `{b}` | {p} | **{u}** |")
+        else:
+            lines = [
+                f"### 🏆 Top {top_n} Most Utilized Bins{plant_str}\n",
+                "| Rank | Bin | Plant | Bin Capacity | Occupied Volume | Utilization % |",
+                "|:---:|:---|:---:|:---:|:---:|"
+            ]
+            for idx, r in enumerate(top_rows, 1):
+                rnk = r.get("Rank", idx)
+                b = r.get("Bin", "N/A")
+                p = r.get("Plant", "-")
+                cap = r.get("Bin Capacity", "-")
+                ov = r.get("Occupied Volume", "-")
+                if isinstance(ov, (int, float)):
+                    ov = f"{ov:,.2f} FT³"
+                u = r.get("Utilization %", "-")
+                lines.append(f"| {rnk} | `{b}` | {p} | {cap} | {ov} | **{u}** |")
+                
+            lines.append(f"\n### 📉 Top {bottom_n} Least Utilized Bins{plant_str}\n")
+            lines.append(f"*(Bottom {bottom_n} Least Utilized Bins)*\n")
+            lines.append("| Rank | Bin | Plant | Bin Capacity | Occupied Volume | Utilization % |")
+            lines.append("|:---:|:---|:---:|:---:|:---:|:---:|")
+            for idx, r in enumerate(bottom_rows, 1):
+                rnk = r.get("Rank", idx)
+                if not isinstance(rnk, int) or rnk > bottom_n:
+                    rnk = idx
+                b = r.get("Bin", "N/A")
+                p = r.get("Plant", "-")
+                cap = r.get("Bin Capacity", "-")
+                ov = r.get("Occupied Volume", "-")
+                if isinstance(ov, (int, float)):
+                    ov = f"{ov:,.2f} FT³"
+                u = r.get("Utilization %", "-")
+                lines.append(f"| {rnk} | `{b}` | {p} | {cap} | {ov} | **{u}** |")
             
         lines.append("\n💡 *Both independent rankings are also available in the interactive data table below.*")
         return "\n".join(lines)
@@ -6800,13 +6903,17 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
                 single_stmt,
                 f"\n**Plant {p1} Top Utilized Bins ({len(p1_bins)} bins):**"
             ]
+            is_bin_only = is_bin_utilization_primary(q_lower)
             for r in p1_bins[:5]:
                 rnk = r.get("Rank", "-")
                 b = r.get("Bin", "N/A")
                 u = r.get("Utilization %", "")
                 ov = r.get("Occupied Volume", "")
                 cap = r.get("Bin Capacity", "")
-                lines.append(f"- **Rank {rnk} — Bin `{b}`**: **{u}** (Occupied: {ov} FT³, Capacity: {cap})")
+                if is_bin_only:
+                    lines.append(f"- **Rank {rnk} — Bin `{b}`**: **{u}**")
+                else:
+                    lines.append(f"- **Rank {rnk} — Bin `{b}`**: **{u}** (Occupied: {ov} FT³, Capacity: {cap})")
                 
             lines.append(f"\n**Plant {p2} Top Utilized Bins ({len(p2_bins)} bins):**")
             for r in p2_bins[:5]:
@@ -6815,7 +6922,10 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
                 u = r.get("Utilization %", "")
                 ov = r.get("Occupied Volume", "")
                 cap = r.get("Bin Capacity", "")
-                lines.append(f"- **Rank {rnk} — Bin `{b}`**: **{u}** (Occupied: {ov} FT³, Capacity: {cap})")
+                if is_bin_only:
+                    lines.append(f"- **Rank {rnk} — Bin `{b}`**: **{u}**")
+                else:
+                    lines.append(f"- **Rank {rnk} — Bin `{b}`**: **{u}** (Occupied: {ov} FT³, Capacity: {cap})")
                 
             lines.append("\n💡 *The full side-by-side comparison is loaded in the **searchable Data Table** below.*")
             return "\n".join(lines)
@@ -8060,15 +8170,23 @@ def format_deterministic_answer(question: str, rows: list[dict]) -> str:
         leader_plant = rows[0].get("Plant", "")
         lead_plant_str = f" (Plant {leader_plant})" if leader_plant else ""
         
+        is_bin_only = is_bin_utilization_primary(q_lower)
         if count == 1 or len(rows) == 1 or is_single_statement_requested:
-            single_stmt = f"Bin **`{leader}`**{lead_plant_str} has the **{label.lower()} utilization** at **{l_util}** (Capacity: {leader_cap})."
+            if is_bin_only:
+                single_stmt = f"Bin **`{leader}`**{lead_plant_str} has the **{label.lower()} utilization** at **{l_util}**."
+            else:
+                single_stmt = f"Bin **`{leader}`**{lead_plant_str} has the **{label.lower()} utilization** at **{l_util}** (Capacity: {leader_cap})."
             return single_stmt
             
         single_stmt = f"Top {count} {label} Utilized Bins{plant_str} (leader: **`{leader}`** at **{l_util}**)."
+        if is_bin_only:
+            table_note = "💡 *The complete list of bins is loaded into the **searchable, paginated Data Table** below with exact utilization percentages.*"
+        else:
+            table_note = "💡 *The complete list of bins is loaded into the **searchable, paginated Data Table** below with capacities and exact utilization percentages.*"
         return (
             f"### 📊 Top {count} {label} Utilized Bins{plant_str}\n\n"
             f"{single_stmt}\n\n"
-            f"💡 *The complete list of bins is loaded into the **searchable, paginated Data Table** below with capacities and exact utilization percentages.*"
+            f"{table_note}"
         )
 
     # 3. Specific Bins Fullness / Utilization Threshold
@@ -8218,6 +8336,18 @@ GROUP BY Plant"""
         tot_cap_vol = sum(r.get("Total Capacity Volume (FT3)", 0.0) for r in rows)
         tot_occ_vol = sum(r.get("Occupied Volume (FT3)", 0.0) for r in rows)
         
+        if is_bin_utilization_primary(q_lower):
+            tot_bins = sum(r.get("Total Bins", 0) for r in rows)
+            tot_occ = sum(r.get("Occupied Bins", 0) for r in rows)
+            lines = [
+                f"### 📊 Plant {plant_val} Detailed Storage Location Bin Utilization\n" if plant_val else "### 📊 Detailed Storage Location Bin Utilization\n",
+                f"Storage location bin utilization breakdown for **Plant {plant_val}** across **{len(rows)} storage zones**:\n" if plant_val else f"Storage location bin utilization breakdown across **{len(rows)} storage zones**:\n",
+                f"- **Highest Occupancy Zone:** SLoc `{top_zone}` at **{top_util}** ({top_occ:,} occupied bins).",
+                f"- **Total Active Bins Occupied:** **{tot_occ:,}** of **{tot_bins:,}** bins." if tot_bins > 0 else f"- **Total Active Bins Occupied:** **{tot_occ:,}** bins.",
+                f"\n💡 *The **Storage Location Bar Chart** and itemized **Data Table** below display complete occupancy metrics across all zones.*"
+            ]
+            return "\n".join(lines)
+
         lines = [
             f"### 📊 Plant {plant_val} Detailed Storage Location Breakdown\n" if plant_val else "### 📊 Detailed Storage Location Breakdown\n",
             f"Storage location utilization breakdown for **Plant {plant_val}** across **{len(rows)} storage zones**:\n" if plant_val else f"Storage location utilization breakdown across **{len(rows)} storage zones**:\n",
@@ -8247,26 +8377,44 @@ GROUP BY Plant"""
             diff_str,
             f"\n**Comparison Breakdown:**"
         ]
+        is_bin_only = is_bin_utilization_primary(q_lower)
         for r in sorted_p:
             p = r.get("Plant", "N/A")
             u = r.get("Bin Utilization %", "0%")
             occ = r.get("Occupied Volume", 0.0)
             tot = r.get("Total Capacity", 0.0)
             avail = r.get("Available Capacity", 0.0)
-            lines.append(f"- **Plant {p}**: **{u}** Utilization | Occupied: **{occ:,.1f} FT³** | Available Capacity: **{avail:,.1f} FT³** (Total: {tot:,.1f} FT³)")
+            if is_bin_only:
+                lines.append(f"- **Plant {p}**: **{u}** Bin Utilization.")
+            else:
+                lines.append(f"- **Plant {p}**: **{u}** Utilization | Occupied: **{occ:,.1f} FT³** | Available Capacity: **{avail:,.1f} FT³** (Total: {tot:,.1f} FT³)")
         lines.append(f"\n💡 *Conclusion: {diff_str}*")
         return "\n".join(lines)
 
     # 4C. Plant Bin Utilization Summary (Plant Bin Utilization Detail Template - Max 2 lines)
-    if ("Total Bins" in cols or "TotalBins" in cols) and ("Occupied Bins" in cols or "OccupiedBins" in cols) and len(rows) == 1:
+    if ("Total Bins" in cols or "TotalBins" in cols) and ("Occupied Bins" in cols or "OccupiedBins" in cols) and len(rows) == 1 and not ("BinUtilizationPct" in cols or "VolumeUtilizationPct" in cols or "BinOccupancyPct" in cols or is_volume_utilization_requested(q_lower)):
         plant_match = re.search(r"(?:plant\s*[:#-]?\s*|for\s+|in\s+|of\s+|\b)(\d{3,5})\b", q_lower)
         plant_val = plant_match.group(1) if plant_match else rows[0].get("Plant", "")
         tb = rows[0].get("Total Bins", rows[0].get("TotalBins", 0))
         ob = rows[0].get("Occupied Bins", rows[0].get("OccupiedBins", 0))
         eb = rows[0].get("Empty Bins", rows[0].get("EmptyBins", max(0, tb - ob)))
-        bpct_raw = rows[0].get("Bin Utilization %", f"{round(ob * 100.0 / tb, 1) if tb > 0 else 0}%")
-        bpct = str(bpct_raw) if "%" in str(bpct_raw) else f"{bpct_raw}%"
+        bpct_val = rows[0].get("BinUtilizationPct", rows[0].get("Bin Utilization %"))
+        if bpct_val is not None:
+            if isinstance(bpct_val, (int, float)):
+                bpct = f"{bpct_val:.2f}%"
+            elif "%" in str(bpct_val):
+                bpct = str(bpct_val)
+            else:
+                try:
+                    bpct = f"{float(bpct_val):.2f}%"
+                except Exception:
+                    bpct = f"{bpct_val}%"
+        else:
+            bpct = f"{round(ob * 100.0 / tb, 2) if tb > 0 else 0:.2f}%"
         
+        if is_bin_utilization_primary(q_lower) and not any(d in q_lower for d in ["detail", "details", "detailed", "breakdown"]):
+            return f"Plant {plant_val}: **{bpct}** Bin Utilization ({ob:,} of {tb:,} bins occupied)." if plant_val else f"Bin Utilization: **{bpct}** ({ob:,} of {tb:,} bins occupied)."
+            
         plant_prefix = f"for **Plant {plant_val}** " if plant_val else ""
         return f"The bin utilization {plant_prefix}is **{bpct}**, with **{ob:,}** of **{tb:,}** total bins currently occupied and **{eb:,}** empty bins available for put-away."
 
@@ -8284,6 +8432,24 @@ GROUP BY Plant"""
             tvol = matching_row.get("TotalBinCapacityVolume", 0.0)
             ovol = matching_row.get("OccupiedBinVolume", 0.0)
             vpct = matching_row.get("VolumeUtilizationPct", round((ovol * 100.0 / tvol), 2) if tvol > 0 else 0.0)
+
+            if is_bin_utilization_primary(q_lower):
+                bpct_str = f"{round(float(bpct), 2)}%" if isinstance(bpct, (int, float)) or (isinstance(bpct, str) and bpct.replace('.', '', 1).replace('%', '').isdigit()) else str(bpct)
+                if "%" not in bpct_str:
+                    bpct_str += "%"
+                single_statement = (
+                    f"Plant {plant_val}: **{bpct_str}** Bin Utilization ({ob:,} of {tb:,} bins occupied)."
+                )
+                if is_single_statement_requested:
+                    return single_statement
+
+                return (
+                    f"### 🏭 Plant {plant_val} Bin Utilization\n\n"
+                    f"{single_statement}\n\n"
+                    f"**Plant {plant_val} Operational Highlights:**\n"
+                    f"- **Bin Utilization:** **{bpct_str}** ({ob:,} of {tb:,} bins occupied)\n"
+                    f"- **Available Empty Bins:** **{eb:,}** bins"
+                )
 
             single_statement = (
                 f"The bin utilization in **Plant {plant_val}** is **{bpct}%** "
@@ -8311,6 +8477,28 @@ GROUP BY Plant"""
             total_cap_vol = sum(r.get("TotalBinCapacityVolume", 0.0) for r in rows)
             total_occ_vol = sum(r.get("OccupiedBinVolume", 0.0) for r in rows)
             overall_vol_pct = round((total_occ_vol * 100.0 / total_cap_vol), 2) if total_cap_vol > 0 else 0.0
+
+            if is_bin_utilization_primary(q_lower):
+                single_statement = (
+                    f"The overall warehouse bin utilization right now is **{overall_bin_pct:.2f}%** "
+                    f"({occupied_bins:,} of {total_bins:,} bins occupied, leaving {empty_bins:,} empty bins available for put-away)."
+                )
+                if is_single_statement_requested:
+                    return single_statement
+
+                lines = [
+                    f"### 📊 Warehouse Network Bin Utilization\n",
+                    single_statement,
+                    f"\n**Plant Breakdown Highlights:**"
+                ]
+                for r in rows:
+                    plant = r.get("Plant", "N/A")
+                    tb = r.get("TotalBins", 0)
+                    ob = r.get("OccupiedBins", 0)
+                    bpct = r.get("BinUtilizationPct", r.get("BinOccupancyPct", 0))
+                    lines.append(f"- **Plant {plant}**: **{bpct:.2f}%** Bin Utilization ({ob:,} of {tb:,} bins occupied).")
+
+                return "\n".join(lines)
 
             single_statement = (
                 f"The overall warehouse bin utilization right now is **{overall_bin_pct}%** "
@@ -8446,6 +8634,11 @@ async def generate_answer(question: str, sql: str, rows: list[dict]) -> str:
     # Authoritative Plant Bin Utilization Comparison & Multi-Plant Comparisons
     if "Bin Utilization %" in cols and "Occupied Volume" in cols and "Total Capacity" in cols and "Available Capacity" in cols and "Plant" in cols:
         return format_deterministic_answer(question, rows)
+
+    # Authoritative Bin Utilization queries (Rule: Bin Utilization only)
+    if is_bin_utilization_primary(q_lower):
+        return format_deterministic_answer(question, rows)
+
     is_single_metric_query = (
         len(rows) == 1 and (
             len(cols) == 1 or
@@ -8469,7 +8662,8 @@ async def generate_answer(question: str, sql: str, rows: list[dict]) -> str:
             f"DATABASE RESULT ({len(rows)} total rows):\n"
             f"{json.dumps(rows_preview, default=str)}"
         )
-        return await _call_llm(ANSWER_PROMPT_SYSTEM, user_prompt)
+        ans = await _call_llm(ANSWER_PROMPT_SYSTEM, user_prompt)
+        return sanitize_bin_utilization_response(ans, question)
     except Exception:
         return format_deterministic_answer(question, rows)
 
