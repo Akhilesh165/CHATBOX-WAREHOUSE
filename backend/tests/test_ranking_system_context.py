@@ -141,7 +141,8 @@ def test_orthogonal_metrics_distinct_leaders():
     gen_util = deterministic_warehouse_sql_generator("Which plant has the highest bin utilization?")
     rows_util, _ = execute_readonly(gen_util["sql"])
     assert rows_util[0]["Plant"] == 7228
-    assert float(str(rows_util[0]["BinUtilizationPct"]).replace("%", "")) > 75.0
+    util_val = rows_util[0].get("Bin Utilization %", rows_util[0].get("BinUtilizationPct"))
+    assert float(str(util_val).replace("%", "")) > 75.0
 
     # 3. Total Bins: Plant 1268 is #1 (15,582 bins)
     gen_bins = deterministic_warehouse_sql_generator("Rank plants by total bins")

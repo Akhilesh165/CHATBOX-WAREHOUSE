@@ -267,7 +267,8 @@ def test_multi_plant_bin_utilization_comparison_and_typo_consistency():
     assert set(plan1.get("plants", [])) == {"1268", "1258"}
     assert plan1.get("operation") == "COMPARISON"
     assert "Bin Utilization %" in res1["sql"]
-    assert "Available Capacity" in res1["sql"]
+    assert "Total Bins" in res1["sql"]
+    assert "Available Capacity" not in res1["sql"]
 
     # 2. Query with detail modifier: "show the bin utlization of plant 1268 and 1258 in detail"
     res2 = deterministic_warehouse_sql_generator("show the bin utlization of plant 1268 and 1258 in detail")
@@ -300,34 +301,32 @@ def test_multi_plant_bin_utilization_comparison_and_typo_consistency():
     mock_rows = [
         {
             "Plant": 1268,
-            "Bin Utilization %": "33.5%",
-            "BinUtilizationPct": 33.53,
-            "Occupied Volume": 332200.12,
-            "Total Capacity": 990690.12,
-            "Available Capacity": 658490.0,
+            "Occupied Bins": 10710,
+            "Empty Bins": 4872,
+            "Total Bins": 15582,
+            "Bin Utilization %": "68.73%",
         },
         {
             "Plant": 1258,
-            "Bin Utilization %": "20.3%",
-            "BinUtilizationPct": 20.29,
-            "Occupied Volume": 105011.35,
-            "Total Capacity": 517531.0,
-            "Available Capacity": 412519.65,
+            "Occupied Bins": 3762,
+            "Empty Bins": 2425,
+            "Total Bins": 6187,
+            "Bin Utilization %": "60.80%",
         },
     ]
     ans1 = format_deterministic_answer("bin utlization of plant 1268 and 1258", mock_rows)
     ans2 = format_deterministic_answer("show the bin utlization of plant 1268 and 1258 in detail", mock_rows)
     assert ans1 == ans2
-    assert "Plant Utilization Comparison" in ans1
-    assert "Plant 1268" in ans1 and "33.5%" in ans1
-    assert "Plant 1258" in ans1 and "20.3%" in ans1
+    assert "Plant Bin Utilization Comparison" in ans1 or "Plant Utilization Comparison" in ans1
+    assert "Plant 1268" in ans1 and "68.73%" in ans1
+    assert "Plant 1258" in ans1 and "60.80%" in ans1
 
 
 def test_detail_explain_graph_triggers_display_relevant_chart():
     """Verify that queries containing (detail, explain, show me with, or with graph) display relevant charts along with response."""
     mock_plants = [
-        {"Plant": 1268, "Bin Utilization %": "33.5%", "BinUtilizationPct": 33.53, "Occupied Volume": 332200.12},
-        {"Plant": 1258, "Bin Utilization %": "20.3%", "BinUtilizationPct": 20.29, "Occupied Volume": 105011.35}
+        {"Plant": 1268, "Occupied Bins": 10710, "Empty Bins": 4872, "Total Bins": 15582, "Bin Utilization %": "68.73%"},
+        {"Plant": 1258, "Occupied Bins": 3762, "Empty Bins": 2425, "Total Bins": 6187, "Bin Utilization %": "60.80%"}
     ]
 
     # 1. Plain comparison -> default table without forced chart
@@ -342,7 +341,7 @@ def test_detail_explain_graph_triggers_display_relevant_chart():
     assert opt_detail["chart_type"] == "bar"
     assert opt_detail["output_type"] == "bar_chart"
     assert opt_detail["chart_x"] == "Plant"
-    assert opt_detail["chart_y"] == "BinUtilizationPct"
+    assert opt_detail["chart_y"] in ["Bin Utilization %", "BinUtilizationPct"]
 
     # 3. 'with graph' -> shows relevant bar chart
     res_w_graph = deterministic_warehouse_sql_generator("show the bin utlization of plant 1268 and 1258 with graph")

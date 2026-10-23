@@ -287,7 +287,7 @@ def test_detail_activates_breakdown_without_button():
     rows, _ = execute_readonly(gen["sql"])
     assert len(rows) > 0
     assert "Storage Location" in rows[0]
-    assert "UtilizationPct" in rows[0]
+    assert "Bin Utilization %" in rows[0] or "UtilizationPct" in rows[0]
 
     is_valid, reason = validate_query_result(q, gen.get("query_plan"), gen["sql"], rows)
     assert is_valid is True

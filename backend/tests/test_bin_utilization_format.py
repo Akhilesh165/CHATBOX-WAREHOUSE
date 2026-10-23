@@ -150,8 +150,8 @@ def test_plant_comparison_bin_utilization_shows_bin_utilization_only():
     ]
 
     ans = format_deterministic_answer("Compare bin utilization between Plant 1258 and Plant 7228", mock_rows)
-    assert "Plant 7228" in ans and "79.1%" in ans
-    assert "Plant 1258" in ans and "20.3%" in ans
+    assert "Plant 7228" in ans and ("79.10%" in ans or "79.1%" in ans)
+    assert "Plant 1258" in ans and ("20.30%" in ans or "20.3%" in ans)
     assert "Bin Utilization" in ans
     # Must NOT show volume breakdown lines
     assert "Occupied:" not in ans
@@ -262,4 +262,50 @@ def test_bin_utilization_metrics_columns_removed_from_table():
     assert "OccupiedBinVolume" not in sql
     assert "VolumeUtilizationPct" not in sql
     assert "BinOccupancyPct" not in sql
+
+
+def test_final_acceptance_queries_canonical_bin_utilization():
+    """Rule 14 Final Acceptance Test:
+    All bin utilization queries must return the same canonical Bin Utilization value
+    (Occupied Bins / Total Bins * 100) for Plant 7228 (approx 79.06%) and Plant 1268 (approx 68.73%).
+    Never 49.1% or 33.5%.
+    """
+    from backend.app.db import execute_readonly
+
+    queries = [
+        "Show bin utilization for Plant 7228",
+        "Show the bin utilization of all plants",
+        "Compare the bin utilization of Plant 7228 and Plant 1268",
+        "Rank plants by bin utilization",
+        "Show detailed bin utilization for Plant 7228",
+        "Show bin utilization graph for Plant 7228",
+    ]
+
+    for q in queries:
+        plan = deterministic_warehouse_sql_generator(q)
+        rows, _ = execute_readonly(plan["sql"])
+        assert len(rows) > 0
+
+        # Plant 7228 verification
+        p7228 = [r for r in rows if str(r.get("Plant")) == "7228"]
+        assert len(p7228) == 1, f"Plant 7228 missing in query: {q}"
+        assert p7228[0]["Bin Utilization %"] == "79.06%"
+        assert "49.1%" not in p7228[0]["Bin Utilization %"]
+
+        # If Plant 1268 is present, check canonical 68.73%
+        p1268 = [r for r in rows if str(r.get("Plant")) == "1268"]
+        if p1268:
+            assert p1268[0]["Bin Utilization %"] == "68.73%"
+            assert "33.5%" not in p1268[0]["Bin Utilization %"]
+
+        # Volume columns must NOT be in the result table
+        cols = list(rows[0].keys())
+        assert "Occupied Volume" not in cols, f"Occupied Volume found in table for query: {q}"
+        assert "Total Capacity" not in cols, f"Total Capacity found in table for query: {q}"
+        assert "Available Capacity" not in cols, f"Available Capacity found in table for query: {q}"
+        assert "Total Capacity Volume (FT3)" not in cols
+        assert "Occupied Volume (FT3)" not in cols
+        assert "Volume Utilization" not in cols
+        assert "VolumeUtilizationPct" not in cols
+
 

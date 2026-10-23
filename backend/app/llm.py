@@ -110,11 +110,13 @@ extract_plants = extract_explicit_plants
 def extract_single_plant_safe(text: str) -> Optional[str]:
     """Extract a single plant ID safely without confusing quantities/thresholds for plants."""
     explicit = extract_explicit_plants(text)
-    if explicit:
+    if len(explicit) == 1:
         return explicit[0]
-    m = re.search(r"\b(1258|1266|1268|7228)\b", (text or "").lower())
-    if m:
-        return m.group(1)
+    if len(explicit) > 1:
+        return None
+    m = re.findall(r"\b(1258|1266|1268|7228)\b", (text or "").lower())
+    if len(m) == 1:
+        return m[0]
     return None
 
 def extract_explicit_limit(q_lower: str) -> Optional[int]:
@@ -3290,15 +3292,14 @@ ORDER BY [Available Capacity (FT3)] DESC"""
         sql_storage_prob = """SELECT TOP 1
     RANK() OVER (ORDER BY ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) DESC) AS [Rank],
     b.Plant AS [Plant],
-    ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS [BinUtilizationPct],
-    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1), '%') AS [Bin Utilization %],
     COUNT(DISTINCT i.BinNo) AS [Occupied Bins],
     (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS [Empty Bins],
-    COUNT(DISTINCT b.BinLocation) AS [Total Bins]
+    COUNT(DISTINCT b.BinLocation) AS [Total Bins],
+    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2), '%') AS [Bin Utilization %]
 FROM dbo.ZWMS_BIN_MASTER b
 LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
 GROUP BY b.Plant
-ORDER BY BinUtilizationPct DESC"""
+ORDER BY ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) DESC"""
         return {
             "sql": sql_storage_prob,
             "chart_type": "none",
@@ -3359,15 +3360,14 @@ ORDER BY [Available Capacity (FT3)] DESC"""
         sql_best_util = """SELECT TOP 1
     RANK() OVER (ORDER BY ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) DESC) AS [Rank],
     b.Plant AS [Plant],
-    ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS [BinUtilizationPct],
-    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1), '%') AS [Bin Utilization %],
     COUNT(DISTINCT i.BinNo) AS [Occupied Bins],
     (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS [Empty Bins],
-    COUNT(DISTINCT b.BinLocation) AS [Total Bins]
+    COUNT(DISTINCT b.BinLocation) AS [Total Bins],
+    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2), '%') AS [Bin Utilization %]
 FROM dbo.ZWMS_BIN_MASTER b
 LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
 GROUP BY b.Plant
-ORDER BY BinUtilizationPct DESC"""
+ORDER BY ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) DESC"""
         return {
             "sql": sql_best_util,
             "chart_type": "none",
@@ -3455,10 +3455,11 @@ ORDER BY VolumeUtilizationPct DESC"""
         bool(re.search(r"\b(?:plants?|plnts?|facility|facilities)\b", q_lower)) and
         (
             not any(b in q_lower for b in ["bins", "bin", "locations", "racks", "slots"]) or
-            any(p in q_lower for p in ["plant bin utilization", "ranking of plant", "plant utilization ranking", "by plant", "across plants", "of plant bin utilization"])
+            any(p in q_lower for p in ["plant bin utilization", "plants by bin utilization", "plants by utilization", "ranking of plant", "plant utilization ranking", "by plant", "across plants", "of plant bin utilization"]) or
+            any(k in q_lower for k in ["bin utiliz", "bin occupan"])
         ) and
         (
-            any(k in q_lower for k in ["lowest", "least", "minimum", "min", "bottom", "worst", "highest", "most", "maximum", "max", "top", "best"]) or
+            any(k in q_lower for k in ["lowest", "least", "minimum", "min", "bottom", "worst", "highest", "most", "maximum", "max", "top", "best", "rank", "ranking"]) or
             any(k in q_lower for k in ["which", "whic", "what", "wat", "compare", "across", "all", "each", "every", "ranking"])
         )
     ) or (
@@ -4121,24 +4122,22 @@ ORDER BY [Unique Materials Count] DESC"""
             metrics = ["unique_materials", "inventory_quantity", "occupied_bins"]
 
         # 3. Bin Utilization
-        elif any(k in q_lower for k in ["bin utilization", "utilization", "how full", "fill rate", "space utilization", "occupancy rate", "capacity utilization"]) or (
-            state.get("comparison_subject") == "bin_utilization" or state.get("metric") in ["BIN_UTILIZATION", "bin_utilization", "utilization"]
+        elif (any(k in q_lower for k in ["bin utilization", "utilization", "how full", "fill rate", "occupancy rate"]) and not is_volume_utilization_requested(q_lower)) or (
+            state.get("comparison_subject") == "bin_utilization" or state.get("metric") in ["BIN_UTILIZATION", "bin_utilization"]
         ):
             sql_comp = f"""SELECT 
     b.Plant AS [Plant], 
-    CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(SUM(b.Volume), 0), 1), '%') AS [Bin Utilization %],
-    ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(SUM(b.Volume), 0), 2) AS [BinUtilizationPct],
-    ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Occupied Volume], 
-    ROUND(SUM(b.Volume), 2) AS [Total Capacity],
-    ROUND(SUM(b.Volume) - COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Available Capacity]
+    COUNT(DISTINCT i.BinNo) AS [Occupied Bins],
+    (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS [Empty Bins],
+    COUNT(DISTINCT b.BinLocation) AS [Total Bins],
+    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2), '%') AS [Bin Utilization %]
 FROM dbo.ZWMS_BIN_MASTER b 
 LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant 
-LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
 WHERE b.Plant IN ({plants_in_str})
 GROUP BY b.Plant
-ORDER BY BinUtilizationPct DESC"""
+ORDER BY ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) DESC"""
             comp_subject = "bin_utilization"
-            metrics = ["bin_utilization", "occupied_volume", "total_capacity", "available_capacity"]
+            metrics = ["occupied_bins", "empty_bins", "total_bins", "bin_utilization"]
 
         # 4. Empty Bins
         elif any(k in q_lower for k in ["empty bin", "empty bins", "vacant", "free bin", "unoccupied", "their empty bins"]):
@@ -4161,7 +4160,7 @@ ORDER BY [Empty Bins] DESC"""
     b.Plant,
     COUNT(DISTINCT i.BinNo) AS [Occupied Bins],
     COUNT(DISTINCT b.BinLocation) AS [Total Bins],
-    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1), '%') AS [Bin Utilization %]
+    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2), '%') AS [Bin Utilization %]
 FROM dbo.ZWMS_BIN_MASTER b
 LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
 WHERE b.Plant IN ({plants_in_str})
@@ -4177,7 +4176,7 @@ ORDER BY [Occupied Bins] DESC"""
     COUNT(DISTINCT b.BinLocation) AS [Total Bins],
     COUNT(DISTINCT i.BinNo) AS [Occupied Bins],
     (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS [Empty Bins],
-    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1), '%') AS [Occupancy Rate]
+    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2), '%') AS [Occupancy Rate]
 FROM dbo.ZWMS_BIN_MASTER b
 LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
 WHERE b.Plant IN ({plants_in_str})
@@ -4267,8 +4266,7 @@ ORDER BY [Total Inventory Quantity] DESC"""
     COUNT(DISTINCT b.BinLocation) AS [Total Bins],
     COUNT(DISTINCT i_bin.BinNo) AS [Occupied Bins],
     (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i_bin.BinNo)) AS [Empty Bins],
-    CONCAT(ROUND(COUNT(DISTINCT i_bin.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1), '%') AS [Bin Utilization %],
-    ROUND(COUNT(DISTINCT i_bin.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS [UtilizationPct]
+    CONCAT(ROUND(COUNT(DISTINCT i_bin.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2), '%') AS [Bin Utilization %]
 FROM dbo.ZWMS_BIN_MASTER b
 LEFT JOIN dbo.ZWMS_INVENTORY i_bin ON b.BinLocation = i_bin.BinNo AND b.Plant = i_bin.Plant
 LEFT JOIN (
@@ -5583,14 +5581,29 @@ ORDER BY [Total Capacity (FT3)] DESC"""
         )
         if (state.get("topic") == "plant_bin_utilization_detailed_analysis" or (is_detail_explain_query and plant_cand)) and plant_cand:
             plant_val = plant_cand
-            sql_detailed = f"""SELECT 
+            if is_bin_utilization_primary(q_lower):
+                sql_detailed = f"""SELECT 
     b.Plant AS [Plant], 
     COALESCE(b.StorageLocation, 'Unassigned') AS [Storage Location], 
     COUNT(DISTINCT b.BinLocation) AS [Total Bins], 
     COUNT(DISTINCT i.BinNo) AS [Occupied Bins], 
     (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS [Empty Bins], 
-    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1), '%') AS [Bin Utilization %], 
-    ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1) AS [UtilizationPct], 
+    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2), '%') AS [Bin Utilization %] 
+FROM dbo.ZWMS_BIN_MASTER b 
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant AND b.StorageLocation = i.StorageLocation 
+WHERE b.Plant = '{plant_val}' 
+GROUP BY b.Plant, b.StorageLocation 
+ORDER BY COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0) DESC"""
+                chart_y = "Bin Utilization %"
+            else:
+                sql_detailed = f"""SELECT 
+    b.Plant AS [Plant], 
+    COALESCE(b.StorageLocation, 'Unassigned') AS [Storage Location], 
+    COUNT(DISTINCT b.BinLocation) AS [Total Bins], 
+    COUNT(DISTINCT i.BinNo) AS [Occupied Bins], 
+    (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS [Empty Bins], 
+    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2), '%') AS [Bin Utilization %], 
+    ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS [UtilizationPct], 
     ROUND(SUM(b.Volume), 2) AS [Total Capacity Volume (FT3)], 
     ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS [Occupied Volume (FT3)] 
 FROM dbo.ZWMS_BIN_MASTER b 
@@ -5598,13 +5611,14 @@ LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant 
 WHERE b.Plant = '{plant_val}' 
 GROUP BY b.Plant, b.StorageLocation 
 ORDER BY COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0) DESC"""
+                chart_y = "UtilizationPct"
 
             return {
                 "sql": sql_detailed,
                 "chart_type": "bar",
                 "chart_title": f"Plant {plant_val} Bin Utilization by Storage Location (%)",
                 "chart_x": "Storage Location",
-                "chart_y": "UtilizationPct",
+                "chart_y": chart_y,
                 "intent": "plant_bin_utilization_detailed_analysis",
                 "metric": "storage_location_utilization",
                 "filters": {"plant": plant_val, "granularity": "storage_location"},
@@ -5688,19 +5702,20 @@ GROUP BY b.Plant"""
             ])
         )
         is_highest_util_req = (
-            (has_plant_word and any(k in q_lower for k in ["highest", "most", "maximum", "max", "top", "best", "fullest"]) and any(k in q_lower for k in ["utiliz", "occupan", "capacity", "fill", "full"])) or
+            (has_plant_word and any(k in q_lower for k in ["highest", "most", "maximum", "max", "top", "best", "fullest", "rank", "ranking"]) and any(k in q_lower for k in ["utiliz", "occupan", "capacity", "fill", "full"])) or
             any(k in q_lower for k in [
                 "highest bin utilization", "most bin utilization", "maximum bin utilization",
                 "top bin utilization", "most utilized plant", "highest utilized plant", "maximum utilization",
                 "which plant has the highest", "which plant has highest", "whic plant has highest", "whic plant has the highest",
-                "plant with the highest", "most full plant"
+                "plant with the highest", "most full plant", "rank plants by bin utilization", "rank all plants by bin utilization",
+                "ranking of plants by bin utilization", "plants by bin utilization"
             ])
         )
 
         if (is_lowest_util_req or is_highest_util_req) and not plant_cand:
             order_dir = "ASC" if is_lowest_util_req else "DESC"
             rank_label = "Lowest" if is_lowest_util_req else "Highest"
-            has_ranking_keyword = any(d in q_lower for d in ["ranking", "table", "all plants", "compare", "list", "breakdown", "detailed", "detail form", "all"])
+            has_ranking_keyword = any(d in q_lower for d in ["ranking", "table", "all plants", "compare", "list", "breakdown", "detailed", "detail form", "all", "rank"])
             is_scalar_extreme = (
                 is_single_statement_requested or
                 (not is_detail_requested and not has_ranking_keyword and any(k in q_lower for k in [
@@ -5716,15 +5731,14 @@ GROUP BY b.Plant"""
             sql_extreme_util = f"""SELECT {top_clause}
     RANK() OVER (ORDER BY ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) {order_dir}) AS [Rank],
     b.Plant AS [Plant],
-    ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS [BinUtilizationPct],
-    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 1), '%') AS [Bin Utilization %],
     COUNT(DISTINCT i.BinNo) AS [Occupied Bins],
     (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS [Empty Bins],
-    COUNT(DISTINCT b.BinLocation) AS [Total Bins]
+    COUNT(DISTINCT b.BinLocation) AS [Total Bins],
+    CONCAT(ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2), '%') AS [Bin Utilization %]
 FROM dbo.ZWMS_BIN_MASTER b
 LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
 GROUP BY b.Plant
-ORDER BY BinUtilizationPct {order_dir}"""
+ORDER BY ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) {order_dir}"""
 
             intent_name = "lowest_bin_utilization" if is_lowest_util_req else "highest_bin_utilization"
             is_single_scalar = (is_single_statement_requested or limit_n == 1)
@@ -5733,7 +5747,7 @@ ORDER BY BinUtilizationPct {order_dir}"""
                 "query_plan": {
                     "intent": "RANKING",
                     "rank_direction": order_dir,
-                    "rank_metric": "BinUtilizationPct",
+                    "rank_metric": "Bin Utilization %",
                     "rank_entity": "Plant",
                     "limit": limit_n,
                     "rank_scope": {}
@@ -5741,7 +5755,7 @@ ORDER BY BinUtilizationPct {order_dir}"""
                 "chart_type": "bar" if is_explicit_chart else "none",
                 "chart_title": f"{rank_label} Bin Utilization by Plant",
                 "chart_x": "Plant" if is_explicit_chart else None,
-                "chart_y": "BinUtilizationPct" if is_explicit_chart else None,
+                "chart_y": "Bin Utilization %" if is_explicit_chart else None,
                 "intent": intent_name,
                 "metric": "bin_utilization",
                 "filters": {},
@@ -8109,29 +8123,42 @@ def _format_deterministic_answer_impl(question: str, rows: list[dict]) -> str:
         )
 
     # 2B. Lowest / Highest Plant Bin Utilization & Extremes
-    if ("BinUtilizationPct" in cols or "Bin Utilization %" in cols) and "Plant" in cols and any(k in q_lower for k in ["lowest", "least", "highest", "most", "maximum", "minimum", "top plant", "best plant", "worst plant", "least utilized", "most utilized"]):
+    if ("BinUtilizationPct" in cols or "Bin Utilization %" in cols) and "Plant" in cols and any(k in q_lower for k in ["lowest", "least", "highest", "most", "maximum", "minimum", "top plant", "best plant", "worst plant", "least utilized", "most utilized", "rank", "ranking"]):
         is_least = any(k in q_lower for k in ["lowest", "least", "minimum", "worst", "bottom"])
-        label = "Lowest" if is_least else "Highest"
+        is_rank_only = any(k in q_lower for k in ["rank", "ranking"]) and not any(k in q_lower for k in ["lowest", "least", "minimum", "worst", "bottom", "highest", "most", "maximum"])
+        label = "Lowest" if is_least else ("Highest" if not is_rank_only else "Plant")
         leader_row = rows[0]
         lead_plant = leader_row.get("Plant", "N/A")
-        lead_util = leader_row.get("Bin Utilization %", f"{leader_row.get('BinUtilizationPct', 0)}%")
+        u_raw = leader_row.get("Bin Utilization %", leader_row.get("BinUtilizationPct", 0))
+        try:
+            lead_util = f"{float(str(u_raw).replace('%', '')):.2f}%"
+        except Exception:
+            lead_util = f"{u_raw}%"
         lead_occ = leader_row.get("Occupied Bins", 0)
         lead_tot = leader_row.get("Total Bins", 0)
         lead_emp = leader_row.get("Empty Bins", max(0, lead_tot - lead_occ))
 
-        single_stmt = f"**Plant {lead_plant}** has the **{label.lower()} bin utilization** across all facilities at **{lead_util}** ({lead_occ:,} occupied of {lead_tot:,} total bins, with {lead_emp:,} empty bins)."
+        if is_rank_only:
+            single_stmt = f"**Plant {lead_plant}** ranks first in **bin utilization** across all facilities at **{lead_util}** ({lead_occ:,} occupied of {lead_tot:,} total bins, with {lead_emp:,} empty bins)."
+        else:
+            single_stmt = f"**Plant {lead_plant}** has the **{label.lower()} bin utilization** across all facilities at **{lead_util}** ({lead_occ:,} occupied of {lead_tot:,} total bins, with {lead_emp:,} empty bins)."
         if is_single_statement_requested or len(rows) == 1:
             return single_stmt
 
+        header_title = f"### 🏭 {label} Bin Utilization by Plant\n" if not is_rank_only else "### 🏭 Plant Bin Utilization Ranking\n"
         lines = [
-            f"### 🏭 {label} Bin Utilization by Plant\n",
+            header_title,
             single_stmt,
             f"\n**Plant Utilization Ranking:**"
         ]
         for r in rows:
             rnk = r.get("Rank", "-")
             p = r.get("Plant", "N/A")
-            u = r.get("Bin Utilization %", f"{r.get('BinUtilizationPct', 0)}%")
+            u_item_raw = r.get("Bin Utilization %", r.get("BinUtilizationPct", 0))
+            try:
+                u = f"{float(str(u_item_raw).replace('%', '')):.2f}%"
+            except Exception:
+                u = f"{u_item_raw}%"
             ob = r.get("Occupied Bins", 0)
             tb = r.get("Total Bins", 0)
             lines.append(f"- **Rank {rnk} — Plant {p}**: **{u}** ({ob:,} / {tb:,} bins occupied)")
@@ -8392,34 +8419,58 @@ GROUP BY Plant"""
         return "\n".join(lines)
 
     # 4B_comp. Plant Utilization Comparison (e.g. Compare Plant 1258 and 7228)
-    if "Bin Utilization %" in cols and "Occupied Volume" in cols and "Total Capacity" in cols and "Available Capacity" in cols and "Plant" in cols:
-        sorted_p = sorted(rows, key=lambda x: float(str(x.get("BinUtilizationPct", 0)).replace("%", "")), reverse=True)
+    if "Bin Utilization %" in cols and "Plant" in cols and (
+        ("Occupied Volume" in cols and "Total Capacity" in cols and "Available Capacity" in cols) or
+        ("Occupied Bins" in cols or "OccupiedBins" in cols or "Total Bins" in cols or "TotalBins" in cols)
+    ) and len(rows) > 1 and (
+        any(k in q_lower for k in ["compare", "comparison", "difference", "versus", " vs ", "higher", "lower", "better", "more"]) or
+        len(re.findall(r"\b(1258|1266|1268|7228)\b", q_lower)) >= 2
+    ):
+        sorted_p = sorted(rows, key=lambda x: float(str(x.get("Bin Utilization %", x.get("BinUtilizationPct", 0))).replace("%", "")), reverse=True)
         top_p = sorted_p[0]
         bot_p = sorted_p[-1] if len(sorted_p) > 1 else sorted_p[0]
         top_name = top_p.get("Plant", "N/A")
-        top_pct = top_p.get("Bin Utilization %", "0%")
+        top_u_raw = top_p.get("Bin Utilization %", top_p.get("BinUtilizationPct", 0))
+        try:
+            top_pct = f"{float(str(top_u_raw).replace('%', '')):.2f}%"
+        except Exception:
+            top_pct = f"{top_u_raw}%"
         bot_name = bot_p.get("Plant", "N/A")
-        bot_pct = bot_p.get("Bin Utilization %", "0%")
+        bot_u_raw = bot_p.get("Bin Utilization %", bot_p.get("BinUtilizationPct", 0))
+        try:
+            bot_pct = f"{float(str(bot_u_raw).replace('%', '')):.2f}%"
+        except Exception:
+            bot_pct = f"{bot_u_raw}%"
         
         diff_str = f"**Plant {top_name}** has higher bin utilization at **{top_pct}**, compared to **Plant {bot_name}** at **{bot_pct}**." if top_name != bot_name else f"**Plant {top_name}** has bin utilization of **{top_pct}**."
         
         if is_single_statement_requested:
             return diff_str
             
+        header_title = f"### 🏭 Plant Bin Utilization Comparison\n" if is_bin_utilization_primary(q_lower) or not ("Occupied Volume" in cols and "Total Capacity" in cols) else f"### 🏭 Plant Utilization Comparison\n"
         lines = [
-            f"### 🏭 Plant Utilization Comparison\n",
+            header_title,
             diff_str,
             f"\n**Comparison Breakdown:**"
         ]
-        is_bin_only = is_bin_utilization_primary(q_lower)
+        is_bin_only = is_bin_utilization_primary(q_lower) or not ("Occupied Volume" in cols and "Total Capacity" in cols)
         for r in sorted_p:
             p = r.get("Plant", "N/A")
-            u = r.get("Bin Utilization %", "0%")
+            u_item_raw = r.get("Bin Utilization %", r.get("BinUtilizationPct", 0))
+            try:
+                u = f"{float(str(u_item_raw).replace('%', '')):.2f}%"
+            except Exception:
+                u = f"{u_item_raw}%"
             occ = r.get("Occupied Volume", 0.0)
             tot = r.get("Total Capacity", 0.0)
             avail = r.get("Available Capacity", 0.0)
             if is_bin_only:
-                lines.append(f"- **Plant {p}**: **{u}** Bin Utilization.")
+                ob = r.get("Occupied Bins", r.get("OccupiedBins"))
+                tb = r.get("Total Bins", r.get("TotalBins"))
+                if ob is not None and tb is not None:
+                    lines.append(f"- **Plant {p}**: **{u}** Bin Utilization ({ob:,} of {tb:,} bins occupied).")
+                else:
+                    lines.append(f"- **Plant {p}**: **{u}** Bin Utilization.")
             else:
                 lines.append(f"- **Plant {p}**: **{u}** Utilization | Occupied: **{occ:,.1f} FT³** | Available Capacity: **{avail:,.1f} FT³** (Total: {tot:,.1f} FT³)")
         lines.append(f"\n💡 *Conclusion: {diff_str}*")

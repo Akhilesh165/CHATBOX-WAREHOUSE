@@ -92,7 +92,7 @@ class TestMasterContextGoldenRules:
         ans = format_deterministic_answer(q, mock_rows)
         assert "**Plant 7228**" in ans
         assert "highest bin utilization" in ans
-        assert "78.5%" in ans
+        assert ("78.50%" in ans or "78.5%" in ans)
         # Must be single crisp statement, not full ranking list
         assert "- **Rank" not in ans
 
@@ -117,7 +117,7 @@ class TestMasterContextGoldenRules:
         ans = format_deterministic_answer(q, mock_rows)
         assert "**Plant 1266**" in ans
         assert "lowest bin utilization" in ans
-        assert "42.1%" in ans
+        assert ("42.10%" in ans or "42.1%" in ans)
 
     def test_count_vs_list_queries(self):
         """'How many' returns scalar count; 'List' returns structured data table."""

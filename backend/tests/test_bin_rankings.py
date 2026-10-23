@@ -89,7 +89,7 @@ def test_lowest_bin_utilization_detailed_ranking():
     rows, _ = execute_readonly(gen["sql"])
     assert len(rows) == 4
     assert rows[0]["Plant"] == 1258
-    assert "BinUtilizationPct" in rows[0]
+    assert "Bin Utilization %" in rows[0] or "BinUtilizationPct" in rows[0]
 
     ans = format_deterministic_answer(q, rows)
     assert "Plant Utilization Ranking" in ans

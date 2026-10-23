@@ -38,13 +38,13 @@ def test_multi_plant_ranking_preserves_scope():
     assert "b.Plant IN ('1258', '1268')" in gen["sql"]
 
 
-def test_bin_utilization_comparison_uses_physical_volume():
+def test_bin_utilization_comparison_uses_canonical_bins():
     q = "Compare bin utilization of Plant 1258 and Plant 1268"
     gen = deterministic_warehouse_sql_generator(q)
     assert gen["query_plan"]["comparison_subject"] == "bin_utilization"
-    assert "SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0))" in gen["sql"]
-    assert "SUM(b.Volume)" in gen["sql"]
-    assert "COUNT(DISTINCT i.BinNo) * 100.0" not in gen["sql"]
+    assert "COUNT(DISTINCT i.BinNo) * 100.0" in gen["sql"]
+    assert "COALESCE(m.Volume, 0)" not in gen["sql"]
+    assert "SUM(b.Volume)" not in gen["sql"]
 
 
 def test_invalid_plant_in_multi_scope_is_not_silently_dropped():
