@@ -344,7 +344,7 @@ def validate_query_result(question: str, query_plan: dict | None, sql: str, rows
         # If the query asks for utilization range, the table must display calculated Utilization %,
         # not on bin capacity, occupied volume, raw database field, or uncalculated percentage.
         if field == "BinUtilizationPct" or "utiliz" in q_lower or "occupan" in q_lower:
-            has_util_display = any(c in cols for c in ["Utilization %", "UtilizationPct", "Bin Utilization %", "BinOccupancyPct"])
+            has_util_display = any(c in cols for c in ["Utilization %", "UtilizationPct", "Bin Utilization %", "BinUtilizationPct", "BinOccupancyPct"])
             if not has_util_display:
                 return False, "DISPLAYED-METRIC CONSISTENCY VIOLATION: Query requested utilization range, but table does not display calculated 'Utilization %' column."
         
@@ -380,7 +380,7 @@ def validate_and_filter_range_rows(rows: list[dict], range_filters: list[dict]) 
         # Identify candidate column matching the filtered metric
         candidate_cols = []
         if field == "BinUtilizationPct" or "utiliz" in field.lower() or "occupan" in field.lower():
-            candidate_cols = [c for c in ["UtilizationPct", "Utilization %", "Bin Utilization %", "BinOccupancyPct", "BinUtilization"] if c in filtered_rows[0]]
+            candidate_cols = [c for c in ["UtilizationPct", "Utilization %", "Bin Utilization %", "BinUtilizationPct", "BinOccupancyPct", "BinUtilization"] if c in filtered_rows[0]]
         elif field in ["UnrestrictedQty", "Quantity", "TotalQuantity"]:
             candidate_cols = [c for c in ["Total Stock Qty", "UnrestrictedQty", "Quantity", "TotalQuantity", "Inventory Qty"] if c in filtered_rows[0]]
         elif field in ["TotalCapacity", "BIN_CAPACITY", "BinCapacity"]:

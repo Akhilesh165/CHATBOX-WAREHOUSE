@@ -48,7 +48,7 @@ def test_chat_utilization_and_occupancy_query():
         assert "77.45%" in data["answer"] or "Volume Utilization" in data["answer"]
         assert len(data["data"]) > 0
         assert "VolumeUtilizationPct" in data["data"][0]
-        assert "BinOccupancyPct" in data["data"][0]
+        assert "BinUtilizationPct" in data["data"][0]
 
 
 def test_chat_empty_bins_query():
