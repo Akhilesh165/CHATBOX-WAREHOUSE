@@ -3396,25 +3396,37 @@ ORDER BY BinUtilizationPct DESC"""
         not plant_cand and not raw_bins and not is_mat_entity
     )
     if is_warehouse_fullness_summary:
-        sql_wf = """SELECT 
+        if is_bin_utilization_primary(q_lower):
+            sql_wf = """SELECT 
+    b.Plant, 
+    COUNT(DISTINCT b.BinLocation) AS TotalBins, 
+    COUNT(DISTINCT i.BinNo) AS OccupiedBins, 
+    (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS EmptyBins 
+FROM dbo.ZWMS_BIN_MASTER b 
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant 
+GROUP BY b.Plant 
+ORDER BY OccupiedBins DESC"""
+            chart_y = "OccupiedBins"
+        else:
+            sql_wf = """SELECT 
     b.Plant, 
     COUNT(DISTINCT b.BinLocation) AS TotalBins, 
     COUNT(DISTINCT i.BinNo) AS OccupiedBins, 
     (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS EmptyBins, 
-    ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS BinUtilizationPct, 
     ROUND(SUM(b.Volume), 2) AS TotalBinCapacityVolume, 
     ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS OccupiedBinVolume, 
     ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END) * 100.0 / NULLIF(SUM(b.Volume), 0), 2) AS VolumeUtilizationPct 
 FROM dbo.ZWMS_BIN_MASTER b 
 LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant 
 GROUP BY b.Plant 
-ORDER BY BinUtilizationPct DESC"""
+ORDER BY VolumeUtilizationPct DESC"""
+            chart_y = "VolumeUtilizationPct"
         return {
             "sql": sql_wf,
             "chart_type": "none" if is_single_statement_requested else "bar",
             "chart_title": "Warehouse Network Bin Utilization Summary",
             "chart_x": None if is_single_statement_requested else "Plant",
-            "chart_y": None if is_single_statement_requested else "BinUtilizationPct",
+            "chart_y": None if is_single_statement_requested else chart_y,
             "intent": "bin_utilization",
             "metric": "warehouse_utilization",
             "filters": {},
@@ -5737,13 +5749,22 @@ ORDER BY BinUtilizationPct {order_dir}"""
             "limit": None,
             "response_mode": "GRAPH" if is_explicit_chart else "SUMMARY"
         }
+        if is_bin_utilization_primary(q_lower):
+            sql_bin_util = f"SELECT b.Plant, COUNT(DISTINCT b.BinLocation) AS TotalBins, COUNT(DISTINCT i.BinNo) AS OccupiedBins, (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS EmptyBins FROM dbo.ZWMS_BIN_MASTER b LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant{plant_filter} GROUP BY b.Plant ORDER BY OccupiedBins DESC"
+            chart_y = "OccupiedBins"
+            chart_title = "Warehouse Occupied Bins by Plant"
+        else:
+            sql_bin_util = f"SELECT b.Plant, COUNT(DISTINCT b.BinLocation) AS TotalBins, COUNT(DISTINCT i.BinNo) AS OccupiedBins, (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS EmptyBins, ROUND(SUM(b.Volume), 2) AS TotalBinCapacityVolume, ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS OccupiedBinVolume, ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END) * 100.0 / NULLIF(SUM(b.Volume), 0), 2) AS VolumeUtilizationPct FROM dbo.ZWMS_BIN_MASTER b LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant{plant_filter} GROUP BY b.Plant ORDER BY VolumeUtilizationPct DESC"
+            chart_y = "VolumeUtilizationPct"
+            chart_title = "Warehouse Volume Utilization by Plant (%)"
+
         return {
-            "sql": f"SELECT b.Plant, COUNT(DISTINCT b.BinLocation) AS TotalBins, COUNT(DISTINCT i.BinNo) AS OccupiedBins, (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS EmptyBins, ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS BinUtilizationPct, ROUND(SUM(b.Volume), 2) AS TotalBinCapacityVolume, ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END), 2) AS OccupiedBinVolume, ROUND(SUM(CASE WHEN i.BinNo IS NOT NULL THEN b.Volume ELSE 0 END) * 100.0 / NULLIF(SUM(b.Volume), 0), 2) AS VolumeUtilizationPct FROM dbo.ZWMS_BIN_MASTER b LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant{plant_filter} GROUP BY b.Plant ORDER BY BinUtilizationPct DESC",
+            "sql": sql_bin_util,
             "query_plan": query_plan,
             "chart_type": "none" if is_single_statement_requested else "bar",
-            "chart_title": "Warehouse Bin Utilization by Plant (%)",
+            "chart_title": chart_title,
             "chart_x": None if is_single_statement_requested else "Plant",
-            "chart_y": None if is_single_statement_requested else "BinUtilizationPct",
+            "chart_y": None if is_single_statement_requested else chart_y,
             "intent": "bin_utilization",
             "metric": "warehouse_utilization",
             "filters": filters,
@@ -8418,16 +8439,20 @@ GROUP BY Plant"""
         return f"The bin utilization {plant_prefix}is **{bpct}**, with **{ob:,}** of **{tb:,}** total bins currently occupied and **{eb:,}** empty bins available for put-away."
 
     # 5. Bin Utilization and Occupancy Percentage
-    if "BinUtilizationPct" in cols or "VolumeUtilizationPct" in cols or "BinOccupancyPct" in cols:
+    if "BinUtilizationPct" in cols or "VolumeUtilizationPct" in cols or "BinOccupancyPct" in cols or (("TotalBins" in cols or "Total Bins" in cols) and ("OccupiedBins" in cols or "Occupied Bins" in cols) and len(rows) > 1):
 
         plant_val = extract_single_plant_safe(q_lower) or (rows[0].get("Plant") if len(rows) == 1 and rows[0].get("Plant") and str(rows[0].get("Plant")) != "All" else None)
         
         if plant_val:
             matching_row = next((r for r in rows if str(r.get("Plant")) == str(plant_val)), rows[0])
-            tb = matching_row.get("TotalBins", 0)
-            ob = matching_row.get("OccupiedBins", 0)
-            eb = matching_row.get("EmptyBins", max(0, tb - ob))
-            bpct = matching_row.get("BinUtilizationPct", matching_row.get("BinOccupancyPct", round((ob * 100.0 / tb), 2) if tb > 0 else 0.0))
+            tb = matching_row.get("TotalBins", matching_row.get("Total Bins", 0))
+            ob = matching_row.get("OccupiedBins", matching_row.get("Occupied Bins", 0))
+            eb = matching_row.get("EmptyBins", matching_row.get("Empty Bins", max(0, tb - ob)))
+            bpct_val = matching_row.get("BinUtilizationPct", matching_row.get("BinOccupancyPct"))
+            if bpct_val is not None:
+                bpct = float(str(bpct_val).replace("%", ""))
+            else:
+                bpct = round((ob * 100.0 / tb), 2) if tb > 0 else 0.0
             tvol = matching_row.get("TotalBinCapacityVolume", 0.0)
             ovol = matching_row.get("OccupiedBinVolume", 0.0)
             vpct = matching_row.get("VolumeUtilizationPct", round((ovol * 100.0 / tvol), 2) if tvol > 0 else 0.0)
@@ -8492,9 +8517,13 @@ GROUP BY Plant"""
                 ]
                 for r in rows:
                     plant = r.get("Plant", "N/A")
-                    tb = r.get("TotalBins", 0)
-                    ob = r.get("OccupiedBins", 0)
-                    bpct = r.get("BinUtilizationPct", r.get("BinOccupancyPct", 0))
+                    tb = r.get("TotalBins", r.get("Total Bins", 0))
+                    ob = r.get("OccupiedBins", r.get("Occupied Bins", 0))
+                    bpct_val = r.get("BinUtilizationPct", r.get("BinOccupancyPct"))
+                    if bpct_val is not None:
+                        bpct = float(str(bpct_val).replace("%", ""))
+                    else:
+                        bpct = round((ob * 100.0 / tb), 2) if tb > 0 else 0.0
                     lines.append(f"- **Plant {plant}**: **{bpct:.2f}%** Bin Utilization ({ob:,} of {tb:,} bins occupied).")
 
                 return "\n".join(lines)
@@ -8517,7 +8546,7 @@ GROUP BY Plant"""
                 plant = r.get("Plant", "N/A")
                 tb = r.get("TotalBins", 0)
                 ob = r.get("OccupiedBins", 0)
-                bpct = r.get("BinUtilizationPct", r.get("BinOccupancyPct", 0))
+                bpct = r.get("BinUtilizationPct", r.get("BinOccupancyPct", round((ob * 100.0 / tb), 2) if tb > 0 else 0))
                 tvol = r.get("TotalBinCapacityVolume", 0)
                 ovol = r.get("OccupiedBinVolume", 0)
                 vpct = r.get("VolumeUtilizationPct", 0)
