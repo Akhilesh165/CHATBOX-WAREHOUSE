@@ -181,8 +181,8 @@ def test_capacity_comparison_between_plants():
 
     ans = format_deterministic_answer("Compare capacity between Plant 1258 and Plant 7228", rows)
     assert "Capacity Comparison" in ans or "Capacity" in ans
-    assert "Plant 1258" in ans
-    assert "Plant 7228" in ans
+    assert ("Plant 1258" in ans or "1258" in ans)
+    assert ("Plant 7228" in ans or "7228" in ans)
 
 
 def test_capacity_range_filtering():

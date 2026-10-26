@@ -102,8 +102,8 @@ def test_comparison_not_shortcut_to_bin_utilization():
     assert plants_in_result == {"1258", "7228"}
 
     ans = format_deterministic_answer(q, rows)
-    assert "Plant 1258" in ans
-    assert "Plant 7228" in ans
+    assert ans.startswith("| Plant |")
+    assert "1258" in ans and "7228" in ans
 
 
 def test_comparison_total_inventory():
@@ -117,9 +117,9 @@ def test_comparison_total_inventory():
     assert "Total Inventory Quantity" in rows[0]
 
     ans = format_deterministic_answer(q, rows)
-    assert "Total Inventory Comparison" in ans
-    assert "Plant 1258" in ans
-    assert "Plant 7228" in ans
+    assert ans.startswith("| Plant |")
+    assert "Total Inventory Quantity" in ans
+    assert "1258" in ans and "7228" in ans
 
 
 def test_comparison_unique_materials():
@@ -133,9 +133,9 @@ def test_comparison_unique_materials():
     assert "Unique Materials Count" in rows[0]
 
     ans = format_deterministic_answer(q, rows)
-    assert "Unique Materials Comparison" in ans
-    assert "Plant 1258" in ans
-    assert "Plant 7228" in ans
+    assert ans.startswith("| Plant |")
+    assert "Unique Materials Count" in ans
+    assert "1258" in ans and "7228" in ans
 
 
 def test_comparison_empty_bins():
@@ -149,9 +149,9 @@ def test_comparison_empty_bins():
     assert "Empty Bins" in rows[0]
 
     ans = format_deterministic_answer(q, rows)
-    assert "Empty Bins Comparison" in ans
-    assert "Plant 1258" in ans
-    assert "Plant 7228" in ans
+    assert ans.startswith("| Plant |")
+    assert "Empty Bins" in ans
+    assert "1258" in ans and "7228" in ans
 
 
 def test_comparison_bin_utilization():
@@ -176,7 +176,9 @@ def test_comparison_storage_locations():
     assert "Storage Locations Count" in rows[0]
 
     ans = format_deterministic_answer(q, rows)
-    assert "Storage Locations Comparison" in ans
+    assert ans.startswith("| Plant |")
+    assert "Storage Locations Count" in ans
+    assert "1258" in ans and "7228" in ans
 
 
 # =========================================================================

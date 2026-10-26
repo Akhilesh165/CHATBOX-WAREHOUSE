@@ -150,8 +150,8 @@ def test_plant_comparison_bin_utilization_shows_bin_utilization_only():
     ]
 
     ans = format_deterministic_answer("Compare bin utilization between Plant 1258 and Plant 7228", mock_rows)
-    assert "Plant 7228" in ans and ("79.10%" in ans or "79.1%" in ans)
-    assert "Plant 1258" in ans and ("20.30%" in ans or "20.3%" in ans)
+    assert ("Plant 7228" in ans or "7228" in ans) and ("79.10%" in ans or "79.1%" in ans)
+    assert ("Plant 1258" in ans or "1258" in ans) and ("20.30%" in ans or "20.3%" in ans)
     assert "Bin Utilization" in ans
     # Must NOT show volume breakdown lines
     assert "Occupied:" not in ans

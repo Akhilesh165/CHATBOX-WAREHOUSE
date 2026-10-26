@@ -316,10 +316,16 @@ def test_multi_plant_bin_utilization_comparison_and_typo_consistency():
     ]
     ans1 = format_deterministic_answer("bin utlization of plant 1268 and 1258", mock_rows)
     ans2 = format_deterministic_answer("show the bin utlization of plant 1268 and 1258 in detail", mock_rows)
-    assert ans1 == ans2
-    assert "Plant Bin Utilization Comparison" in ans1 or "Plant Utilization Comparison" in ans1
-    assert "Plant 1268" in ans1 and "68.73%" in ans1
-    assert "Plant 1258" in ans1 and "60.80%" in ans1
+    # ans1: First response to comparison query is TABLE ONLY (Rule 1 & 3)
+    assert ans1.startswith("| Plant |")
+    assert "1268" in ans1 and "68.73%" in ans1
+    assert "1258" in ans1 and "60.80%" in ans1
+    assert "### Summary" not in ans1
+    # ans2: Comparison + Detail returns Comparison Table -> Detailed comparison (Rule 10)
+    assert "### Comparison Table" in ans2
+    assert "### Detailed Comparison" in ans2
+    assert "1268" in ans2 and "68.73%" in ans2
+    assert "1258" in ans2 and "60.80%" in ans2
 
 
 def test_detail_explain_graph_triggers_display_relevant_chart():

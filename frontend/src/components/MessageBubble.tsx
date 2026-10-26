@@ -79,7 +79,8 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   const showChart = !isSingleMetricIntent && (outputType === 'bar_chart' || outputType === 'line_chart' || outputType === 'pie_chart' || outputType === 'chart_plus_summary') && message.chart && message.chart.data && message.chart.data.length > 0;
   const showKpi = !isSingleMetricIntent && outputType === 'kpi' && hasTable && message.intent === 'inventory_summary';
   const showList = !isSingleMetricIntent && outputType === 'list' && hasTable;
-  const showTable = !isSingleMetricIntent && (outputType === 'table' || outputType === 'ranking_table' || outputType === 'comparison_table' || outputType === 'detail_analysis' || isPlantBinUtilDetail || showChart || showKpi || showList) && hasTable;
+  const contentHasTable = Boolean(message.content && message.content.includes('|') && message.content.includes('---'));
+  const showTable = !isSingleMetricIntent && !contentHasTable && (outputType === 'table' || outputType === 'ranking_table' || outputType === 'comparison_table' || outputType === 'detail_analysis' || isPlantBinUtilDetail || showChart || showKpi || showList) && hasTable;
 
   if (isUser) {
     return (

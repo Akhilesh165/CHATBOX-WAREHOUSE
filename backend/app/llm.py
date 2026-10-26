@@ -848,7 +848,10 @@ def is_elliptical_followup(q_lower: str) -> bool:
         "detailed version", "detailed analysis", "generate detail", "show detail", "detailed breakdown",
         "generate detailed", "in detail", "deep dive", "more detail", "more details",
         "break it down", "expand on this", "detailed view", "detailed form",
-        "explain this", "explain in detail", "explain with graph", "explain with chart", "elaborate on this"
+        "explain this", "explain in detail", "explain with graph", "explain with chart", "elaborate on this",
+        "explain this table", "explain the table", "explain the comparison", "what does this mean", "give me a summary",
+        "summarize the above", "summarize above", "which one is better", "which is better", "explain the result",
+        "what can you conclude", "give me the comparison summary", "interpret this", "tell me what this table means"
     ]) or any(w in q_strip.split() for w in ["detailed", "explain", "elaborate"]):
         return True
     
@@ -1019,6 +1022,8 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             # Check presentation / format modifiers in history
             if any(k in uq_lower for k in ["detailed version", "in detail", "show detail", "detailed breakdown", "detailed"]):
                 state["response_mode"] = "DETAIL"
+            elif is_comparison_explanation_requested(uq_lower):
+                state["response_mode"] = "EXPLANATION"
             elif any(k in uq_lower for k in ["only count", "only the count", "just the count", "count only", "give me only the count"]):
                 state["response_mode"] = "COUNT"
             elif any(k in uq_lower for k in ["only names", "only the names", "names only", "just the names", "show only the names"]):
@@ -2000,7 +2005,9 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                 state["filters"]["plants"] = [p for p in state["plants"][-2:]]
 
         # Check presentation / format modifiers
-        if any(k in q_lower for k in [
+        if is_comparison_explanation_requested(q_lower):
+            state["response_mode"] = "EXPLANATION"
+        elif any(k in q_lower for k in [
             "detailed version", "in detail", "show detail", "detailed breakdown", "detailed", "give details",
             "explain", "explained", "explanation", "elaborate", "show me with", "show with"
         ]):
@@ -6667,6 +6674,414 @@ def sanitize_bin_utilization_response(answer: str, question: str) -> str:
     cleaned = re.sub(r"\s+\.", ".", cleaned)
     return cleaned.strip()
 
+# ============================================================================
+# GLOBAL COMPARISON RESPONSE ENGINE HELPERS (Rules 1-17)
+# ============================================================================
+
+def generate_markdown_table(headers: list[str], rows_data: list[list[Any]], alignments: list[str] = None) -> str:
+    """Generates a standard GitHub Flavored Markdown table string."""
+    if not headers or not rows_data:
+        return ""
+    if not alignments:
+        alignments = [":---" if i == 0 else "---:" for i in range(len(headers))]
+    header_line = "| " + " | ".join(headers) + " |"
+    align_line = "| " + " | ".join(alignments) + " |"
+    data_lines = ["| " + " | ".join(str(val) for val in row) + " |" for row in rows_data]
+    return "\n".join([header_line, align_line] + data_lines)
+
+def is_comparison_intent(q_lower: str, rows: list[dict] = None) -> bool:
+    """Detect if the user question has comparison intent across 2 or more entities/plants/metrics."""
+    q_strip = q_lower.strip()
+
+    # Rule 9: Explicit non-comparison queries must NOT be treated as comparison
+    # Range queries are NOT comparisons unless explicit compare keywords exist
+    if parse_range_filters(q_strip) and not any(k in q_strip for k in ["compare", "versus", " vs ", "difference between", "difference of"]):
+        return False
+
+    if any(q_strip.startswith(p) for p in [
+        "rank ", "ranking ", "rank plants", "ranking plants", "rank all plants", "rank by",
+        "show bin utilization for plant", "bin utilization for plant",
+        "show the bin utilization of all plants", "bin utilization of all plants",
+        "show bin utilization graph for plant", "give detailed bin utilization for plant",
+        "show detailed bin utilization for plant", "show materials with", "materials with"
+    ]) and not any(k in q_strip for k in ["compare", "versus", " vs ", "difference", "which is higher", "which is lower", "which has more"]):
+        return False
+
+    # Comparison of Top/Least Utilized Bins across plants (handled by 0A_COMPARE_BINS)
+    if rows and isinstance(rows, list) and len(rows) > 0 and isinstance(rows[0], dict):
+        raw_cols = list(rows[0].keys())
+        if "Bin" in raw_cols and any(k in q_strip for k in ["top", "most", "bottom", "least", "highest", "lowest"]) and not is_comparison_explanation_requested(q_strip):
+            return False
+
+    # 1. Comparison keywords & phrases (Rule 7)
+    comp_triggers = [
+        "compare", "comparison", "compare between", "compare both", "compare these",
+        "compare the two", "which is higher", "which is lower", "which has more",
+        "which has less", "which has greater", "which is better", "which one is better",
+        "difference between", "difference of", "versus", " vs ", " vs.", "against",
+        "side by side", "contrast", "how do they compare", "how do plants compare",
+        "compare plant", "compare these plants", "compare these materials"
+    ]
+    if any(k in q_strip for k in comp_triggers):
+        return True
+
+    # 2. Comparison follow-up queries / explanation on previously shown table (Rule 4)
+    explanation_triggers = [
+        "explain this table", "explain the table", "explain this", "explain the comparison",
+        "what does this mean", "give me a summary", "give me summary", "summarize the above",
+        "summarize above", "summarize this", "explain the result", "what can you conclude",
+        "give me the comparison summary", "interpret this", "tell me what this table means",
+        "explain it", "explain comparison"
+    ]
+    if any(k in q_strip for k in explanation_triggers):
+        return True
+
+    # 3. Two or more explicit plants with comparison connecting words (between, and)
+    explicit_plants = extract_explicit_plants(q_strip)
+    if len(explicit_plants) >= 2:
+        has_range = any(r in q_strip for r in [
+            "above", "below", "greater", "less than", "between 50", "between 60",
+            "between 70", "between 80", "between 10", "between 20", "between 30",
+            "between 40", "between 1", "between 2", "between 5", "between 100",
+            "% full", "% utilization"
+        ])
+        if not has_range:
+            if any(w in q_strip for w in ["between", "and", "or", "to", "with", "vs"]) or any(m in q_strip for m in ["utilization", "inventory", "bins", "materials", "capacity"]):
+                return True
+
+    return False
+
+def is_comparison_explanation_requested(q_lower: str) -> bool:
+    """Detect if the user is asking to explain, summarize, or interpret a comparison table."""
+    q_strip = q_lower.strip().rstrip("?.! ")
+    triggers = [
+        "explain this table", "explain the table", "explain this", "explain the comparison",
+        "what does this mean", "give me a summary", "give me summary", "summarize the above",
+        "summarize above", "summarize this", "which one is better", "which is better",
+        "explain the result", "what can you conclude", "give me the comparison summary",
+        "interpret this", "tell me what this table means", "explain it", "explain"
+    ]
+    if any(t in q_strip for t in triggers) or q_strip in ["summary", "summarize", "conclusion"]:
+        return True
+    return False
+
+def is_comparison_detail_requested(q_lower: str) -> bool:
+    """Detect if user asked for detailed comparison."""
+    return any(k in q_lower for k in [
+        "in detail", "detailed comparison", "detailed version", "detail version",
+        "detailed breakdown", "give me detailed comparison", "compare in detail"
+    ])
+
+def format_comparison_table_markdown(rows: list[dict], q_lower: str) -> str:
+    """Formats comparison rows into a clean, canonical Markdown table with relevant fields."""
+    if not rows or not isinstance(rows[0], dict):
+        return ""
+    raw_cols = list(rows[0].keys())
+
+    # Case 0: Compare Both Bin Utilization AND Volume Utilization (Rule 13 separation)
+    has_both_util = (
+        ("bin" in q_lower and "volume" in q_lower and "utiliz" in q_lower) or
+        (("Bin Utilization %" in raw_cols or "BinUtilizationPct" in raw_cols) and
+         ("Volume Utilization %" in raw_cols or "VolumeUtilizationPct" in raw_cols or "TotalBinCapacityVolume" in raw_cols))
+    )
+    if has_both_util:
+        target_cols = ["Plant", "Bin Utilization %", "Volume Utilization %"]
+        clean_rows = []
+        for r in rows:
+            p = str(r.get("Plant", "-")).replace(",", "")
+            raw_bu = r.get("Bin Utilization %", r.get("BinUtilizationPct", 0))
+            raw_vu = r.get("Volume Utilization %", r.get("VolumeUtilizationPct", 0))
+            try:
+                bu_str = f"{float(str(raw_bu).replace('%', '')):.2f}%"
+            except Exception:
+                bu_str = f"{raw_bu}%"
+            try:
+                vu_str = f"{float(str(raw_vu).replace('%', '')):.2f}%"
+            except Exception:
+                vu_str = f"{raw_vu}%"
+            clean_rows.append([p, bu_str, vu_str])
+        return generate_markdown_table(target_cols, clean_rows)
+
+    # Case A: Bin Utilization Comparison (Rule 2 & 14 & 15)
+    is_bin_util = is_bin_utilization_primary(q_lower) or (
+        "Bin Utilization %" in raw_cols and not any(k in q_lower for k in ["total inventory", "inventory quantity", "unique materials", "used capacity"])
+    )
+    if is_bin_util:
+        target_cols = ["Plant", "Occupied Bins", "Empty Bins", "Total Bins", "Bin Utilization %"]
+        clean_rows = []
+        for r in rows:
+            p = str(r.get("Plant", "-")).replace(",", "")
+            ob = r.get("Occupied Bins", r.get("OccupiedBins", 0))
+            tb = r.get("Total Bins", r.get("TotalBins", 0))
+            eb = r.get("Empty Bins", r.get("EmptyBins", max(0, tb - ob) if tb and ob else 0))
+            raw_u = r.get("Bin Utilization %", r.get("BinUtilizationPct", 0))
+            try:
+                u_str = f"{float(str(raw_u).replace('%', '')):.2f}%"
+            except Exception:
+                u_str = f"{raw_u}%" if "%" not in str(raw_u) else str(raw_u)
+            clean_rows.append([
+                p,
+                f"{int(ob):,}" if isinstance(ob, (int, float)) else str(ob),
+                f"{int(eb):,}" if isinstance(eb, (int, float)) else str(eb),
+                f"{int(tb):,}" if isinstance(tb, (int, float)) else str(tb),
+                u_str
+            ])
+        return generate_markdown_table(target_cols, clean_rows)
+
+    # Case B: Total Inventory Quantity Comparison (Rule 2)
+    if any(k in q_lower for k in ["inventory", "stock", "quantity"]) and not any(k in q_lower for k in ["material", "bin", "capacity", "sloc"]):
+        target_cols = [c for c in ["Plant", "Total Inventory Quantity", "Unique Materials", "Occupied Bins"] if c in raw_cols]
+        clean_rows = []
+        for r in rows:
+            row_vals = []
+            for c in target_cols:
+                if c == "Plant":
+                    row_vals.append(str(r.get("Plant", "-")).replace(",", ""))
+                else:
+                    v = r.get(c, "-")
+                    if isinstance(v, (int, float)):
+                        row_vals.append(f"{int(v):,}" if v == int(v) else f"{v:,.2f}")
+                    else:
+                        row_vals.append(str(v))
+            clean_rows.append(row_vals)
+        return generate_markdown_table(target_cols, clean_rows)
+
+    # Case C: Material Comparison (Rule 2)
+    if any(k in q_lower for k in ["unique material", "materials", "sku", "skus"]):
+        if "Unique Materials Count" in raw_cols:
+            target_cols = [c for c in ["Plant", "Unique Materials Count", "Total Stock Qty", "Occupied Bins"] if c in raw_cols]
+            clean_rows = []
+            for r in rows:
+                clean_rows.append([
+                    str(r.get(c, "-")).replace(",", "") if c == "Plant" else (
+                        f"{int(r.get(c)):,}" if isinstance(r.get(c), (int, float)) else str(r.get(c, "-"))
+                    )
+                    for c in target_cols
+                ])
+            return generate_markdown_table(target_cols, clean_rows)
+
+    # Case D: Capacity Comparison (Rule 2)
+    if any(k in q_lower for k in ["capacity", "volume", "used capacity", "available capacity"]):
+        cap_cols = [c for c in [
+            "Plant", "Used Capacity (FT³)", "Occupied Volume (FT3)", "Used Capacity",
+            "Available Capacity (FT³)", "Available Capacity (FT3)", "Available Capacity",
+            "Total Capacity (FT³)", "Total Capacity (FT3)", "Total Capacity"
+        ] if c in raw_cols]
+        if cap_cols:
+            target_cols = ["Plant"] + [c for c in cap_cols if c != "Plant"]
+            clean_rows = []
+            for r in rows:
+                row_vals = []
+                for c in target_cols:
+                    if c == "Plant":
+                        row_vals.append(str(r.get("Plant", "-")).replace(",", ""))
+                    else:
+                        v = r.get(c, "-")
+                        if isinstance(v, (int, float)):
+                            row_vals.append(f"{float(v):,.2f}")
+                        else:
+                            row_vals.append(str(v))
+                clean_rows.append(row_vals)
+            return generate_markdown_table(target_cols, clean_rows)
+
+    # Case E: Empty Bins Comparison (Rule 2)
+    if any(k in q_lower for k in ["empty bin", "empty bins", "vacant", "free bin"]):
+        if "Empty Bins" in raw_cols:
+            target_cols = [c for c in ["Plant", "Empty Bins", "Total Bins", "Empty Bins %"] if c in raw_cols]
+            clean_rows = []
+            for r in rows:
+                clean_rows.append([
+                    str(r.get(c, "-")).replace(",", "") if c == "Plant" else (
+                        f"{int(r.get(c)):,}" if isinstance(r.get(c), (int, float)) else str(r.get(c, "-"))
+                    )
+                    for c in target_cols
+                ])
+            return generate_markdown_table(target_cols, clean_rows)
+
+    # Case F: Bin count / Physical Bins Comparison (Rule 2)
+    if any(k in q_lower for k in ["their bins", "bins count", "total bins"]) and "Total Bins" in raw_cols:
+        target_cols = [c for c in ["Plant", "Occupied Bins", "Empty Bins", "Total Bins", "Occupancy Rate"] if c in raw_cols]
+        clean_rows = []
+        for r in rows:
+            clean_rows.append([
+                str(r.get(c, "-")).replace(",", "") if c == "Plant" else (
+                    f"{int(r.get(c)):,}" if isinstance(r.get(c), (int, float)) else str(r.get(c, "-"))
+                )
+                for c in target_cols
+            ])
+        return generate_markdown_table(target_cols, clean_rows)
+
+    # Case G: Generic / Dynamic fallback from rows
+    excluded = {
+        "Id", "TotalMatching", "Ranking Group", "BinUtilizationPct", "VolumeUtilizationPct",
+        "Rank"
+    }
+    if is_bin_utilization_primary(q_lower):
+        excluded.update({
+            "Occupied Volume", "Total Capacity", "Available Capacity",
+            "Occupied Volume (FT3)", "Total Capacity (FT3)", "Available Capacity (FT3)",
+            "Volume Utilization", "Volume Utilization %"
+        })
+    target_cols = [c for c in raw_cols if c not in excluded]
+    clean_rows = []
+    for r in rows:
+        row_vals = []
+        for c in target_cols:
+            if c == "Plant":
+                row_vals.append(str(r.get("Plant", "-")).replace(",", ""))
+            else:
+                v = r.get(c, "-")
+                if isinstance(v, (int, float)):
+                    row_vals.append(f"{int(v):,}" if v == int(v) else f"{v:,.2f}")
+                else:
+                    row_vals.append(str(v))
+        clean_rows.append(row_vals)
+    return generate_markdown_table(target_cols, clean_rows)
+
+def generate_comparison_summary(rows: list[dict], q_lower: str) -> str:
+    """Generates an accurate grounded explanation/summary of the comparison table."""
+    if not rows or len(rows) < 2:
+        return ""
+
+    raw_cols = list(rows[0].keys())
+    
+    # 0. Compare Both Bin Utilization AND Volume Utilization
+    if ("bin" in q_lower and "volume" in q_lower and "utiliz" in q_lower) or (
+        ("Bin Utilization %" in raw_cols or "BinUtilizationPct" in raw_cols) and
+        ("Volume Utilization %" in raw_cols or "VolumeUtilizationPct" in raw_cols)
+    ):
+        lines = []
+        for r in rows:
+            p = str(r.get("Plant", "N/A")).replace(",", "")
+            raw_bu = r.get("Bin Utilization %", r.get("BinUtilizationPct", 0))
+            raw_vu = r.get("Volume Utilization %", r.get("VolumeUtilizationPct", 0))
+            lines.append(f"Plant {p} has **{raw_bu}%** Bin Utilization and **{raw_vu}%** Volume Utilization.")
+        return " ".join(lines)
+
+    # 1. Bin Utilization
+    if is_bin_utilization_primary(q_lower) or "Bin Utilization %" in raw_cols:
+        def get_pct(r):
+            raw = r.get("Bin Utilization %", r.get("BinUtilizationPct", 0))
+            try:
+                return float(str(raw).replace("%", ""))
+            except Exception:
+                return 0.0
+        sorted_rows = sorted(rows, key=get_pct, reverse=True)
+        top = sorted_rows[0]
+        bot = sorted_rows[-1]
+        p_top = str(top.get("Plant", "N/A")).replace(",", "")
+        p_bot = str(bot.get("Plant", "N/A")).replace(",", "")
+        u_top = f"{get_pct(top):.2f}%"
+        u_bot = f"{get_pct(bot):.2f}%"
+        diff_pts = round(get_pct(top) - get_pct(bot), 2)
+        
+        ob_top = top.get("Occupied Bins", top.get("OccupiedBins"))
+        tb_top = top.get("Total Bins", top.get("TotalBins"))
+        ob_bot = bot.get("Occupied Bins", bot.get("OccupiedBins"))
+        tb_bot = bot.get("Total Bins", bot.get("TotalBins"))
+        
+        detail_clause = ""
+        if ob_top is not None and tb_top is not None and ob_bot is not None and tb_bot is not None:
+            detail_clause = f" Plant {p_top} has {int(ob_top):,} occupied bins out of {int(tb_top):,} total bins, while Plant {p_bot} has {int(ob_bot):,} occupied bins out of {int(tb_bot):,} total bins."
+            
+        return f"Plant {p_top} has higher bin utilization than Plant {p_bot} by {diff_pts} percentage points ({u_top} vs. {u_bot}).{detail_clause}"
+
+    # 2. Total Inventory Quantity
+    if "Total Inventory Quantity" in raw_cols:
+        sorted_rows = sorted(rows, key=lambda x: float(x.get("Total Inventory Quantity", 0) or 0), reverse=True)
+        top, bot = sorted_rows[0], sorted_rows[-1]
+        p_top = str(top.get("Plant", "N/A")).replace(",", "")
+        p_bot = str(bot.get("Plant", "N/A")).replace(",", "")
+        q_top = float(top.get("Total Inventory Quantity", 0) or 0)
+        q_bot = float(bot.get("Total Inventory Quantity", 0) or 0)
+        diff_q = q_top - q_bot
+        return f"Plant {p_top} has higher total inventory than Plant {p_bot} by {diff_q:,.0f} units ({q_top:,.0f} units vs. {q_bot:,.0f} units)."
+
+    # 3. Empty Bins
+    if "Empty Bins" in raw_cols:
+        sorted_rows = sorted(rows, key=lambda x: float(x.get("Empty Bins", 0) or 0), reverse=True)
+        top, bot = sorted_rows[0], sorted_rows[-1]
+        p_top = str(top.get("Plant", "N/A")).replace(",", "")
+        p_bot = str(bot.get("Plant", "N/A")).replace(",", "")
+        eb_top = float(top.get("Empty Bins", 0) or 0)
+        eb_bot = float(bot.get("Empty Bins", 0) or 0)
+        diff_eb = eb_top - eb_bot
+        return f"Plant {p_top} has more empty bins available for put-away than Plant {p_bot} by {diff_eb:,.0f} bins ({eb_top:,.0f} vs. {eb_bot:,.0f} empty bins)."
+
+    # 4. Capacity
+    cap_col = next((c for c in ["Total Capacity (FT³)", "Total Capacity (FT3)", "Total Capacity"] if c in raw_cols), None)
+    if cap_col:
+        sorted_rows = sorted(rows, key=lambda x: float(x.get(cap_col, 0) or 0), reverse=True)
+        top, bot = sorted_rows[0], sorted_rows[-1]
+        p_top = str(top.get("Plant", "N/A")).replace(",", "")
+        p_bot = str(bot.get("Plant", "N/A")).replace(",", "")
+        c_top = float(top.get(cap_col, 0) or 0)
+        c_bot = float(bot.get(cap_col, 0) or 0)
+        diff_c = c_top - c_bot
+        return f"Plant {p_top} has larger total storage capacity than Plant {p_bot} by {diff_c:,.2f} FT³ ({c_top:,.2f} FT³ vs. {c_bot:,.2f} FT³)."
+
+    # Default
+    p1 = str(rows[0].get("Plant", "Plant 1")).replace(",", "")
+    p2 = str(rows[1].get("Plant", "Plant 2")).replace(",", "")
+    return f"Plant {p1} leads Plant {p2} across the compared metrics."
+
+def generate_comparison_details(rows: list[dict], q_lower: str) -> str:
+    """Generates detailed bullet breakdown for comparison queries requesting detail."""
+    lines = []
+    for r in rows:
+        p = str(r.get("Plant", "N/A")).replace(",", "")
+        if "Bin Utilization %" in r:
+            u = r.get("Bin Utilization %")
+            ob = r.get("Occupied Bins", r.get("OccupiedBins", 0))
+            tb = r.get("Total Bins", r.get("TotalBins", 0))
+            eb = r.get("Empty Bins", r.get("EmptyBins", max(0, tb - ob) if tb and ob else 0))
+            lines.append(f"- **Plant {p}**: **{u}** Bin Utilization ({int(ob):,} of {int(tb):,} bins occupied, with {int(eb):,} empty bins).")
+        elif "Total Inventory Quantity" in r:
+            q = float(r.get("Total Inventory Quantity", 0) or 0)
+            m = r.get("Unique Materials", 0)
+            b = r.get("Occupied Bins", 0)
+            lines.append(f"- **Plant {p}**: **{q:,.0f} units** across **{int(m):,} unique materials** in **{int(b):,} occupied bins**.")
+        elif "Empty Bins" in r:
+            eb = r.get("Empty Bins", 0)
+            tb = r.get("Total Bins", 0)
+            pct = r.get("Empty Bins %", "")
+            lines.append(f"- **Plant {p}**: **{int(eb):,} empty bins** ({pct} of {int(tb):,} total bins).")
+        else:
+            metrics_str = ", ".join(f"{k}: {v}" for k, v in r.items() if k != "Plant")
+            lines.append(f"- **Plant {p}**: {metrics_str}")
+    return "\n".join(lines)
+
+def format_comparison_response(question: str, rows: list[dict]) -> str:
+    """Generic Comparison Response Engine enforcing GLOBAL COMPARISON RESPONSE RULES (Rules 1-17)."""
+    q_lower = question.lower()
+
+    # Rule 12: Explicit single-line / single statement / answer only overrides table
+    is_single_stmt = (
+        is_single_line_requested(q_lower) or
+        any(k in q_lower for k in [
+            "only the answer", "give me only the answer", "just the answer",
+            "answer only", "single statement", "single line", "one line"
+        ])
+    )
+    if is_single_stmt:
+        return generate_comparison_summary(rows, q_lower)
+
+    # Generate the canonical comparison table
+    table_md = format_comparison_table_markdown(rows, q_lower)
+
+    # Rule 10: Comparison + Detail
+    if is_comparison_detail_requested(q_lower):
+        details_md = generate_comparison_details(rows, q_lower)
+        return f"### Comparison Table\n\n{table_md}\n\n### Detailed Comparison\n\n{details_md}"
+
+    # Rule 4 & 5: Summary ONLY when user explicitly asks for it
+    if is_comparison_explanation_requested(q_lower):
+        summary_md = generate_comparison_summary(rows, q_lower)
+        return f"### Comparison Table\n\n{table_md}\n\n### Summary\n\n{summary_md}"
+
+    # Rule 1 & 3: Initial comparison query: TABLE ONLY!
+    return table_md
+
 def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     res = _format_deterministic_answer_impl(question, rows)
     return sanitize_bin_utilization_response(res, question)
@@ -6759,6 +7174,10 @@ def _format_deterministic_answer_impl(question: str, rows: list[dict]) -> str:
                 breakdown = ", ".join(f"Plant {r.get('Plant')}: {float(r.get(num_col, 0) or 0):,.0f}" for r in rows)
                 return f"Total count: **{tot:,.0f} units** across {len(rows)} plants ({breakdown})."
             return f"Total count: **{len(rows)} matching entities**."
+
+    # 0A_COMPARISON_ENGINE. Global Comparison Response Engine (Rules 1-17)
+    if is_comparison_intent(q_lower, rows) and rows:
+        return format_comparison_response(question, rows)
 
     # 0A_CLARIFICATION. Predefined threshold clarification rule
     if "clarification_needed" in cols:
@@ -8727,6 +9146,10 @@ async def generate_answer(question: str, sql: str, rows: list[dict]) -> str:
 
     # Authoritative Plant Bin Utilization Comparison & Multi-Plant Comparisons
     if "Bin Utilization %" in cols and "Occupied Volume" in cols and "Total Capacity" in cols and "Available Capacity" in cols and "Plant" in cols:
+        return format_deterministic_answer(question, rows)
+
+    # Authoritative Comparison queries (Rule 1: Comparison Table First)
+    if is_comparison_intent(q_lower, rows):
         return format_deterministic_answer(question, rows)
 
     # Authoritative Bin Utilization queries (Rule: Bin Utilization only)
