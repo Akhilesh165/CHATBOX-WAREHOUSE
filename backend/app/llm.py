@@ -102,6 +102,14 @@ def extract_explicit_plants(text: str) -> list[str]:
     if m_both:
         found.extend([m_both.group(1), m_both.group(2)])
 
+    # Standalone known warehouse plants (1258, 1266, 1268, 7228) in comparison or multi-plant queries
+    if not found:
+        known = {"1258", "1266", "1268", "7228"}
+        tokens = re.findall(r"\b(\d{4})\b", q)
+        kp = [t for t in tokens if t in known]
+        if len(kp) >= 2 or any(k in q for k in ["compare", "versus", "vs", "between", "both", "difference"]):
+            found.extend(kp)
+
     # Exclude years that can appear in otherwise valid questions.
     return list(dict.fromkeys(n for n in found if n not in {"2024", "2025", "2026"}))
 
@@ -1486,7 +1494,14 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     )
 
     if is_util_comparison:
-        has_compare_kw = any(k in q_lower for k in ["compare", "comparison", "versus", "vs", "difference", "between", "both", "side by side", "contrast"])
+        has_compare_kw = (
+            any(k in q_lower for k in ["compare", "comparison", "versus", "vs", "difference", "between", "both", "side by side", "contrast"]) or
+            len(explicit_plants) >= 3 or
+            any(k in q_lower for k in [
+                "detailed bin utilization", "detail bin utilization", "complete bin utilization",
+                "break down bin utilization", "breakdown of bin utilization", "bin-wise", "all bins", "full details"
+            ])
+        )
         is_detail_comp = (has_compare_kw or state.get("topic") == "multi_plant_bin_detail") and (is_bin_level_detail_intent(q_lower) or state.get("response_mode") == "DETAIL")
         state["entity"] = "plant" if not is_detail_comp else "bin"
         state["metric"] = "bin_utilization"
@@ -4173,12 +4188,25 @@ ORDER BY [Unique Materials Count] DESC"""
         elif (any(k in q_lower for k in ["bin utilization", "utilization", "how full", "fill rate", "occupancy rate"]) and not is_volume_utilization_requested(q_lower)) or (
             state.get("comparison_subject") == "bin_utilization" or state.get("metric") in ["BIN_UTILIZATION", "bin_utilization"] or state.get("topic") == "multi_plant_bin_detail"
         ):
-            has_compare_kw = any(k in q_lower for k in ["compare", "comparison", "versus", "vs", "difference", "between", "both", "side by side", "contrast"])
+            has_compare_kw = (
+                any(k in q_lower for k in ["compare", "comparison", "versus", "vs", "difference", "between", "both", "side by side", "contrast"]) or
+                len(target_plants) >= 3 or
+                any(k in q_lower for k in [
+                    "detailed bin utilization", "detail bin utilization", "complete bin utilization",
+                    "break down bin utilization", "breakdown of bin utilization", "bin-wise", "all bins", "full details"
+                ])
+            )
             is_detail_comp = (has_compare_kw or state.get("topic") == "multi_plant_bin_detail") and (is_bin_level_detail_intent(q_lower) or state.get("topic") == "multi_plant_bin_detail" or state.get("response_mode") == "DETAIL")
             if is_detail_comp:
                 comp_limit = state.get("limit") or extract_explicit_limit(q_lower)
                 per_plant_limit = comp_limit if comp_limit else (10000 // max(len(target_plants), 1))
                 case_order = " ".join(f"WHEN '{p}' THEN {idx}" for idx, p in enumerate(target_plants, 1))
+                is_explicit_rank = any(k in q_lower for k in ["top", "highest", "lowest", "least", "bottom", "most utilized", "least utilized", "rank", "ranking", "best", "worst"])
+                is_least = any(k in q_lower for k in ["least", "lowest", "bottom", "worst"])
+                if is_explicit_rank:
+                    order_clause = f"COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0) {'ASC' if is_least else 'DESC'}, b.BinLocation"
+                else:
+                    order_clause = "b.BinLocation ASC"
                 sql_comp = f"""WITH RankedBins AS (
     SELECT 
         b.BinLocation AS [Bin],
@@ -4191,7 +4219,7 @@ ORDER BY [Unique Materials Count] DESC"""
             WHEN COUNT(DISTINCT i.Material) = 1 THEN CONCAT(MIN(i.Material), ' (', ROUND(SUM(i.UnrestrictedQty), 0), ' units)')
             ELSE CONCAT(COUNT(DISTINCT i.Material), ' materials (', ROUND(SUM(i.UnrestrictedQty), 0), ' units)')
         END AS [Material / Inventory Information],
-        ROW_NUMBER() OVER (PARTITION BY b.Plant ORDER BY COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0) DESC, b.BinLocation) AS rn
+        ROW_NUMBER() OVER (PARTITION BY b.Plant ORDER BY {order_clause}) AS rn
     FROM dbo.ZWMS_BIN_MASTER b
     LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
     LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
@@ -4202,17 +4230,21 @@ SELECT [Bin], [Plant], [Capacity], [Available Capacity], [Utilization %], [Mater
 FROM RankedBins
 WHERE rn <= {per_plant_limit}
 ORDER BY CASE [Plant] {case_order} END, rn"""
+                is_explicit_chart_in_q = is_explicit_chart_only_requested(question) or bool(state.get("is_explicit_chart_request"))
+                chart_type = "bar" if is_explicit_chart_in_q else "none"
+                chart_x = "Bin" if is_explicit_chart_in_q else None
+                chart_y = "Utilization %" if is_explicit_chart_in_q else None
                 return {
                     "sql": sql_comp,
-                    "chart_type": "none",
+                    "chart_type": chart_type,
                     "chart_title": f"Detailed Bin Utilization Comparison ({', '.join(f'Plant {p}' for p in target_plants)})",
-                    "chart_x": None,
-                    "chart_y": None,
+                    "chart_x": chart_x,
+                    "chart_y": chart_y,
                     "intent": "multi_plant_bin_detail",
                     "metric": "bin_utilization",
                     "filters": {"plants": target_plants},
                     "time_range": "current",
-                    "output_type": "table",
+                    "output_type": "bar_chart" if is_explicit_chart_in_q else "table",
                     "conversation_state": state
                 }
             else:
@@ -7254,8 +7286,8 @@ def generate_comparison_details(rows: list[dict], q_lower: str) -> str:
             lines.append(f"- **Plant {p}**: {metrics_str}")
     return "\n".join(lines)
 
-def format_detailed_bin_utilization_tables(rows: list[dict]) -> str:
-    """Formats bin-level detailed response with separate tables per plant (Sections 3, 4, 6, 7, 14)."""
+def format_detailed_bin_utilization_tables(rows: list[dict], requested_plants: list[str] | None = None) -> str:
+    """Formats bin-level detailed response with separate tables per plant and structured summary (Sections 3-13, 22)."""
     if not rows or not isinstance(rows[0], dict):
         return ""
     cols = list(rows[0].keys())
@@ -7265,15 +7297,27 @@ def format_detailed_bin_utilization_tables(rows: list[dict]) -> str:
     util_col = "Utilization %" if "Utilization %" in cols else "Capacity Utilization %"
     mat_col = "Material / Inventory Information" if "Material / Inventory Information" in cols else next((c for c in cols if "Material" in c), None)
 
-    plant_groups = {}
+    # 1. Determine requested plants preserving user-specified order
+    ordered_plants = list(dict.fromkeys(str(p) for p in (requested_plants or [])))
+    if not ordered_plants:
+        ordered_plants = list(dict.fromkeys(str(r.get("Plant", "")).strip().replace(",", "") for r in rows if r.get("Plant")))
+
+    # 2. Sections 12 & 13: Data-to-plant validation and plant-by-plant grouping
+    plant_groups: dict[str, list[dict]] = {p: [] for p in ordered_plants}
     for r in rows:
-        p = str(r.get("Plant", "N/A")).strip().replace(",", "")
-        if p not in plant_groups:
-            plant_groups[p] = []
-        plant_groups[p].append(r)
+        actual_plant = str(r.get("Plant", "")).strip().replace(",", "")
+        if actual_plant in plant_groups:
+            plant_groups[actual_plant].append(r)
+        elif actual_plant and actual_plant not in plant_groups:
+            plant_groups[actual_plant] = [r]
 
     sections = []
-    for p, p_rows in plant_groups.items():
+    for p in list(plant_groups.keys()):
+        p_rows = plant_groups[p]
+        if not p_rows:
+            sections.append(f"## Plant {p} — Detailed Bin Utilization\n\n*No matching bin records found for Plant {p}.*")
+            continue
+
         headers = ["Bin", "Capacity", "Available Capacity", "Utilization %", "Material / Inventory Information"]
         table_data = []
         for r in p_rows:
@@ -7293,7 +7337,28 @@ def format_detailed_bin_utilization_tables(rows: list[dict]) -> str:
         
         alignments = [":---", "---:", "---:", "---:", ":---"]
         tbl_md = generate_markdown_table(headers, table_data, alignments)
-        sections.append(f"## Plant {p} — Bin Utilization\n\n{tbl_md}")
+        sections.append(f"## Plant {p} — Detailed Bin Utilization\n\n{tbl_md}")
+
+    # 3. Sections 9, 10, 11, 22: Structured summary separated by plant
+    if len(plant_groups) >= 2:
+        summary_lines = ["## Summary\n"]
+        for p, p_rows in plant_groups.items():
+            if not p_rows:
+                continue
+            total_bins = len(p_rows)
+            util_bins = sum(
+                1 for r in p_rows 
+                if str(r.get(mat_col, "")).lower() != "empty" and float(str(r.get(util_col, "0%")).replace("%", "") or 0) > 0
+            )
+            empty_bins = total_bins - util_bins
+            utils = [float(str(r.get(util_col, "0%")).replace("%", "") or 0) for r in p_rows]
+            avg_util = sum(utils) / len(utils) if utils else 0.0
+            summary_lines.append(f"### Plant {p}")
+            summary_lines.append(f"- Total bins: {total_bins:,}")
+            summary_lines.append(f"- Utilized bins: {util_bins:,}")
+            summary_lines.append(f"- Empty bins: {empty_bins:,}")
+            summary_lines.append(f"- Average utilization: {avg_util:.1f}%\n")
+        sections.append("\n".join(summary_lines).strip())
 
     return "\n\n".join(sections)
 
@@ -7303,11 +7368,8 @@ def format_comparison_response(question: str, rows: list[dict]) -> str:
 
     # Multi-plant bin level detail comparison (Sections 6, 7, 14)
     if rows and ("Bin" in rows[0] or "BinLocation" in rows[0]) and ("Capacity" in rows[0] or "Bin Capacity" in rows[0]) and "Available Capacity" in rows[0] and ("Utilization %" in rows[0] or "Capacity Utilization %" in rows[0]):
-        tables_md = format_detailed_bin_utilization_tables(rows)
-        if is_comparison_explanation_requested(q_lower):
-            summary_md = generate_comparison_summary(rows, q_lower)
-            return f"{tables_md}\n\n### Summary\n\n{summary_md}"
-        return tables_md
+        req_p = extract_explicit_plants(question)
+        return format_detailed_bin_utilization_tables(rows, requested_plants=req_p)
 
     # Rule 12: Explicit single-line / single statement / answer only overrides table
     is_single_stmt = (
@@ -7431,7 +7493,8 @@ def _format_deterministic_answer_impl(question: str, rows: list[dict]) -> str:
 
     # 0A_BIN_LEVEL_DETAIL. Bin-level Detailed Response (Single or Multi Plant)
     if rows and ("Bin" in cols or "BinLocation" in cols) and ("Capacity" in cols or "Bin Capacity" in cols) and "Available Capacity" in cols and ("Utilization %" in cols or "Capacity Utilization %" in cols):
-        return format_detailed_bin_utilization_tables(rows)
+        req_p = extract_explicit_plants(question)
+        return format_detailed_bin_utilization_tables(rows, requested_plants=req_p)
 
     # 0A_COMPARISON_ENGINE. Global Comparison Response Engine (Rules 1-17)
     if is_comparison_intent(q_lower, rows) and rows:
@@ -9466,6 +9529,33 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
             "metric": generated.get("metric", "concise_answer"),
             "intent": generated.get("intent", "single_line_answer"),
             "time_range": generated.get("time_range", "current")
+        }
+
+    # 0A2. Detailed Bin Utilization (Multi-Plant or Single-Plant) - Section 15, 16, 20
+    if generated.get("intent") in ["multi_plant_bin_detail", "plant_bin_level_detail"] or (
+        ("Bin" in cols or "BinLocation" in cols) and ("Utilization %" in cols or "Capacity Utilization %" in cols) and ("Capacity" in cols or "Available Capacity" in cols) and not ("Rank" in cols)
+    ):
+        is_graph_explicit = is_explicit_chart_only_requested(question) or generated.get("chart_type") in ["bar", "pie", "line"]
+        if is_graph_explicit and len(rows) > 1:
+            bin_col = "Bin" if "Bin" in cols else "BinLocation"
+            util_col = "Utilization %" if "Utilization %" in cols else ("Capacity Utilization %" if "Capacity Utilization %" in cols else "Utilization")
+            title = generated.get("chart_title") or ("Detailed Bin Utilization Comparison (%)" if generated.get("intent") == "multi_plant_bin_detail" else "Plant Detailed Bin Utilization (%)")
+            return {
+                "output_type": "bar_chart",
+                "chart_type": "bar",
+                "chart_title": title,
+                "chart_x": bin_col,
+                "chart_y": util_col,
+                "metric": "bin_utilization",
+                "intent": generated.get("intent", "multi_plant_bin_detail"),
+                "time_range": "current"
+            }
+        return {
+            "output_type": "table",
+            "chart_type": "none",
+            "metric": "bin_utilization",
+            "intent": generated.get("intent", "multi_plant_bin_detail"),
+            "time_range": "current"
         }
 
     # 0B. Plant Comparison

@@ -31,6 +31,13 @@ const BAR_COLORS = [
   '#ec4899'  // Pink
 ];
 
+const PLANT_COLORS: Record<string, string> = {
+  '7228': '#0ea5e9', // Sky blue
+  '1258': '#10b981', // Emerald
+  '1266': '#8b5cf6', // Violet
+  '1268': '#f59e0b', // Amber
+};
+
 // Robust numeric parser for values like "3.421%", "1,250", "45.2 FT3", 85.5
 function parseNumber(val: any): number | null {
   if (val === null || val === undefined || val === '') return null;
@@ -55,10 +62,10 @@ export const InventoryBarChart: React.FC<InventoryBarChartProps> = ({
   if (rawKeys.length === 0) return null;
 
   // Identify dimension (X) key
-  const preferredXKeys = [
-    'Material', 'MaterialCode', 'Plant', 'StorageLocation',
-    'Bin', 'BinLocation', 'Ranking Group', 'Division', 'Category', 'Month', 'Date'
-  ];
+  const hasBins = rawKeys.includes('Bin') || rawKeys.includes('BinLocation');
+  const preferredXKeys = hasBins
+    ? ['Bin', 'BinLocation', 'Material', 'MaterialCode', 'StorageLocation', 'Plant']
+    : ['Material', 'MaterialCode', 'Plant', 'StorageLocation', 'Ranking Group', 'Division', 'Category', 'Month', 'Date'];
   let effectiveXKey = xKey;
   if (!effectiveXKey || !rawKeys.includes(effectiveXKey)) {
     effectiveXKey = preferredXKeys.find(k => rawKeys.includes(k)) || 
@@ -175,7 +182,13 @@ export const InventoryBarChart: React.FC<InventoryBarChartProps> = ({
                   .replace(/BinOccupancyPct/gi, 'Bin Occupancy (%)');
                 return [formattedVal, displayMetricName];
               }}
-              labelFormatter={(label) => `${effectiveXKey}: ${label}`}
+              labelFormatter={(label, payload) => {
+                const item = payload && payload[0]?.payload;
+                if (item && item.Plant && effectiveXKey !== 'Plant') {
+                  return `${effectiveXKey}: ${label} (Plant ${item.Plant})`;
+                }
+                return `${effectiveXKey}: ${label}`;
+              }}
             />
             <Legend
               verticalAlign="top"
@@ -195,13 +208,17 @@ export const InventoryBarChart: React.FC<InventoryBarChartProps> = ({
               radius={[6, 6, 0, 0]}
               maxBarSize={48}
             >
-              {chartData.map((_, index) => (
-                <Cell 
-                  key={`cell-${index}`} 
-                  fill={BAR_COLORS[index % BAR_COLORS.length]} 
-                  className="transition-all duration-300 hover:opacity-80"
-                />
-              ))}
+              {chartData.map((entry, index) => {
+                const p = String(entry.Plant || '').trim();
+                const cellColor = (p && PLANT_COLORS[p]) ? PLANT_COLORS[p] : BAR_COLORS[index % BAR_COLORS.length];
+                return (
+                  <Cell 
+                    key={`cell-${index}`} 
+                    fill={cellColor} 
+                    className="transition-all duration-300 hover:opacity-80"
+                  />
+                );
+              })}
             </Bar>
           </BarChart>
         </ResponsiveContainer>

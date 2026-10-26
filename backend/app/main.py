@@ -376,7 +376,19 @@ async def chat_endpoint(req: ChatRequest):
         chart_title = opt.get("chart_title") or (generated.get("chart_title") if isinstance(generated, dict) else None)
         chart_x = opt.get("chart_x") or (generated.get("chart_x") if isinstance(generated, dict) else None)
         chart_y = opt.get("chart_y") or (generated.get("chart_y") if isinstance(generated, dict) else None)
-        chart_data = rows[:50] if chart_type != "none" else []
+        if chart_type != "none":
+            plant_keys = list(dict.fromkeys(str(r.get("Plant", "")).strip() for r in rows if r.get("Plant")))
+            if len(plant_keys) > 1:
+                per_p = max(1, 50 // len(plant_keys))
+                balanced = []
+                for pk in plant_keys:
+                    p_items = [r for r in rows if str(r.get("Plant", "")).strip() == pk]
+                    balanced.extend(p_items[:per_p])
+                chart_data = balanced
+            else:
+                chart_data = rows[:50]
+        else:
+            chart_data = []
     
     chart = Chart(
         type=chart_type,
