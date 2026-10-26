@@ -277,7 +277,7 @@ def test_final_acceptance_queries_canonical_bin_utilization():
         "Show the bin utilization of all plants",
         "Compare the bin utilization of Plant 7228 and Plant 1268",
         "Rank plants by bin utilization",
-        "Show detailed bin utilization for Plant 7228",
+        "Bin utilization for Plant 7228",
         "Show bin utilization graph for Plant 7228",
     ]
 

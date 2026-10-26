@@ -225,7 +225,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
           )}
 
           {/* 6. Summary or Detailed Data Table View */}
-          {message.tables && message.tables.length > 0 ? (
+          {message.tables && message.tables.length > 0 && !contentHasTable ? (
             <div className="pt-2 space-y-4">
               {message.tables.map((tbl, tblIdx) => (
                 <ResultTable
