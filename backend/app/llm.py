@@ -4248,6 +4248,9 @@ ORDER BY CASE [Plant] {case_order} END, rn"""
                     "conversation_state": state
                 }
             else:
+                case_order = " ".join(f"WHEN '{p}' THEN {idx}" for idx, p in enumerate(target_plants, 1))
+                is_explicit_rank = any(k in q_lower for k in ["rank", "ranking", "higher", "highest", "lower", "lowest", "most", "least", "best", "worst"])
+                order_by_clause = "ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) DESC" if is_explicit_rank else f"CASE b.Plant {case_order} ELSE 99 END"
                 sql_comp = f"""SELECT 
     b.Plant AS [Plant], 
     COUNT(DISTINCT i.BinNo) AS [Occupied Bins],
@@ -4258,7 +4261,7 @@ FROM dbo.ZWMS_BIN_MASTER b
 LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant 
 WHERE b.Plant IN ({plants_in_str})
 GROUP BY b.Plant
-ORDER BY ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) DESC"""
+ORDER BY {order_by_clause}"""
                 comp_subject = "bin_utilization"
                 metrics = ["occupied_bins", "empty_bins", "total_bins", "bin_utilization"]
 
@@ -6857,6 +6860,17 @@ def is_bin_level_detail_intent(q_lower: str) -> bool:
         return False
     if "explain" in q and "in detail" in q:
         return False
+
+    # For multi-plant queries (>= 2 explicit plants), a summary or comparison request without explicit bin-level detail keywords
+    # is a high-level plant comparison summary, NOT bin-level detail (Section 3: Do not confuse detail with plant-level summary).
+    if len(extract_explicit_plants(q)) >= 2:
+        has_explicit_bin_detail = any(re.search(r'\b' + re.escape(w) + r'\b', q) for w in [
+            "detail", "detailed", "in detail", "all bins", "every bin", "each bin",
+            "bin-wise", "bin wise", "itemized", "drill down", "breakdown", "break down",
+            "full detail", "full details", "complete bin", "complete details"
+        ])
+        if not has_explicit_bin_detail:
+            return False
 
     has_bin = (
         is_bin_utilization_primary(q) or

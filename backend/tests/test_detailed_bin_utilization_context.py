@@ -316,3 +316,63 @@ def test_section_15_16_19_20_graph_rules_and_axes():
     assert opt_graph["chart_type"] == "bar"
     assert opt_graph["chart_x"] == "Bin"
     assert opt_graph["chart_y"] == "Utilization %"
+
+
+def test_final_acceptance_tests_1_through_5():
+    """Verify all 5 Final Acceptance Tests from the Multi-Plant Bin Utilization specification:
+    Test 1 — Detailed two-plant query ('Show me bin utilization of both Plant 7228 and 1258 in detail')
+    Test 2 — Summary two-plant query ('Summary of the bin utilization of both Plant 1268 and 1258')
+    Test 3 — Explicit graph ('Show me bin utilization of Plant 7228 and 1258 with a graph')
+    Test 4 — Three plants ('Show me detailed bin utilization for Plant 7228, 1258 and 1268')
+    Test 5 — Existing functionality (single plant, ranking, detail)
+    """
+    # Test 1: Detailed two-plant query
+    q1 = "Show me bin utilization of both Plant 7228 and 1258 in detail"
+    p1 = deterministic_warehouse_sql_generator(q1)
+    assert p1["intent"] == "multi_plant_bin_detail"
+    assert p1["filters"]["plants"] == ["7228", "1258"]
+    assert p1.get("chart_type") == "none"
+    r1, _ = execute_readonly(p1["sql"], max_rows=10)
+    a1 = format_deterministic_answer(q1, r1)
+    assert "Plant 7228" in a1 and "Plant 1258" in a1
+    assert "Occupied Volume" not in a1
+
+    # Test 2: Summary two-plant query
+    q2 = "Summary of the bin utilization of both Plant 1268 and 1258"
+    p2 = deterministic_warehouse_sql_generator(q2)
+    assert p2["intent"] == "plant_comparison"
+    assert p2["filters"]["plants"] == ["1268", "1258"]
+    r2, _ = execute_readonly(p2["sql"])
+    assert len(r2) == 2
+    assert str(r2[0]["Plant"]) == "1268"
+    assert str(r2[1]["Plant"]) == "1258"
+    a2 = format_deterministic_answer(q2, r2)
+    assert "| Plant | Occupied Bins | Empty Bins | Total Bins | Bin Utilization % |" in a2
+    assert "68.73%" in a2 and "60.80%" in a2
+    assert a2.count("Plant 1268") <= 1
+    assert a2.count("Plant 1258") <= 1
+
+    # Test 3: Explicit graph
+    q3 = "Show me bin utilization of Plant 7228 and 1258 with a graph"
+    p3 = deterministic_warehouse_sql_generator(q3)
+    assert p3["intent"] == "plant_comparison"
+    r3, _ = execute_readonly(p3["sql"])
+    opt3 = optimize_response_format(q3, r3, p3)
+    assert opt3.get("chart_type") == "bar"
+
+    # Test 4: Three plants
+    q4 = "Show me detailed bin utilization for Plant 7228, 1258 and 1268"
+    p4 = deterministic_warehouse_sql_generator(q4)
+    assert p4["intent"] == "multi_plant_bin_detail"
+    assert p4["filters"]["plants"] == ["7228", "1258", "1268"]
+
+    # Test 5: Existing functionality
+    p5_1 = deterministic_warehouse_sql_generator("Detail bin utilization of Plant 1268")
+    assert p5_1["intent"] == "plant_bin_level_detail"
+    p5_2 = deterministic_warehouse_sql_generator("Give me a summary of bin utilization for Plant 1268")
+    assert p5_2["intent"] == "plant_bin_level_detail"
+    p5_3 = deterministic_warehouse_sql_generator("What is the bin utilization of Plant 1268?")
+    assert p5_3["intent"] == "plant_bin_utilization_detail"
+    p5_4 = deterministic_warehouse_sql_generator("Top 5 bins by utilization in Plant 1268")
+    assert p5_4["intent"] == "top_utilized_bins"
+
