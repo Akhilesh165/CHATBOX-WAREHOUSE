@@ -975,6 +975,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         for uq in user_queries:
             uq_clean = normalize_query_typos(uq)
             uq_lower = uq_clean.lower()
+            pm_val = None
             
             # Plant filter and ordered tracking in history
             hist_plants = extract_explicit_plants(uq_lower)
@@ -1034,12 +1035,12 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             # Check presentation / format modifiers in history
             if is_bin_level_detail_intent(uq_lower) or any(k in uq_lower for k in ["detailed version", "in detail", "show detail", "detailed breakdown", "detailed"]):
                 state["response_mode"] = "DETAIL"
-                if pm_val:
-                    state["topic"] = "plant_bin_level_detail"
+                if len(hist_plants) >= 2:
+                    state["topic"] = "multi_plant_bin_detail"
                     state["metric"] = "bin_utilization"
                     state["entity"] = "bin"
-                elif len(hist_plants) >= 2:
-                    state["topic"] = "multi_plant_bin_detail"
+                elif pm_val:
+                    state["topic"] = "plant_bin_level_detail"
                     state["metric"] = "bin_utilization"
                     state["entity"] = "bin"
             elif is_comparison_explanation_requested(uq_lower):
