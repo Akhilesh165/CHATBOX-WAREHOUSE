@@ -1479,7 +1479,9 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
 
     is_util_comparison = (
         not is_fresh_both and
-        (is_bin_level_detail_intent(q_lower) or any(k in q_lower for k in ["utiliz", "occupan", "how full", "fill rate", "space utilization", "bin utilization", "capacity utilization"])) and
+        (is_bin_level_detail_intent(q_lower) or any(k in q_lower for k in ["utiliz", "occupan", "how full", "fill rate", "space utilization", "bin utilization", "capacity utilization"]) or (
+            any(k in q_lower for k in ["detailed comparison", "compare in detail", "comparison in detail", "detailed plant comparison"]) and not any(k in q_lower for k in ["material", "materials", "sku", "skus", "item", "items", "sloc", "storage location"])
+        )) and
         (len(explicit_plants) >= 2 or (is_followup and len(state.get("comparison_entities", [])) >= 2 and not new_plant and any(k in q_lower for k in ["compare", "versus", "vs", "difference", "between"])))
     )
 
@@ -4186,6 +4188,8 @@ ORDER BY [Unique Materials Count] DESC"""
 
         # 3. Bin Utilization
         elif (any(k in q_lower for k in ["bin utilization", "utilization", "how full", "fill rate", "occupancy rate"]) and not is_volume_utilization_requested(q_lower)) or (
+            any(k in q_lower for k in ["detailed comparison", "compare in detail", "comparison in detail"]) and not any(k in q_lower for k in ["material", "materials", "sku", "skus", "item", "items", "sloc", "storage location"])
+        ) or (
             state.get("comparison_subject") == "bin_utilization" or state.get("metric") in ["BIN_UTILIZATION", "bin_utilization"] or state.get("topic") == "multi_plant_bin_detail"
         ):
             has_compare_kw = (
@@ -6874,7 +6878,8 @@ def is_bin_level_detail_intent(q_lower: str) -> bool:
 
     has_bin = (
         is_bin_utilization_primary(q) or
-        any(b in q for b in ["bin", "bins", "utiliz", "how full", "occupan", "fill rate", "capacity"])
+        any(b in q for b in ["bin", "bins", "utiliz", "how full", "occupan", "fill rate", "capacity"]) or
+        (any(k in q for k in ["detailed comparison", "compare in detail", "comparison in detail"]) and not any(k in q for k in ["material", "materials", "sku", "skus", "item", "items", "sloc", "storage location"]))
     )
     if not has_bin:
         return False
@@ -6888,7 +6893,8 @@ def is_bin_level_detail_intent(q_lower: str) -> bool:
         "complete information", "full details of", "full detail of", "full information",
         "breakdown", "break down", "itemized", "explain all bins", "explain bin", "explain bins",
         "all bins", "all of the bins", "every bin", "each bin", "list all bins", "show all bins",
-        "deep dive", "drill down", "elaborate", "granular"
+        "deep dive", "drill down", "elaborate", "granular",
+        "detailed comparison", "compare in detail", "comparison in detail"
     ]
     if any(re.search(r'\b' + re.escape(w) + r'\b', q) for w in detail_keywords):
         return True
@@ -7351,30 +7357,35 @@ def format_detailed_bin_utilization_tables(rows: list[dict], requested_plants: l
         
         alignments = [":---", "---:", "---:", "---:", ":---"]
         tbl_md = generate_markdown_table(headers, table_data, alignments)
-        sections.append(f"## Plant {p} — Detailed Bin Utilization\n\n{tbl_md}")
 
-    # 3. Sections 9, 10, 11, 22: Structured summary separated by plant
-    if len(plant_groups) >= 2:
-        summary_lines = ["## Summary\n"]
-        for p, p_rows in plant_groups.items():
-            if not p_rows:
-                continue
-            total_bins = len(p_rows)
-            util_bins = sum(
-                1 for r in p_rows 
-                if str(r.get(mat_col, "")).lower() != "empty" and float(str(r.get(util_col, "0%")).replace("%", "") or 0) > 0
-            )
-            empty_bins = total_bins - util_bins
-            utils = [float(str(r.get(util_col, "0%")).replace("%", "") or 0) for r in p_rows]
-            avg_util = sum(utils) / len(utils) if utils else 0.0
-            summary_lines.append(f"### Plant {p}")
-            summary_lines.append(f"- Total bins: {total_bins:,}")
-            summary_lines.append(f"- Utilized bins: {util_bins:,}")
-            summary_lines.append(f"- Empty bins: {empty_bins:,}")
-            summary_lines.append(f"- Average utilization: {avg_util:.1f}%\n")
-        sections.append("\n".join(summary_lines).strip())
+        # Plant-specific Mini Summary immediately following that plant's table (Sections 6, 7, 9, 15)
+        total_bins = len(p_rows)
+        util_bins = sum(
+            1 for r in p_rows 
+            if str(r.get(mat_col, "")).strip().lower() not in ["empty", "none", "n/a", ""]
+            or (float(str(r.get(util_col, "0%")).replace("%", "") or 0) > 0)
+        )
+        empty_bins = max(0, total_bins - util_bins)
+        utils = []
+        for r in p_rows:
+            try:
+                utils.append(float(str(r.get(util_col, "0%")).replace("%", "").strip()))
+            except Exception:
+                pass
+        avg_util = sum(utils) / len(utils) if utils else 0.0
+        avg_util_str = f"{avg_util:.2f}%" if round(avg_util, 1) != avg_util else f"{avg_util:.1f}%"
 
-    return "\n\n".join(sections)
+        mini_summary = (
+            f"### Mini Summary\n"
+            f"- Total bins: {total_bins:,}\n"
+            f"- Utilized bins: {util_bins:,}\n"
+            f"- Empty bins: {empty_bins:,}\n"
+            f"- Average utilization: {avg_util_str}"
+        )
+
+        sections.append(f"## Plant {p} — Detailed Bin Utilization\n\n{tbl_md}\n\n{mini_summary}")
+
+    return "\n\n---\n\n".join(sections)
 
 def format_comparison_response(question: str, rows: list[dict]) -> str:
     """Generic Comparison Response Engine enforcing GLOBAL COMPARISON RESPONSE RULES (Rules 1-17)."""

@@ -230,16 +230,16 @@ def test_section_1_and_22_both_plants_detail_and_structured_summary():
     sec_7228 = ans.split("## Plant 1258")[0]
     assert "NRJP2513C1" in sec_7228
     assert "BOR11L2P17" not in sec_7228
+    assert "### Mini Summary" in sec_7228
 
     # 3. Plant 1258 bins in Plant 1258 section only
-    sec_1258 = ans.split("## Plant 1258")[1].split("## Summary")[0]
+    sec_1258 = ans.split("## Plant 1258")[1]
     assert "BOR11L2P17" in sec_1258
     assert "NRJP2513C1" not in sec_1258
+    assert "### Mini Summary" in sec_1258
 
-    # 4. Structured summary separated by plant
-    assert "## Summary" in ans
-    assert "### Plant 7228" in ans
-    assert "### Plant 1258" in ans
+    # 4. Structured mini summary separated per plant immediately after each table
+    assert ans.count("### Mini Summary") == 2
     assert "- Total bins:" in ans
     assert "- Utilized bins:" in ans
     assert "- Empty bins:" in ans
@@ -268,9 +268,7 @@ def test_section_5_three_plant_detailed_bin_utilization():
     assert "## Plant 1258 — Detailed Bin Utilization" in ans
     assert "## Plant 1268 — Detailed Bin Utilization" in ans
 
-    assert "### Plant 7228" in ans
-    assert "### Plant 1258" in ans
-    assert "### Plant 1268" in ans
+    assert ans.count("### Mini Summary") == 3
 
 
 def test_section_8_no_unsolicited_rank_column():
@@ -375,4 +373,50 @@ def test_final_acceptance_tests_1_through_5():
     assert p5_3["intent"] == "plant_bin_utilization_detail"
     p5_4 = deterministic_warehouse_sql_generator("Top 5 bins by utilization in Plant 1268")
     assert p5_4["intent"] == "top_utilized_bins"
+
+
+def test_multi_plant_detailed_comparison_separate_table_and_mini_summary():
+    """Verify Section 1-16: MULTI-PLANT DETAILED COMPARISON — SEPARATE TABLE + MINI SUMMARY:
+    'Compare the bin utilization of Plant 1268 and Plant 1266 in detail'
+    - Intent: multi_plant_bin_detail
+    - Separate table per plant (Plant 1268 first, then Plant 1266)
+    - Mini summary immediately AFTER each plant's table
+    - Correct fields: Total bins, Utilized bins, Empty bins, Average utilization
+    - No Occupied Volume
+    - No auto graph
+    """
+    q = "Compare the bin utilization of Plant 1268 and Plant 1266 in detail"
+    plan = deterministic_warehouse_sql_generator(q)
+    assert plan["intent"] == "multi_plant_bin_detail"
+    assert plan["filters"]["plants"] == ["1268", "1266"]
+    assert plan.get("chart_type") == "none"
+
+    mock_rows = [
+        {"Bin": "B1268_01", "Plant": "1268", "Capacity": 50.0, "Available Capacity": 10.0, "Utilization %": "80.0%", "Material / Inventory Information": "MatA (10 units)"},
+        {"Bin": "B1266_01", "Plant": "1266", "Capacity": 60.0, "Available Capacity": 20.0, "Utilization %": "66.7%", "Material / Inventory Information": "Empty"}
+    ]
+    ans = format_deterministic_answer(q, mock_rows)
+
+    # 1. Check sections exist in order
+    assert "Plant 1268" in ans
+    assert "Plant 1266" in ans
+    idx_1268 = ans.index("Plant 1268")
+    idx_1266 = ans.index("Plant 1266")
+    assert idx_1268 < idx_1266
+
+    # 2. Check each plant has its table and immediately following Mini Summary
+    sections = ans.split("\n\n---\n\n")
+    assert len(sections) == 2
+    for s in sections:
+        assert "| Bin | Capacity | Available Capacity | Utilization % | Material / Inventory Information |" in s
+        assert "### Mini Summary" in s
+        assert "- Total bins:" in s
+        assert "- Utilized bins:" in s
+        assert "- Empty bins:" in s
+        assert "- Average utilization:" in s
+
+    # 3. Check Occupied Volume excluded
+    assert "Occupied Volume" not in ans
+    assert "Used Volume" not in ans
+
 
