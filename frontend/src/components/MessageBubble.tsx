@@ -80,7 +80,8 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   const showKpi = !isSingleMetricIntent && outputType === 'kpi' && hasTable && message.intent === 'inventory_summary';
   const showList = !isSingleMetricIntent && outputType === 'list' && hasTable;
   const contentHasTable = Boolean(message.content && message.content.includes('|') && message.content.includes('---'));
-  const showTable = !isSingleMetricIntent && !contentHasTable && (outputType === 'table' || outputType === 'ranking_table' || outputType === 'comparison_table' || outputType === 'detail_analysis' || isPlantBinUtilDetail || showChart || showKpi || showList) && hasTable;
+  const hasMultiTables = Boolean(message.tables && message.tables.length > 0);
+  const showTable = !isSingleMetricIntent && !contentHasTable && !hasMultiTables && (outputType === 'table' || outputType === 'ranking_table' || outputType === 'comparison_table' || outputType === 'detail_analysis' || isPlantBinUtilDetail || showChart || showKpi || showList) && hasTable;
 
   if (isUser) {
     return (
@@ -149,7 +150,9 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
           {message.content && (
             <div className="prose prose-sm max-w-none text-slate-700 dark:text-slate-300 leading-relaxed font-normal">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {message.content}
+                {hasMultiTables && contentHasTable
+                  ? message.content.split(/(?:^|\n)##\s+Plant\s+|(?:^|\n)\|(?:\s*Bin|\s*Plant|\s*Capacity)/)[0].trim()
+                  : message.content}
               </ReactMarkdown>
             </div>
           )}
@@ -225,19 +228,38 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
           )}
 
           {/* 6. Summary or Detailed Data Table View */}
-          {message.tables && message.tables.length > 0 && !contentHasTable ? (
-            <div className="pt-2 space-y-4">
-              {message.tables.map((tbl, tblIdx) => (
-                <ResultTable
-                  key={tblIdx}
-                  rows={tbl.rows}
-                  title={tbl.title}
-                  totalCount={tbl.total_count}
-                  displayedCount={tbl.displayed_count}
-                  emptyMessage={tbl.empty_message}
-                  exportFilename={`plant_${tbl.plant || tblIdx}_utilization_${new Date().toISOString().slice(0, 10)}.csv`}
-                  pageSize={8}
-                />
+          {hasMultiTables ? (
+            <div className="pt-2 space-y-6">
+              {message.tables!.map((tbl, tblIdx) => (
+                <div key={tblIdx} className="space-y-3">
+                  <ResultTable
+                    rows={tbl.rows}
+                    title={tbl.title}
+                    totalCount={tbl.total_count}
+                    displayedCount={tbl.displayed_count}
+                    emptyMessage={tbl.empty_message}
+                    exportFilename={`plant_${tbl.plant || tblIdx}_utilization_${new Date().toISOString().slice(0, 10)}.csv`}
+                    pageSize={10}
+                    unitLabel="bins"
+                  />
+                  {tbl.mini_summary ? (
+                    <div className="bg-slate-50 dark:bg-slate-850/80 rounded-xl p-3 border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300">
+                      <div className="font-semibold text-slate-800 dark:text-slate-200 mb-1.5">Mini Summary:</div>
+                      <ul className="space-y-1 text-slate-600 dark:text-slate-400">
+                        <li>• Total bins: <span className="font-semibold text-slate-800 dark:text-slate-200">{tbl.mini_summary.total_bins?.toLocaleString()}</span></li>
+                        <li>• Utilized bins: <span className="font-semibold text-slate-800 dark:text-slate-200">{tbl.mini_summary.utilized_bins?.toLocaleString()}</span></li>
+                        <li>• Empty bins: <span className="font-semibold text-slate-800 dark:text-slate-200">{tbl.mini_summary.empty_bins?.toLocaleString()}</span></li>
+                        <li>• Average utilization: <span className="font-semibold text-slate-800 dark:text-slate-200">{tbl.mini_summary.average_utilization}</span></li>
+                      </ul>
+                    </div>
+                  ) : tbl.mini_summary_markdown ? (
+                    <div className="bg-slate-50 dark:bg-slate-850/80 rounded-xl p-3 border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300 prose prose-xs dark:prose-invert max-w-none">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {tbl.mini_summary_markdown}
+                      </ReactMarkdown>
+                    </div>
+                  ) : null}
+                </div>
               ))}
             </div>
           ) : (
@@ -247,7 +269,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
                   rows={rows}
                   totalCount={message.total_count}
                   displayedCount={message.displayed_count}
-                  pageSize={8}
+                  pageSize={10}
                 />
               </div>
             )

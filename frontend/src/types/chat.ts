@@ -61,6 +61,14 @@ export interface ChatMessage {
   timestamp: Date;
 }
 
+export interface TableMiniSummary {
+  total_bins?: number;
+  utilized_bins?: number;
+  empty_bins?: number;
+  average_utilization?: string;
+  [key: string]: any;
+}
+
 export interface TableDataset {
   title: string;
   plant?: string;
@@ -69,6 +77,8 @@ export interface TableDataset {
   displayed_count?: number;
   rows: Array<Record<string, any>>;
   empty_message?: string;
+  mini_summary?: TableMiniSummary;
+  mini_summary_markdown?: string;
 }
 
 export interface ChatRequestPayload {

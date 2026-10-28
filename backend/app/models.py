@@ -65,6 +65,8 @@ class TableDataset(BaseModel):
     displayed_count: Optional[int] = None
     rows: list[dict[str, Any]] = Field(default_factory=list)
     empty_message: Optional[str] = None
+    mini_summary: Optional[dict[str, Any]] = None
+    mini_summary_markdown: Optional[str] = None
 
 class ChatResponse(BaseModel):
     answer: str

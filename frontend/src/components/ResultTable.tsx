@@ -9,16 +9,18 @@ interface ResultTableProps {
   emptyMessage?: string;
   totalCount?: number;
   displayedCount?: number;
+  unitLabel?: string;
 }
 
 export const ResultTable: React.FC<ResultTableProps> = ({
   rows,
-  pageSize = 8,
+  pageSize = 10,
   title,
   exportFilename,
   emptyMessage,
   totalCount,
   displayedCount,
+  unitLabel,
 }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [searchTerm, setSearchTerm] = useState('');
@@ -43,6 +45,7 @@ export const ResultTable: React.FC<ResultTableProps> = ({
   }
 
   const columns = Object.keys(rows[0]);
+  const itemLabel = unitLabel || (columns.some((c) => c.toLowerCase().includes('bin')) ? 'bins' : 'records');
 
   // Filter rows
   const filteredRows = useMemo(() => {
@@ -93,8 +96,8 @@ export const ResultTable: React.FC<ResultTableProps> = ({
           <span>{title ? title : `Results Data`}</span>
           <span className="text-[11px] font-normal text-slate-500 dark:text-slate-400 bg-slate-200/60 dark:bg-slate-800 px-1.5 py-0.5 rounded">
             {totalCount && totalCount > rows.length
-              ? `Showing top ${rows.length.toLocaleString()} of ${totalCount.toLocaleString()} matching records`
-              : `${rows.length.toLocaleString()} ${rows.length === 1 ? 'record' : 'records'}`}
+              ? `Showing top ${rows.length.toLocaleString()} of ${totalCount.toLocaleString()} matching ${itemLabel}`
+              : `${rows.length.toLocaleString()} ${rows.length === 1 ? (itemLabel === 'bins' ? 'bin' : 'record') : itemLabel}`}
           </span>
         </div>
         <div className="flex items-center space-x-2">
@@ -170,14 +173,14 @@ export const ResultTable: React.FC<ResultTableProps> = ({
       </div>
 
       {/* Pagination Footer */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between px-3.5 py-2 bg-slate-50 dark:bg-slate-850 border-t border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300">
+      {filteredRows.length > 0 && (
+        <div className="flex items-center justify-between px-3.5 py-2.5 bg-slate-50 dark:bg-slate-850 border-t border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300">
           <div>
             Showing <span className="font-semibold">{startIndex + 1}</span> to{' '}
             <span className="font-semibold">
               {Math.min(startIndex + pageSize, filteredRows.length)}
             </span>{' '}
-            of <span className="font-semibold">{filteredRows.length.toLocaleString()}</span> displayed entries
+            of <span className="font-semibold">{filteredRows.length.toLocaleString()}</span> {itemLabel}
             {totalCount && totalCount > rows.length && (
               <span className="text-slate-400 dark:text-slate-500 ml-1">
                 ({totalCount.toLocaleString()} total matching in database)
@@ -186,9 +189,11 @@ export const ResultTable: React.FC<ResultTableProps> = ({
           </div>
           <div className="flex items-center space-x-1.5">
             <button
-              disabled={currentPage === 1}
+              disabled={currentPage <= 1}
               onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-              className="p-1 border border-slate-300 dark:border-slate-700 rounded hover:bg-slate-200 dark:hover:bg-slate-800 disabled:opacity-40 transition"
+              className="p-1 border border-slate-300 dark:border-slate-700 rounded hover:bg-slate-200 dark:hover:bg-slate-800 disabled:opacity-40 transition cursor-pointer disabled:cursor-not-allowed"
+              title="Previous Page"
+              aria-label="Previous Page"
             >
               <ChevronLeft className="w-3.5 h-3.5" />
             </button>
@@ -198,7 +203,9 @@ export const ResultTable: React.FC<ResultTableProps> = ({
             <button
               disabled={currentPage >= totalPages}
               onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-              className="p-1 border border-slate-300 dark:border-slate-700 rounded hover:bg-slate-200 dark:hover:bg-slate-800 disabled:opacity-40 transition"
+              className="p-1 border border-slate-300 dark:border-slate-700 rounded hover:bg-slate-200 dark:hover:bg-slate-800 disabled:opacity-40 transition cursor-pointer disabled:cursor-not-allowed"
+              title="Next Page"
+              aria-label="Next Page"
             >
               <ChevronRight className="w-3.5 h-3.5" />
             </button>

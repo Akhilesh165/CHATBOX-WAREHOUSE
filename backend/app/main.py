@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from .config import settings
 from .models import ChatRequest, ChatResponse, Chart, Meta, FeedbackRequest, FeedbackResponse, TableDataset
-from .llm import generate_sql, generate_answer, optimize_response_format, deterministic_warehouse_sql_generator, is_single_line_requested, is_number_only_requested, extract_only_number, extract_specific_bins
+from .llm import generate_sql, generate_answer, optimize_response_format, deterministic_warehouse_sql_generator, is_single_line_requested, is_number_only_requested, extract_only_number, extract_specific_bins, extract_explicit_plants
 from .validator import validate_sql, validate_query_result
 from .db import execute_readonly, get_engine
 
@@ -377,6 +377,82 @@ async def chat_endpoint(req: ChatRequest):
         chart_y = None
         chart_data = []
     else:
+        # Check if multi-plant detailed bin comparison
+        cur_intent = opt.get("intent") or (generated.get("intent") if isinstance(generated, dict) else None)
+        is_multi_plant_bin_detail = bool(
+            cur_intent == "multi_plant_bin_detail" or
+            (isinstance(generated, dict) and generated.get("intent") == "multi_plant_bin_detail") or
+            (rows and ("Bin" in rows[0] or "BinLocation" in rows[0]) and "Plant" in rows[0] and len(set(str(r.get("Plant", "")).strip() for r in rows if r.get("Plant"))) > 1)
+        )
+        if is_multi_plant_bin_detail and not table_datasets:
+            target_plants = []
+            if isinstance(generated, dict) and generated.get("filters", {}).get("plants"):
+                target_plants = [str(p).strip() for p in generated["filters"]["plants"] if str(p).strip()]
+            if not target_plants:
+                target_plants = extract_explicit_plants(req.message)
+            if not target_plants and rows:
+                target_plants = list(dict.fromkeys(str(r.get("Plant", "")).strip().replace(",", "") for r in rows if r.get("Plant")))
+            target_plants = list(dict.fromkeys(target_plants))
+
+            if target_plants:
+                forbidden_keys = ["occupied volume", "occupied volume (m³)", "occupied volume (ft³)", "used volume", "rn"]
+                for p in target_plants:
+                    p_rows = [r for r in rows if str(r.get("Plant", "")).strip().replace(",", "") == str(p)]
+                    p_clean_rows = []
+                    for r in p_rows:
+                        clean_r = {
+                            "Bin": str(r.get("Bin", r.get("BinLocation", "N/A"))),
+                            "Capacity": f"{float(r.get('Capacity', r.get('Bin Capacity', 0))):,.2f}" if isinstance(r.get("Capacity", r.get("Bin Capacity", 0)), (int, float)) else str(r.get("Capacity", r.get("Bin Capacity", 0))),
+                            "Available Capacity": f"{float(r.get('Available Capacity', 0)):,.2f}" if isinstance(r.get("Available Capacity", 0), (int, float)) else str(r.get("Available Capacity", 0)),
+                            "Utilization %": str(r.get("Utilization %", r.get("Capacity Utilization %", "0%"))),
+                            "Material / Inventory Information": str(r.get("Material / Inventory Information", r.get("Material", "Empty")))
+                        }
+                        if not clean_r["Utilization %"].endswith("%"):
+                            clean_r["Utilization %"] = f"{clean_r['Utilization %']}%"
+                        for k in list(clean_r.keys()):
+                            if any(fk in k.lower() for fk in forbidden_keys):
+                                clean_r.pop(k, None)
+                        p_clean_rows.append(clean_r)
+
+                    total_p_bins = len(p_rows)
+                    util_p_bins = sum(
+                        1 for r in p_rows
+                        if str(r.get("Material / Inventory Information", "")).strip().lower() not in ["empty", "none", "n/a", ""]
+                        or (float(str(r.get("Utilization %", "0%")).replace("%", "") or 0) > 0)
+                    )
+                    empty_p_bins = max(0, total_p_bins - util_p_bins)
+                    p_utils = []
+                    for r in p_rows:
+                        try:
+                            p_utils.append(float(str(r.get("Utilization %", "0%")).replace("%", "").strip()))
+                        except Exception:
+                            pass
+                    avg_p_util = sum(p_utils) / len(p_utils) if p_utils else 0.0
+                    avg_p_util_str = f"{avg_p_util:.2f}%" if round(avg_p_util, 1) != avg_p_util else f"{avg_p_util:.1f}%"
+
+                    table_datasets.append(TableDataset(
+                        title=f"Plant {p}",
+                        plant=str(p),
+                        count=len(p_clean_rows),
+                        total_count=total_p_bins,
+                        displayed_count=len(p_clean_rows),
+                        rows=p_clean_rows,
+                        empty_message=f"No matching bin records found for Plant {p}." if not p_clean_rows else None,
+                        mini_summary={
+                            "total_bins": total_p_bins,
+                            "utilized_bins": util_p_bins,
+                            "empty_bins": empty_p_bins,
+                            "average_utilization": avg_p_util_str
+                        },
+                        mini_summary_markdown=(
+                            f"**Mini Summary:**\n"
+                            f"- Total bins: {total_p_bins:,}\n"
+                            f"- Utilized bins: {util_p_bins:,}\n"
+                            f"- Empty bins: {empty_p_bins:,}\n"
+                            f"- Average utilization: {avg_p_util_str}"
+                        )
+                    ))
+
         chart_type = opt.get("chart_type") or (generated.get("chart_type", "none") if isinstance(generated, dict) else "none")
         chart_title = opt.get("chart_title") or (generated.get("chart_title") if isinstance(generated, dict) else None)
         chart_x = opt.get("chart_x") or (generated.get("chart_x") if isinstance(generated, dict) else None)
@@ -431,7 +507,7 @@ async def chat_endpoint(req: ChatRequest):
         for r in rows:
             r.pop("TotalMatching", None)
         displayed_count = len(rows)
-    elif is_multi_table and table_datasets:
+    elif table_datasets:
         total_matching_count = sum(t.total_count or t.count for t in table_datasets)
         displayed_count = len(rows)
     elif rows and isinstance(rows[0], dict):
@@ -455,7 +531,7 @@ async def chat_endpoint(req: ChatRequest):
             "line_chart" if chart_type == "line" else
             "bar_chart" if chart_type == "bar" else
             "pie_chart" if chart_type == "pie" else
-            "table" if rows else "text"
+            "table" if (rows or table_datasets) else "text"
         )
     )
 
