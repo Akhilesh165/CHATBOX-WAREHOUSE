@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from .config import settings
 from .models import ChatRequest, ChatResponse, Chart, Meta, FeedbackRequest, FeedbackResponse, TableDataset
-from .llm import generate_sql, generate_answer, optimize_response_format, deterministic_warehouse_sql_generator, is_single_line_requested, is_number_only_requested, extract_only_number, extract_specific_bins, extract_explicit_plants
+from .llm import generate_sql, generate_answer, optimize_response_format, deterministic_warehouse_sql_generator, is_single_line_requested, is_number_only_requested, extract_only_number, extract_specific_bins, extract_explicit_plants, get_plant_level_bin_metrics
 from .validator import validate_sql, validate_query_result
 from .db import execute_readonly, get_engine
 
@@ -414,21 +414,22 @@ async def chat_endpoint(req: ChatRequest):
                                 clean_r.pop(k, None)
                         p_clean_rows.append(clean_r)
 
-                    total_p_bins = len(p_rows)
-                    util_p_bins = sum(
-                        1 for r in p_rows
-                        if str(r.get("Material / Inventory Information", "")).strip().lower() not in ["empty", "none", "n/a", ""]
-                        or (float(str(r.get("Utilization %", "0%")).replace("%", "") or 0) > 0)
-                    )
-                    empty_p_bins = max(0, total_p_bins - util_p_bins)
-                    p_utils = []
-                    for r in p_rows:
-                        try:
-                            p_utils.append(float(str(r.get("Utilization %", "0%")).replace("%", "").strip()))
-                        except Exception:
-                            pass
-                    avg_p_util = sum(p_utils) / len(p_utils) if p_utils else 0.0
-                    avg_p_util_str = f"{avg_p_util:.2f}%" if round(avg_p_util, 1) != avg_p_util else f"{avg_p_util:.1f}%"
+                    plant_metrics = get_plant_level_bin_metrics(p)
+                    if plant_metrics and plant_metrics.get("total_bins"):
+                        total_p_bins = plant_metrics["total_bins"]
+                        util_p_bins = plant_metrics["utilized_bins"]
+                        empty_p_bins = plant_metrics["empty_bins"]
+                        avg_p_util_str = plant_metrics["average_utilization"]
+                    else:
+                        total_p_bins = len(p_rows)
+                        util_p_bins = sum(
+                            1 for r in p_rows
+                            if str(r.get("Material / Inventory Information", "")).strip().lower() not in ["empty", "none", "n/a", ""]
+                            or (float(str(r.get("Utilization %", "0%")).replace("%", "") or 0) > 0)
+                        )
+                        empty_p_bins = max(0, total_p_bins - util_p_bins)
+                        avg_p_util = (util_p_bins * 100.0 / total_p_bins) if total_p_bins > 0 else 0.0
+                        avg_p_util_str = f"{avg_p_util:.2f}%" if round(avg_p_util, 1) != avg_p_util else f"{avg_p_util:.1f}%"
 
                     table_datasets.append(TableDataset(
                         title=f"Plant {p} — Detailed Bin Utilization",
@@ -442,7 +443,8 @@ async def chat_endpoint(req: ChatRequest):
                             "total_bins": total_p_bins,
                             "utilized_bins": util_p_bins,
                             "empty_bins": empty_p_bins,
-                            "average_utilization": avg_p_util_str
+                            "average_utilization": avg_p_util_str,
+                            "bin_utilization": avg_p_util_str
                         },
                         mini_summary_markdown=(
                             f"**Mini Summary:**\n"

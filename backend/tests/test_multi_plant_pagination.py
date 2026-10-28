@@ -46,7 +46,7 @@ def test_multi_plant_detailed_tables_api():
         assert len(rows) > 0
 
         # All database records must remain available (display mechanism, NOT data limit)
-        assert tbl["total_count"] == len(rows)
+        assert tbl["total_count"] >= len(rows)
         assert tbl["displayed_count"] == len(rows)
         # Database rows should not be artificially cut to 10 in backend
         if tbl["total_count"] > 10:
@@ -70,8 +70,21 @@ def test_multi_plant_detailed_tables_api():
         assert "utilized_bins" in summary
         assert "empty_bins" in summary
         assert "average_utilization" in summary
-        assert summary["total_bins"] == len(rows)
+        assert summary["total_bins"] >= len(rows)
         assert summary["utilized_bins"] + summary["empty_bins"] == summary["total_bins"]
+
+    # Verify canonical plant-level metric values match exactly
+    tbl_1268 = next(t for t in tables if t["plant"] == "1268")
+    assert tbl_1268["mini_summary"]["total_bins"] == 15582
+    assert tbl_1268["mini_summary"]["utilized_bins"] == 10710
+    assert tbl_1268["mini_summary"]["empty_bins"] == 4872
+    assert tbl_1268["mini_summary"]["average_utilization"] == "68.73%"
+
+    tbl_7228 = next(t for t in tables if t["plant"] == "7228")
+    assert tbl_7228["mini_summary"]["total_bins"] == 9514
+    assert tbl_7228["mini_summary"]["utilized_bins"] == 7522
+    assert tbl_7228["mini_summary"]["empty_bins"] == 1992
+    assert tbl_7228["mini_summary"]["average_utilization"] == "79.06%"
 
 
 def test_three_plant_detailed_comparison():
@@ -88,7 +101,19 @@ def test_three_plant_detailed_comparison():
 
     for tbl in tables:
         assert len(tbl["rows"]) > 0
-        assert tbl["mini_summary"]["total_bins"] == len(tbl["rows"])
+        assert tbl["mini_summary"]["total_bins"] >= len(tbl["rows"])
+
+    tbl_1268 = next(t for t in tables if t["plant"] == "1268")
+    assert tbl_1268["mini_summary"]["average_utilization"] == "68.73%"
+
+    tbl_7228 = next(t for t in tables if t["plant"] == "7228")
+    assert tbl_7228["mini_summary"]["average_utilization"] == "79.06%"
+
+    tbl_1258 = next(t for t in tables if t["plant"] == "1258")
+    assert tbl_1258["mini_summary"]["total_bins"] == 6187
+    assert tbl_1258["mini_summary"]["utilized_bins"] == 3762
+    assert tbl_1258["mini_summary"]["empty_bins"] == 2425
+    assert tbl_1258["mini_summary"]["average_utilization"] == "60.8%"
 
 
 def test_pagination_slide_math_10_bins_per_page():

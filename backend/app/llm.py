@@ -4,6 +4,7 @@ using rich context models, business definitions, calculation rules, and dimensio
 """
 
 import os
+import time
 import json
 import re
 import httpx
@@ -7416,6 +7417,56 @@ def generate_comparison_details(rows: list[dict], q_lower: str) -> str:
             lines.append(f"- **Plant {p}**: {metrics_str}")
     return "\n".join(lines)
 
+_PLANT_BIN_METRICS_CACHE: dict[str, dict] = {}
+_PLANT_BIN_METRICS_TIMESTAMP: float = 0.0
+
+def get_plant_level_bin_metrics(plant: str | int) -> dict:
+    """Retrieves verified plant-level bin utilization metrics:
+    total_bins, occupied_bins, utilized_bins, empty_bins, bin_utilization, average_utilization.
+    Source of truth: Plant Bin Utilization % = Total Occupied Capacity / Total Bin Capacity * 100
+    (COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0))
+    """
+    global _PLANT_BIN_METRICS_CACHE, _PLANT_BIN_METRICS_TIMESTAMP
+    p_clean = str(plant).strip().replace(",", "")
+    now = time.time()
+    if not _PLANT_BIN_METRICS_CACHE or (now - _PLANT_BIN_METRICS_TIMESTAMP > 300):
+        try:
+            from .db import execute_readonly
+            sql = """SELECT 
+    b.Plant AS [Plant], 
+    COUNT(DISTINCT b.BinLocation) AS [total_bins], 
+    COUNT(DISTINCT i.BinNo) AS [occupied_bins], 
+    (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS [empty_bins], 
+    ROUND(COUNT(DISTINCT i.BinNo) * 100.0 / NULLIF(COUNT(DISTINCT b.BinLocation), 0), 2) AS [bin_utilization] 
+FROM dbo.ZWMS_BIN_MASTER b 
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant 
+GROUP BY b.Plant"""
+            db_rows, _ = execute_readonly(sql)
+            new_cache = {}
+            for r in db_rows:
+                p_key = str(r.get("Plant", "")).strip().replace(",", "")
+                tb = int(r.get("total_bins", 0))
+                ob = int(r.get("occupied_bins", 0))
+                eb = int(r.get("empty_bins", 0))
+                util = float(r.get("bin_utilization", 0.0) or 0.0)
+                util_str = f"{util:.2f}%" if round(util, 1) != util else f"{util:.1f}%"
+                new_cache[p_key] = {
+                    "total_bins": tb,
+                    "utilized_bins": ob,
+                    "occupied_bins": ob,
+                    "empty_bins": eb,
+                    "bin_utilization": util_str,
+                    "average_utilization": util_str,
+                    "util_num": util
+                }
+            if new_cache:
+                _PLANT_BIN_METRICS_CACHE = new_cache
+                _PLANT_BIN_METRICS_TIMESTAMP = now
+        except Exception:
+            pass
+
+    return _PLANT_BIN_METRICS_CACHE.get(p_clean, {})
+
 def format_detailed_bin_utilization_tables(rows: list[dict], requested_plants: list[str] | None = None) -> str:
     """Formats bin-level detailed response with separate tables per plant and structured summary (Sections 3-13, 22)."""
     if not rows or not isinstance(rows[0], dict):
@@ -7468,22 +7519,23 @@ def format_detailed_bin_utilization_tables(rows: list[dict], requested_plants: l
         alignments = [":---", "---:", "---:", "---:", ":---"]
         tbl_md = generate_markdown_table(headers, table_data, alignments)
 
-        # Plant-specific Mini Summary immediately following that plant's table (Sections 6, 7, 9, 15)
-        total_bins = len(p_rows)
-        util_bins = sum(
-            1 for r in p_rows 
-            if str(r.get(mat_col, "")).strip().lower() not in ["empty", "none", "n/a", ""]
-            or (float(str(r.get(util_col, "0%")).replace("%", "") or 0) > 0)
-        )
-        empty_bins = max(0, total_bins - util_bins)
-        utils = []
-        for r in p_rows:
-            try:
-                utils.append(float(str(r.get(util_col, "0%")).replace("%", "").strip()))
-            except Exception:
-                pass
-        avg_util = sum(utils) / len(utils) if utils else 0.0
-        avg_util_str = f"{avg_util:.2f}%" if round(avg_util, 1) != avg_util else f"{avg_util:.1f}%"
+        # Plant-specific Mini Summary immediately following that plant's table (Consistent plant-level calculation)
+        plant_metrics = get_plant_level_bin_metrics(p)
+        if plant_metrics and plant_metrics.get("total_bins"):
+            total_bins = plant_metrics["total_bins"]
+            util_bins = plant_metrics["utilized_bins"]
+            empty_bins = plant_metrics["empty_bins"]
+            avg_util_str = plant_metrics["average_utilization"]
+        else:
+            total_bins = len(p_rows)
+            util_bins = sum(
+                1 for r in p_rows 
+                if str(r.get(mat_col, "")).strip().lower() not in ["empty", "none", "n/a", ""]
+                or (float(str(r.get(util_col, "0%")).replace("%", "") or 0) > 0)
+            )
+            empty_bins = max(0, total_bins - util_bins)
+            avg_util = (util_bins * 100.0 / total_bins) if total_bins > 0 else 0.0
+            avg_util_str = f"{avg_util:.2f}%" if round(avg_util, 1) != avg_util else f"{avg_util:.1f}%"
 
         mini_summary = (
             f"### Mini Summary\n"
