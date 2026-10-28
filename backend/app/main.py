@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from .config import settings
 from .models import ChatRequest, ChatResponse, Chart, Meta, FeedbackRequest, FeedbackResponse, TableDataset
-from .llm import generate_sql, generate_answer, optimize_response_format, deterministic_warehouse_sql_generator, is_single_line_requested, is_number_only_requested, extract_only_number
+from .llm import generate_sql, generate_answer, optimize_response_format, deterministic_warehouse_sql_generator, is_single_line_requested, is_number_only_requested, extract_only_number, extract_specific_bins
 from .validator import validate_sql, validate_query_result
 from .db import execute_readonly, get_engine
 
@@ -345,7 +345,12 @@ async def chat_endpoint(req: ChatRequest):
 
     # 6. Check single-line or number-only modes and automatically optimize response format
     q_user = req.message.lower()
-    single_line_mode = is_single_line_requested(q_user)
+    spec_bins = extract_specific_bins(req.message)
+    is_single_specific_bin = bool(
+        (isinstance(generated, dict) and generated.get("is_single_specific_bin")) or
+        (len(spec_bins) == 1 and not any(k in q_user for k in ["graph", "chart", "plot", "visualize"]))
+    )
+    single_line_mode = is_single_line_requested(q_user) or is_single_specific_bin
     number_only_mode = is_number_only_requested(q_user)
 
     if not is_invalid:

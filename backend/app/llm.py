@@ -800,6 +800,99 @@ def is_detail_or_graph_requested(question: str) -> bool:
     return False
 
 
+_KNOWN_BINS_CACHE: set[str] | None = None
+_KNOWN_BINS_STRIPPED_S_CACHE: dict[str, str] | None = None
+
+def get_known_bins() -> tuple[set[str], dict[str, str]]:
+    """Retrieves and caches all known storage bin identifiers from ZWMS_BIN_MASTER."""
+    global _KNOWN_BINS_CACHE, _KNOWN_BINS_STRIPPED_S_CACHE
+    if _KNOWN_BINS_CACHE is not None and _KNOWN_BINS_STRIPPED_S_CACHE is not None:
+        return _KNOWN_BINS_CACHE, _KNOWN_BINS_STRIPPED_S_CACHE
+    try:
+        from .db import get_engine
+        from sqlalchemy import text
+        engine = get_engine()
+        with engine.connect() as conn:
+            res = conn.execute(text("SELECT DISTINCT BinLocation FROM ZWMS_BIN_MASTER"))
+            bins = set(str(r[0]).strip().upper() for r in res.fetchall() if r[0])
+            stripped = {b[1:]: b for b in bins if b.startswith('S') and b[1:].isdigit()}
+            _KNOWN_BINS_CACHE = bins
+            _KNOWN_BINS_STRIPPED_S_CACHE = stripped
+            return _KNOWN_BINS_CACHE, _KNOWN_BINS_STRIPPED_S_CACHE
+    except Exception:
+        return set(), {}
+
+EXCLUDED_BIN_KEYWORDS = {
+    "capacity", "utilization", "master", "table", "space", "volume", "location", "locations",
+    "occupancy", "fullness", "empty", "vacant", "free", "ones", "these", "those", "cubic",
+    "bins", "fill", "level", "levels", "rate", "rates", "network", "usage", "storage",
+    "can", "be", "used", "for", "has", "have", "with", "does", "is", "are", "lowest", "highest",
+    "least", "most", "the", "about", "what", "which", "plant", "material", "materials",
+    "details", "information", "info", "stored", "inventory", "status", "give", "show", "tell",
+    "tell me", "show me", "how much", "how many", "units", "quantity", "stock", "warehouse",
+    "total", "overall", "facility", "record", "records", "query", "queries"
+}
+
+def extract_specific_bins(query: str) -> list[str]:
+    """Extracts explicit, individual bin identifiers from a user query."""
+    if not query:
+        return []
+    q_clean = query.strip()
+    found = []
+    known_bins, stripped_s = get_known_bins()
+
+    # 1. Explicit syntactical patterns: "bin S105290412", "105290412 bin", "the S105290412 bin", "S105290412's", etc.
+    explicit_patterns = [
+        r"\bbin\s*[:#-]?\s*([a-zA-Z0-9_-]{3,25})\b",
+        r"\b([a-zA-Z0-9_-]{3,25})\s+bin\b",
+        r"\bthe\s+([a-zA-Z0-9_-]{3,25})\s+bin\b",
+        r"\b([a-zA-Z0-9_-]{3,25})'s\b",
+        r"\bfor\s+bin\s+([a-zA-Z0-9_-]{3,25})\b",
+        r"\bof\s+bin\s+([a-zA-Z0-9_-]{3,25})\b",
+        r"\bin\s+bin\s+([a-zA-Z0-9_-]{3,25})\b",
+        r"\babout\s+(?:bin\s+)?([a-zA-Z0-9_-]{3,25})\b",
+        r"\b(?:details|information|status|capacity|utilization|inventory)\s+(?:of|for|about)\s+(?:bin\s+)?([a-zA-Z0-9_-]{3,25})\b",
+        r"\b(?:what is in|what's in|what is stored in)\s+(?:bin\s+)?([a-zA-Z0-9_-]{3,25})\b"
+    ]
+    for pat in explicit_patterns:
+        for m in re.finditer(pat, q_clean, re.IGNORECASE):
+            token = m.group(1).strip().upper()
+            if token.lower() not in EXCLUDED_BIN_KEYWORDS and token not in ["1258", "1266", "1268", "7228", "2024", "2025", "2026"]:
+                if any(ch.isdigit() for ch in token):
+                    if token not in found:
+                        found.append(token)
+
+    # 2. Match alphanumeric tokens against known bin database records
+    tokens = re.findall(r"\b[a-zA-Z0-9_-]{4,25}\b", q_clean)
+    for tok in tokens:
+        tu = tok.upper()
+        if tu.lower() in EXCLUDED_BIN_KEYWORDS or tu in ["1258", "1266", "1268", "7228", "2024", "2025", "2026"]:
+            continue
+        if tu in known_bins:
+            if tu not in found:
+                found.append(tu)
+        elif tu in stripped_s:
+            if tu not in found and stripped_s[tu] not in found:
+                found.append(tu)
+
+    # 3. Single-token query (e.g. user just types "S105290412" or "105290412")
+    if not found and len(q_clean.split()) == 1:
+        single_tok = q_clean.strip().upper()
+        if any(ch.isdigit() for ch in single_tok) and len(single_tok) >= 4 and single_tok not in ["1258", "1266", "1268", "7228", "2024", "2025", "2026"]:
+            found.append(single_tok)
+
+    # 4. Resolve stripped S if mapped
+    resolved = []
+    for b in found:
+        if b in known_bins:
+            resolved.append(b)
+        elif b in stripped_s:
+            resolved.append(stripped_s[b])
+        else:
+            resolved.append(b)
+    return resolved
+
+
 def is_explicit_chart_only_requested(question: str) -> bool:
     """Checks strictly for graph/chart/visualization keywords."""
     if not question:
@@ -1420,22 +1513,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     is_fresh_bin_avail_cap = any(b in q_lower for b in ["bin", "bins"]) and any(k in q_lower for k in ["available capacity", "free capacity", "remaining capacity", "available volume", "available space"])
     
     # Specific bin pattern detection (e.g. "Which plant does bin NRJP2124D2 belong to?", "Is bin NRJP2124D2 occupied?", etc.)
-    bin_cand_matches = re.findall(r"(?:bin\s*[:#-]?\s*([a-z0-9_-]{2,25})|\b(b\d{3,5})\b)", q_lower, re.IGNORECASE)
-    valid_raw_bins = []
-    excluded_bin_words = [
-        "capacity", "utilization", "master", "table", "space", "volume", "location", "locations",
-        "occupancy", "fullness", "empty", "vacant", "free", "ones", "these", "those", "cubic",
-        "bins", "fill", "level", "levels", "rate", "rates", "network", "usage", "storage",
-        "has", "have", "with", "does", "is", "are", "lowest", "highest", "least", "most", "the"
-    ]
-    for bm in bin_cand_matches:
-        b_val = (bm[0] or bm[1] or "").strip()
-        if b_val and b_val.lower() not in excluded_bin_words:
-            # Genuine bin codes must contain digits (e.g. B001, NRJP2124D2, BOR11L2P17) or start with B + digits
-            if any(c.isdigit() for c in b_val):
-                valid_raw_bins.append(b_val.upper())
-            elif len(b_val) >= 4 and not b_val.lower().isalpha() and any(c.isdigit() for c in b_val):
-                valid_raw_bins.append(b_val.upper())
+    valid_raw_bins = extract_specific_bins(q_lower)
     is_fresh_specific_bin = len(valid_raw_bins) > 0
 
     is_overall_network_request = is_all_plants_util or any(k in q_lower for k in ["overall", "network", "all plants", "across all", "facility", "entire warehouse", "whole warehouse", "facility fill", "across the network", "by plant", "across plants"])
@@ -1584,6 +1662,11 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["entity"] = "bin"
         state["condition"] = None
         state["filters"] = {"bin": valid_raw_bins[0]}
+        if len(valid_raw_bins) == 1:
+            state["is_single_specific_bin"] = True
+            state["specific_bin"] = valid_raw_bins[0]
+            if not is_explicit_chart_request:
+                state["response_mode"] = "SINGLE_LINE"
         if any(k in q_lower for k in ["which plant", "what plant", "belong to", "plant of bin", "plant for bin", "where is bin located"]):
             state["topic"] = "bin_plant_lookup"
         elif any(k in q_lower for k in ["occupied", "empty", "vacant", "in use"]) and any(q_start in q_lower for q_start in ["is ", "are ", "does ", "is the"]):
@@ -2319,24 +2402,8 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
     if not plant_cand:
         plant_cand = extract_single_plant_safe(q_lower)
     
-    # Extract specific bin codes (e.g. B001, BIN-001, BIN001, B045, NRJP2124D2, etc.)
-    bin_matches = re.findall(r"(?:bin\s*[:#-]?\s*([a-z0-9_-]{2,25})|\b(b\d{3,5})\b)", q_lower, re.IGNORECASE)
-    raw_bins = []
-    excluded_bin_words = [
-        "capacity", "utilization", "master", "table", "space", "volume", "location", "locations",
-        "occupancy", "fullness", "empty", "vacant", "free", "ones", "these", "those", "cubic",
-        "bins", "fill", "level", "levels", "rate", "rates", "network", "usage", "storage",
-        "can", "be", "used", "for", "has", "have", "with", "does", "is", "are", "lowest", "highest", "least", "most", "the"
-    ]
-    for bm in bin_matches:
-        b_val = (bm[0] or bm[1] or "").strip()
-        if b_val and b_val.lower() not in excluded_bin_words:
-            # Genuine bin codes must contain digits (e.g. B001, NRJP2124D2, BOR11L2P17)
-            if any(c.isdigit() for c in b_val):
-                raw_bins.append(b_val.upper())
-            elif len(b_val) >= 4 and not b_val.lower().isalpha() and any(c.isdigit() for c in b_val):
-                raw_bins.append(b_val.upper())
-    
+    # Extract specific bin codes (e.g. S105290412, B001, BIN-001, BIN001, B045, NRJP2124D2, etc.)
+    raw_bins = extract_specific_bins(q_lower)
     bin_match = raw_bins[0] if raw_bins else None
 
     material_match = re.search(r"\b(?:material|sku|item|code)\s*[:#-]?\s*([a-z0-9_-]{5,20})\b", q_lower, re.IGNORECASE)
@@ -2402,6 +2469,48 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
         filters = {"bin": b_code}
         if plant_cand:
             filters["plant"] = plant_cand
+
+        # Single specific bin query (when not explicitly requesting a graph/chart)
+        if len(raw_bins) == 1 and not is_explicit_chart:
+            where_bin_clause = f"(b.BinLocation = '{b_code}' OR b.BinLocation = 'S{b_code}' OR b.BinLocation LIKE '%{b_code}')"
+            sql_single_bin = f"""SELECT 
+    b.BinLocation AS [Bin],
+    b.Plant AS [Plant],
+    COALESCE(b.StorageLocation, 'N/A') AS [Storage Location],
+    ROUND(b.Volume, 2) AS [Capacity],
+    COALESCE(b.VolumeUnit, 'FT3') AS [Unit],
+    ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Occupied Volume],
+    ROUND(b.Volume - COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Available Capacity],
+    ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 2) AS [Utilization %],
+    COALESCE(SUM(i.UnrestrictedQty), 0) AS [Total Qty],
+    MAX(i.BaseUnitOfMeasure) AS [UOM],
+    COUNT(DISTINCT i.Material) AS [Material Count],
+    CASE 
+        WHEN COUNT(i.Material) = 0 THEN 'Empty'
+        WHEN COUNT(DISTINCT i.Material) = 1 THEN CONCAT(MIN(i.Material), ' (', ROUND(SUM(i.UnrestrictedQty), 1), ' ', COALESCE(MAX(i.BaseUnitOfMeasure), 'units'), ')')
+        ELSE CONCAT(COUNT(DISTINCT i.Material), ' materials (', ROUND(SUM(i.UnrestrictedQty), 1), ' ', COALESCE(MAX(i.BaseUnitOfMeasure), 'units'), ')')
+    END AS [Material Info]
+FROM dbo.ZWMS_BIN_MASTER b
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+WHERE {where_bin_clause}{plant_filter}
+GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit"""
+
+            return {
+                "sql": sql_single_bin,
+                "chart_type": "none",
+                "chart_title": f"Bin {b_code}",
+                "chart_x": None,
+                "chart_y": None,
+                "intent": "specific_bin_inquiry",
+                "metric": "specific_bin",
+                "filters": filters,
+                "time_range": "current",
+                "output_type": "text",
+                "is_single_specific_bin": True,
+                "single_bin_id": b_code,
+                "conversation_state": state
+            }
 
         # 1. Bin Occupancy Yes/No check: "Is bin NRJP2124D2 occupied?", "Is bin NRJP2124D2 empty?"
         if any(k in q_lower for k in ["occupied", "empty", "vacant", "in use"]) and any(q_start in q_lower for q_start in ["is ", "are ", "does ", "is the"]):
@@ -2528,15 +2637,15 @@ GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit"""
 
             return {
                 "sql": sql_specific_bin,
-                "chart_type": "bar" if len(raw_bins) > 1 else "none",
+                "chart_type": "bar" if (len(raw_bins) > 1 or is_explicit_chart) else "none",
                 "chart_title": f"Utilization of Bin {raw_bins[0]}" if len(raw_bins) == 1 else f"Bin Utilization Comparison ({', '.join(raw_bins)})",
-                "chart_x": "Bin" if len(raw_bins) > 1 else None,
-                "chart_y": "Utilization %" if len(raw_bins) > 1 else None,
+                "chart_x": "Bin" if (len(raw_bins) > 1 or is_explicit_chart) else None,
+                "chart_y": "Utilization %" if (len(raw_bins) > 1 or is_explicit_chart) else None,
                 "intent": "specific_bin_utilization" if len(raw_bins) == 1 else "bin_comparison",
                 "metric": "bin_utilization",
                 "filters": filters,
                 "time_range": "current",
-                "output_type": out_type,
+                "output_type": "bar_chart" if is_explicit_chart else out_type,
                 "conversation_state": state
             }
 
@@ -7424,6 +7533,126 @@ def format_comparison_response(question: str, rows: list[dict]) -> str:
     # Rule 1 & 3: Initial comparison query: TABLE ONLY!
     return table_md
 
+def format_single_specific_bin_response(question: str, b_code: str, rows: list[dict], plant_cand: str | None = None) -> str:
+    """Formats one concise line response for a single specific bin query."""
+    if not rows or not isinstance(rows[0], dict):
+        return "No matching warehouse records were found for your query in the database."
+    
+    r = rows[0]
+    q_lower = normalize_query_typos(question).lower()
+    
+    bin_name = str(r.get("Bin") or r.get("BinLocation") or r.get("BinNo") or b_code).strip()
+    plant = str(r.get("Plant") or plant_cand or "").strip()
+    
+    # Capacity and utilization extraction
+    cap_val = r.get("Capacity") or r.get("Bin Capacity") or r.get("Total Capacity") or r.get("Volume")
+    try:
+        capacity = float(str(cap_val).split()[0].replace(",", "")) if cap_val is not None else 0.0
+    except Exception:
+        capacity = 0.0
+        
+    avail_val = r.get("Available Capacity") or r.get("Available Space") or r.get("Available Capacity (FT3)")
+    try:
+        avail_cap = float(str(avail_val).split()[0].replace(",", "")) if avail_val is not None else 0.0
+    except Exception:
+        avail_cap = 0.0
+        
+    occ_val = r.get("Occupied Volume") or r.get("Occupied Volume (FT3)")
+    try:
+        occupied_vol = float(str(occ_val).split()[0].replace(",", "")) if occ_val is not None else 0.0
+    except Exception:
+        occupied_vol = 0.0
+        
+    util_val = r.get("Utilization %") or r.get("Capacity Utilization %") or r.get("UtilizationPct") or r.get("Utilization")
+    try:
+        util_pct = float(str(util_val).replace("%", "").strip()) if util_val is not None else 0.0
+    except Exception:
+        util_pct = 0.0
+        
+    unit = str(r.get("Unit") or r.get("VolumeUnit") or "FT³").strip()
+    if unit.upper() == "FT3":
+        unit = "FT³"
+        
+    qty_val = r.get("Total Qty") or r.get("Inventory Qty") or r.get("TotalQty") or r.get("UnrestrictedQty") or 0.0
+    try:
+        total_qty = float(str(qty_val).replace(",", "").strip())
+    except Exception:
+        total_qty = 0.0
+        
+    uom = str(r.get("UOM") or r.get("BaseUnitOfMeasure") or "units").strip()
+    mat_info = str(r.get("Material Info") or r.get("Material") or "").strip()
+    
+    if b_code in question:
+        display_bin = b_code
+    elif b_code.startswith("S") and b_code[1:] in question:
+        display_bin = b_code[1:]
+    else:
+        display_bin = bin_name
+        
+    plant_str = f" in Plant {plant}" if (plant and (plant_cand or "plant" in q_lower)) else ""
+
+    # 1. Occupied Volume (Only when explicitly asked)
+    if "occupied volume" in q_lower:
+        return f"Bin {display_bin}{plant_str} has {occupied_vol:.2f} {unit} occupied volume."
+
+    # 2. Available Capacity
+    if any(k in q_lower for k in ["available capacity", "remaining capacity", "free capacity", "available space", "free space"]):
+        return f"Bin {display_bin}{plant_str} has {avail_cap:.2f} {unit} available capacity."
+
+    # 3. Total Capacity
+    if any(k in q_lower for k in ["what is the capacity", "capacity of", "how much capacity", "total capacity"]):
+        return f"Bin {display_bin}{plant_str} has a capacity of {capacity:.2f} {unit}."
+
+    # 4. Plant lookup
+    if any(k in q_lower for k in ["which plant", "what plant", "belong to", "where is bin located", "plant of bin", "plant for bin"]):
+        return f"Bin {display_bin} belongs to Plant {plant}." if plant else f"Bin {display_bin} was found in the warehouse database."
+
+    # 5. Material / What is in
+    if any(k in q_lower for k in ["what material", "which material", "materials stored", "material in", "material is stored", "what is in", "what is stored in", "what's in", "contains"]):
+        if total_qty > 0 and mat_info and mat_info.lower() != "empty":
+            return f"Bin {display_bin}{plant_str} contains {mat_info}."
+        elif total_qty > 0:
+            return f"Bin {display_bin}{plant_str} contains {total_qty:,.1f} {uom} of inventory."
+        else:
+            return f"Bin {display_bin}{plant_str} is currently empty."
+
+    # 6. Inventory quantity / stock
+    if any(k in q_lower for k in ["how much inventory", "inventory in", "quantity in", "how many units", "stock in"]):
+        if total_qty > 0:
+            return f"Bin {display_bin}{plant_str} contains {total_qty:,.1f} {uom} of inventory."
+        else:
+            return f"Bin {display_bin}{plant_str} is currently empty (0 units)."
+
+    # 7. Status / Occupancy Yes/No
+    if any(k in q_lower for k in ["status of", "tell me the status", "is empty", "is occupied", "vacant", "in use"]):
+        if total_qty > 0 or util_pct > 0:
+            mat_desc = f" ({mat_info})" if mat_info and mat_info.lower() != "empty" else ""
+            return f"Bin {display_bin}{plant_str} is occupied with {util_pct:.2f}% utilization{mat_desc}."
+        else:
+            return f"Bin {display_bin}{plant_str} is empty (0.0% utilization)."
+
+    # 8. Details: "Give me details of bin S105290412" / "details for bin 105290412"
+    if any(k in q_lower for k in ["details", "detail", "breakdown"]):
+        p_part = f"is in Plant {plant}, " if plant else ""
+        return f"Bin {display_bin} {p_part}has {capacity:.2f} {unit} capacity, {avail_cap:.2f} {unit} available capacity, and {util_pct:.2f}% utilization."
+
+    # 9. Utilization: "Show me utilization of 105290412 bin in Plant 1266", "What is the utilization of S105290412?"
+    if any(k in q_lower for k in ["utiliz", "how full", "fill rate", "%"]):
+        if plant and (plant_cand or f"plant {plant}" in q_lower or "plant" in q_lower):
+            return f"Bin {display_bin} in Plant {plant} has {util_pct:.2f}% utilization."
+        else:
+            return f"Bin {display_bin} has {util_pct:.2f}% utilization."
+
+    # 10. Generic / Tell me about / Standalone: "Tell me about S105290412", "S105290412", "information about 105290412"
+    p_part = f"is in Plant {plant}, " if plant else ""
+    if total_qty > 0 and mat_info and mat_info.lower() != "empty":
+        return f"Bin {display_bin} {p_part}with {util_pct:.2f}% utilization and contains {mat_info}."
+    elif total_qty > 0:
+        return f"Bin {display_bin} {p_part}with {util_pct:.2f}% utilization and contains {total_qty:,.1f} {uom} of inventory."
+    else:
+        return f"Bin {display_bin} {p_part}with {util_pct:.2f}% utilization and is currently empty."
+
+
 def format_deterministic_answer(question: str, rows: list[dict]) -> str:
     res = _format_deterministic_answer_impl(question, rows)
     return sanitize_bin_utilization_response(res, question)
@@ -7516,6 +7745,13 @@ def _format_deterministic_answer_impl(question: str, rows: list[dict]) -> str:
                 breakdown = ", ".join(f"Plant {r.get('Plant')}: {float(r.get(num_col, 0) or 0):,.0f}" for r in rows)
                 return f"Total count: **{tot:,.0f} units** across {len(rows)} plants ({breakdown})."
             return f"Total count: **{len(rows)} matching entities**."
+
+    # 0A_SPECIFIC_BIN. Single specific bin query = Single-line response (Priority Rule: One Specific Bin -> One Concise Line)
+    spec_bins = extract_specific_bins(question)
+    is_explicit_chart_q = is_explicit_chart_only_requested(question) or any(k in q_lower for k in ["graph", "chart", "plot", "visualize"])
+    if len(spec_bins) == 1 and not is_explicit_chart_q:
+        plant_val = extract_single_plant_safe(q_lower)
+        return format_single_specific_bin_response(question, spec_bins[0], rows, plant_cand=plant_val)
 
     # 0A_BIN_LEVEL_DETAIL. Bin-level Detailed Response (Single or Multi Plant)
     if rows and ("Bin" in cols or "BinLocation" in cols) and ("Capacity" in cols or "Bin Capacity" in cols) and "Available Capacity" in cols and ("Utilization %" in cols or "Capacity Utilization %" in cols):
@@ -9487,8 +9723,12 @@ async def generate_answer(question: str, sql: str, rows: list[dict]) -> str:
     if not rows:
         return format_deterministic_answer(question, rows)
     
-    cols = list(rows[0].keys()) if rows else []
     q_lower = question.lower()
+    spec_bins = extract_specific_bins(question)
+    if len(spec_bins) == 1 and not any(k in q_lower for k in ["graph", "chart", "plot", "visualize"]):
+        return format_deterministic_answer(question, rows)
+    
+    cols = list(rows[0].keys()) if rows else []
 
     # Authoritative Plant Bin Utilization Comparison & Multi-Plant Comparisons
     if "Bin Utilization %" in cols and "Occupied Volume" in cols and "Total Capacity" in cols and "Available Capacity" in cols and "Plant" in cols:
@@ -9554,6 +9794,33 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
             "chart_type": "none",
             "metric": generated.get("metric", "concise_answer"),
             "intent": generated.get("intent", "single_line_answer"),
+            "time_range": generated.get("time_range", "current")
+        }
+
+    # 0A1. Specific Bin Single-Line Override (Suppress tables, charts, KPI cards unless explicit graph requested)
+    spec_bins = extract_specific_bins(question)
+    is_spec_bin = bool(generated.get("is_single_specific_bin") or len(spec_bins) == 1)
+    if is_spec_bin:
+        is_graph = is_explicit_chart_only_requested(question) or any(k in q_lower for k in ["graph", "chart", "plot", "visualize"])
+        if is_graph:
+            bin_col = "Bin" if "Bin" in cols else ("BinLocation" if "BinLocation" in cols else "storage_bin")
+            util_col = "Utilization %" if "Utilization %" in cols else ("Capacity Utilization %" if "Capacity Utilization %" in cols else "Utilization")
+            b_label = spec_bins[0] if spec_bins else "Bin"
+            return {
+                "output_type": "bar_chart",
+                "chart_type": "bar",
+                "chart_title": f"Utilization of Bin {b_label} (%)",
+                "chart_x": bin_col,
+                "chart_y": util_col,
+                "metric": "bin_utilization",
+                "intent": "specific_bin_utilization",
+                "time_range": "current"
+            }
+        return {
+            "output_type": "text",
+            "chart_type": "none",
+            "metric": generated.get("metric", "specific_bin"),
+            "intent": generated.get("intent", "specific_bin_inquiry"),
             "time_range": generated.get("time_range", "current")
         }
 
