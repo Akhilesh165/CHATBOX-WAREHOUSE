@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -12,7 +12,7 @@ import {
   Clock,
   Sparkles
 } from 'lucide-react';
-import { ChatMessage } from '../types/chat';
+import { ChatMessage, TableDataset, TableMiniSummary } from '../types/chat';
 import { ResultTable } from './ResultTable';
 import { InventoryBarChart } from './InventoryBarChart';
 import { InventoryLineChart } from './InventoryLineChart';
@@ -21,6 +21,74 @@ import { KpiCard } from './KpiCard';
 import { ListView } from './ListView';
 import { FeedbackButtons } from './FeedbackButtons';
 import { AdminSqlModal } from './AdminSqlModal';
+
+function parseMultiPlantTablesFromContent(content: string): TableDataset[] {
+  if (!content || !content.includes('|') || !content.includes('## Plant ')) {
+    return [];
+  }
+  const plantSections = content.split(/(?:^|\n)##\s+Plant\s+/).filter(Boolean);
+  if (plantSections.length < 1) return [];
+
+  const datasets: TableDataset[] = [];
+
+  for (const section of plantSections) {
+    const firstLineEnd = section.indexOf('\n');
+    const headerLine = firstLineEnd !== -1 ? section.slice(0, firstLineEnd).trim() : section.trim();
+    const plantMatch = headerLine.match(/^([A-Za-z0-9_-]+)/);
+    if (!plantMatch) continue;
+    const plantId = plantMatch[1];
+    const title = `Plant ${plantId} — Detailed Bin Utilization`;
+
+    const tableLines = section.split('\n').filter((l) => l.trim().startsWith('|') && l.trim().endsWith('|'));
+    if (tableLines.length < 3) continue;
+
+    const rawHeaders = tableLines[0].split('|').map((h) => h.trim()).filter(Boolean);
+    const dataLines = tableLines.slice(2);
+    const rows: Array<Record<string, any>> = [];
+
+    for (const dLine of dataLines) {
+      const cells = dLine.split('|').map((c) => c.trim()).filter((_, idx, arr) => idx > 0 && idx < arr.length - 1);
+      const rowObj: Record<string, any> = {};
+      rawHeaders.forEach((h, hIdx) => {
+        rowObj[h] = cells[hIdx] ?? '';
+      });
+      rows.push(rowObj);
+    }
+
+    let miniSummary: TableMiniSummary | undefined;
+    const summaryMatch = section.match(/###\s*Mini Summary([\s\S]*?)(?:$|---)/i);
+    if (summaryMatch) {
+      const sumText = summaryMatch[1];
+      const totalMatch = sumText.match(/Total bins:\s*([\d,]+)/i);
+      const utilMatch = sumText.match(/Utilized bins:\s*([\d,]+)/i);
+      const emptyMatch = sumText.match(/Empty bins:\s*([\d,]+)/i);
+      const avgMatch = sumText.match(/Average utilization:\s*([\d.]+%?)/i);
+
+      if (totalMatch || avgMatch) {
+        miniSummary = {
+          total_bins: totalMatch ? parseInt(totalMatch[1].replace(/,/g, ''), 10) : rows.length,
+          utilized_bins: utilMatch ? parseInt(utilMatch[1].replace(/,/g, ''), 10) : 0,
+          empty_bins: emptyMatch ? parseInt(emptyMatch[1].replace(/,/g, ''), 10) : 0,
+          average_utilization: avgMatch ? avgMatch[1] : '0%'
+        };
+      }
+    }
+
+    if (rows.length > 0) {
+      datasets.push({
+        title,
+        plant: plantId,
+        count: rows.length,
+        total_count: miniSummary ? miniSummary.total_bins : rows.length,
+        displayed_count: rows.length,
+        rows,
+        mini_summary: miniSummary
+      });
+    }
+  }
+
+  return datasets;
+}
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -80,8 +148,26 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   const showKpi = !isSingleMetricIntent && outputType === 'kpi' && hasTable && message.intent === 'inventory_summary';
   const showList = !isSingleMetricIntent && outputType === 'list' && hasTable;
   const contentHasTable = Boolean(message.content && message.content.includes('|') && message.content.includes('---'));
-  const hasMultiTables = Boolean(message.tables && message.tables.length > 0);
+  const effectiveTables = useMemo(() => {
+    if (message.tables && message.tables.length > 0) {
+      return message.tables;
+    }
+    if (message.content && message.content.includes('## Plant ') && (message.content.includes('| Bin') || message.content.includes('|Bin'))) {
+      return parseMultiPlantTablesFromContent(message.content);
+    }
+    return [];
+  }, [message.tables, message.content]);
+
+  const hasMultiTables = effectiveTables.length > 0;
   const showTable = !isSingleMetricIntent && !contentHasTable && !hasMultiTables && (outputType === 'table' || outputType === 'ranking_table' || outputType === 'comparison_table' || outputType === 'detail_analysis' || isPlantBinUtilDetail || showChart || showKpi || showList) && hasTable;
+
+  const displayContent = useMemo(() => {
+    if (!message.content) return '';
+    if (hasMultiTables) {
+      return message.content.split(/(?:^|\n)##\s+Plant\s+|(?:^|\n)\|(?:\s*Bin|\s*Plant|\s*Capacity)/)[0].trim();
+    }
+    return message.content;
+  }, [message.content, hasMultiTables]);
 
   if (isUser) {
     return (
@@ -147,15 +233,13 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
           </div>
 
           {/* 1. Summary / Theory Content (Max 2 lines for plant_bin_utilization_detail) */}
-          {message.content && (
+          {displayContent ? (
             <div className="prose prose-sm max-w-none text-slate-700 dark:text-slate-300 leading-relaxed font-normal">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {hasMultiTables && contentHasTable
-                  ? message.content.split(/(?:^|\n)##\s+Plant\s+|(?:^|\n)\|(?:\s*Bin|\s*Plant|\s*Capacity)/)[0].trim()
-                  : message.content}
+                {displayContent}
               </ReactMarkdown>
             </div>
-          )}
+          ) : null}
 
           {/* 2. Relevant KPIs (for Plant Bin Utilization Detail or structured templates) */}
           {message.relevant_kpis && message.relevant_kpis.length > 0 && (
@@ -229,9 +313,15 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
 
           {/* 6. Summary or Detailed Data Table View */}
           {hasMultiTables ? (
-            <div className="pt-2 space-y-6">
-              {message.tables!.map((tbl, tblIdx) => (
-                <div key={tblIdx} className="space-y-3">
+            <div className="pt-2 space-y-8">
+              {effectiveTables.map((tbl, tblIdx) => (
+                <div key={tblIdx} className="space-y-4">
+                  <div className="border-b border-slate-200 dark:border-slate-800 pb-2">
+                    <h3 className="text-base font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                      <span>{tbl.title || `Plant ${tbl.plant} — Detailed Bin Utilization`}</span>
+                    </h3>
+                  </div>
+
                   <ResultTable
                     rows={tbl.rows}
                     title={tbl.title}
@@ -242,23 +332,28 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
                     pageSize={10}
                     unitLabel="bins"
                   />
+
                   {tbl.mini_summary ? (
-                    <div className="bg-slate-50 dark:bg-slate-850/80 rounded-xl p-3 border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300">
-                      <div className="font-semibold text-slate-800 dark:text-slate-200 mb-1.5">Mini Summary:</div>
-                      <ul className="space-y-1 text-slate-600 dark:text-slate-400">
-                        <li>• Total bins: <span className="font-semibold text-slate-800 dark:text-slate-200">{tbl.mini_summary.total_bins?.toLocaleString()}</span></li>
-                        <li>• Utilized bins: <span className="font-semibold text-slate-800 dark:text-slate-200">{tbl.mini_summary.utilized_bins?.toLocaleString()}</span></li>
-                        <li>• Empty bins: <span className="font-semibold text-slate-800 dark:text-slate-200">{tbl.mini_summary.empty_bins?.toLocaleString()}</span></li>
-                        <li>• Average utilization: <span className="font-semibold text-slate-800 dark:text-slate-200">{tbl.mini_summary.average_utilization}</span></li>
+                    <div className="bg-slate-50 dark:bg-slate-850/90 rounded-xl p-4 border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300 shadow-xs">
+                      <h4 className="font-bold text-slate-900 dark:text-slate-100 text-sm mb-2">Mini Summary</h4>
+                      <ul className="space-y-1.5 text-slate-700 dark:text-slate-300 list-disc list-inside">
+                        <li>Total bins: <span className="font-semibold text-slate-900 dark:text-slate-100 font-mono">{tbl.mini_summary.total_bins?.toLocaleString()}</span></li>
+                        <li>Utilized bins: <span className="font-semibold text-slate-900 dark:text-slate-100 font-mono">{tbl.mini_summary.utilized_bins?.toLocaleString()}</span></li>
+                        <li>Empty bins: <span className="font-semibold text-slate-900 dark:text-slate-100 font-mono">{tbl.mini_summary.empty_bins?.toLocaleString()}</span></li>
+                        <li>Average utilization: <span className="font-semibold text-slate-900 dark:text-slate-100 font-mono">{tbl.mini_summary.average_utilization}</span></li>
                       </ul>
                     </div>
                   ) : tbl.mini_summary_markdown ? (
-                    <div className="bg-slate-50 dark:bg-slate-850/80 rounded-xl p-3 border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300 prose prose-xs dark:prose-invert max-w-none">
+                    <div className="bg-slate-50 dark:bg-slate-850/90 rounded-xl p-4 border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300 prose prose-xs dark:prose-invert max-w-none shadow-xs">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>
                         {tbl.mini_summary_markdown}
                       </ReactMarkdown>
                     </div>
                   ) : null}
+
+                  {tblIdx < effectiveTables.length - 1 && (
+                    <hr className="my-8 border-t-2 border-slate-200/80 dark:border-slate-800" />
+                  )}
                 </div>
               ))}
             </div>

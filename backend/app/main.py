@@ -431,7 +431,7 @@ async def chat_endpoint(req: ChatRequest):
                     avg_p_util_str = f"{avg_p_util:.2f}%" if round(avg_p_util, 1) != avg_p_util else f"{avg_p_util:.1f}%"
 
                     table_datasets.append(TableDataset(
-                        title=f"Plant {p}",
+                        title=f"Plant {p} — Detailed Bin Utilization",
                         plant=str(p),
                         count=len(p_clean_rows),
                         total_count=total_p_bins,
