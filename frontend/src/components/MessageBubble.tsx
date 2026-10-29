@@ -131,7 +131,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     message.intent === 'bin_occupancy_status' ||
     message.intent === 'bin_quantity_lookup' ||
     message.intent === 'bin_materials_count' ||
-    ((message.intent === 'lowest_bin_utilization' || message.intent === 'highest_bin_utilization') && rows.length <= 1)
+    ((message.intent === 'lowest_bin_utilization' || message.intent === 'highest_bin_utilization' || message.intent === 'HIGHEST_BIN_UTILIZATION') && rows.length <= 1)
   );
 
 

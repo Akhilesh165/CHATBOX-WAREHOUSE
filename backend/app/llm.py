@@ -55,10 +55,15 @@ def normalize_query_typos(text: str) -> str:
         (r'\butlizations\b', 'utilization'),
         (r'\butilzation\b', 'utilization'),
         (r'\butilzations\b', 'utilization'),
+        (r'\butliztion\b', 'utilization'),
+        (r'\butiliztion\b', 'utilization'),
         (r'\butillization\b', 'utilization'),
         (r'\butillizations\b', 'utilization'),
         (r'\butilisations?\b', 'utilization'),
         (r'\butlisations?\b', 'utilization'),
+        (r'\butilised\b', 'utilized'),
+        (r'\butlised\b', 'utilized'),
+        (r'\butilising\b', 'utilizing'),
         (r'\boccypied\b', 'occupied'),
         (r'\boccupenc(?:y|ies)\b', 'occupancy'),
         (r'\bcapcit(?:y|ies)\b', 'capacity'),
@@ -115,6 +120,50 @@ def extract_explicit_plants(text: str) -> list[str]:
     return list(dict.fromkeys(n for n in found if n not in {"2024", "2025", "2026"}))
 
 extract_plants = extract_explicit_plants
+
+def is_highest_bin_utilization_intent(question: str) -> bool:
+    """Classifies queries asking for the single bin with highest utilization into HIGHEST_BIN_UTILIZATION.
+    
+    Semantic rule: BIN + HIGHEST/MAXIMUM/MOST + UTILIZATION (without multi-item ranking limit or asking which plant).
+    """
+    if not question:
+        return False
+    q = normalize_query_typos(question).lower().strip()
+    
+    # Exclude multi-item rankings (e.g., 'top 10 bins', 'top 5 bins', '5 most utilized bins')
+    if re.search(r'\b(?:top|bottom|highest|lowest|first|most)\s+\d+\b', q):
+        return False
+    if re.search(r'\b\d+\s+(?:top|bottom|highest|lowest|most)\b', q):
+        return False
+    if any(k in q for k in [
+        'rank the bins', 'ranking of bins', 'list of bins', 'show all bins', 'all bins with',
+        'bins above', 'bins below', 'compare the bin utilization', 'compare detailed',
+        'lowest to highest', 'highest to lowest', 'ranking', 'rank plants', 'ranking of plant',
+        'plant bin utilization', 'plants by bin utilization'
+    ]):
+        return False
+        
+    # Exclude asking which plant has highest bin utilization
+    if re.search(r'\b(?:which|what|whic|wat)\s+plant\b', q) or 'plant with' in q or 'compare plant' in q or 'across plants' in q:
+        return False
+        
+    # Check for BIN entity
+    has_bin = bool(re.search(r'\bbins?\b', q) or 'storage bin' in q or 'storage location' in q or re.search(r'\blocation\b', q))
+    if not has_bin:
+        return False
+        
+    # Check for HIGHEST / MAXIMUM / MOST concept
+    has_highest = bool(any(k in q for k in [
+        'highest', 'highst', 'higest', 'maximum', 'maximun', 'max', 'most', 'fullest', 'peak', 'greatest', 'top'
+    ]))
+    if not has_highest:
+        return False
+        
+    # Check for UTILIZATION concept
+    has_util = bool(any(k in q for k in [
+        'utiliz', 'utilis', 'utliz', 'utilz', 'occupan', 'how full', 'fullness', 'capacity utilization', 'fill'
+    ]))
+    return has_util
 
 def extract_single_plant_safe(text: str) -> Optional[str]:
     """Extract a single plant ID safely without confusing quantities/thresholds for plants."""
@@ -1942,6 +1991,23 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             state["active_plant"] = new_plant
             if new_plant not in state["plants"]:
                 state["plants"].append(new_plant)
+    elif is_highest_bin_utilization_intent(question):
+        state["entity"] = "bin"
+        state["metric"] = "utilization"
+        state["ranking"] = "highest"
+        state["topic"] = "HIGHEST_BIN_UTILIZATION"
+        state["intent"] = "HIGHEST_BIN_UTILIZATION"
+        state["condition"] = None
+        state["aggregation"] = "scalar"
+        state["filters"] = {"plant": new_plant} if new_plant else {}
+        state["limit"] = 1
+        state["resolved_query"] = question
+        if not new_plant:
+            state["plants"] = []
+            state["active_plant"] = None
+            state["comparison_entities"] = []
+            state["filters"].pop("plant", None)
+            state["filters"].pop("plants", None)
     elif is_fresh_top_bins:
         state["entity"] = "bin"
         state["metric"] = "utilization"
@@ -2293,6 +2359,8 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             state["resolved_query"] = f"empty bins available for put-away{plant_clause}"
         elif state["topic"] == "least_utilized_bins":
             state["resolved_query"] = f"bottom{limit_clause} least utilized bins{plant_clause}"
+        elif state["topic"] == "HIGHEST_BIN_UTILIZATION":
+            state["resolved_query"] = f"highest utilization bin{plant_clause}"
         elif state["topic"] == "top_utilized_bins":
             state["resolved_query"] = f"top{limit_clause} most utilized bins{plant_clause}"
         elif state["topic"] == "materials_missing_from_volume_master":
@@ -2461,6 +2529,61 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
             "time_range": "current",
             "output_type": "text",
             "is_invalid_query": True
+        }
+
+    # 0_HIGHEST_BIN_UTILIZATION. Semantic Intent: BIN + HIGHEST/MAXIMUM/MOST + UTILIZATION
+    if is_highest_bin_utilization_intent(resolved_q) or is_highest_bin_utilization_intent(question) or state.get("topic") == "HIGHEST_BIN_UTILIZATION":
+        plant_val = extract_single_plant_safe(q_lower) or state.get("filters", {}).get("plant")
+        plant_filter = f" AND b.Plant = '{plant_val}'" if plant_val else ""
+        plant_scope = f" — Plant {plant_val}" if plant_val else ""
+        
+        sql_highest_bin = f"""SELECT TOP 1
+    b.BinLocation AS [Bin],
+    b.Plant AS [Plant],
+    COALESCE(b.StorageLocation, 'N/A') AS [Storage Location],
+    ROUND(b.Volume, 2) AS [Capacity],
+    ROUND(b.Volume - COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Available Capacity],
+    ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0), 2) AS [Occupied Volume],
+    CONCAT(ROUND(b.Volume, 2), ' ', COALESCE(b.VolumeUnit, 'FT3')) AS [Bin Capacity],
+    CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization %],
+    CONCAT(ROUND(COALESCE(SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)), 0) * 100.0 / NULLIF(b.Volume, 0), 1), '%') AS [Utilization],
+    CASE 
+        WHEN COUNT(i.Material) = 0 THEN 'Empty'
+        WHEN COUNT(DISTINCT i.Material) = 1 THEN CONCAT(MIN(i.Material), ' (', ROUND(SUM(i.UnrestrictedQty), 0), ' units)')
+        ELSE CONCAT(COUNT(DISTINCT i.Material), ' materials (', ROUND(SUM(i.UnrestrictedQty), 0), ' units)')
+    END AS [Material / Inventory Information]
+FROM dbo.ZWMS_BIN_MASTER b
+JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+LEFT JOIN dbo.ZWMS_MATERIAL_MASTER m ON i.Material = m.MaterialCode
+WHERE b.Volume > 0{plant_filter}
+GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit
+ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volume, 0) DESC"""
+
+        is_table_req = any(k in q_lower for k in ["table", "table form", "show table", "in table"])
+        state["topic"] = "HIGHEST_BIN_UTILIZATION"
+        state["intent"] = "HIGHEST_BIN_UTILIZATION"
+        
+        return {
+            "sql": sql_highest_bin,
+            "query_plan": {
+                "entity": "BIN",
+                "metric": "BIN_UTILIZATION",
+                "intent": "HIGHEST_BIN_UTILIZATION",
+                "operation": "EXTREME",
+                "direction": "DESC",
+                "limit": 1,
+                "filters": {"plant": plant_val} if plant_val else {}
+            },
+            "chart_type": "bar" if is_explicit_chart else "none",
+            "chart_title": f"Highest Bin Utilization{plant_scope}",
+            "chart_x": "Bin" if is_explicit_chart else None,
+            "chart_y": "Utilization %" if is_explicit_chart else None,
+            "intent": "HIGHEST_BIN_UTILIZATION",
+            "metric": "bin_utilization",
+            "filters": {"plant": plant_val} if plant_val else {},
+            "time_range": "current",
+            "output_type": "bar_chart" if is_explicit_chart else ("table" if is_table_req else "text"),
+            "conversation_state": state
         }
 
     # A0. SPECIFIC BIN QUESTIONS (Attributes, Utilization, Occupancy, Quantity, Materials)
@@ -7798,6 +7921,36 @@ def _format_deterministic_answer_impl(question: str, rows: list[dict]) -> str:
                 return f"Total count: **{tot:,.0f} units** across {len(rows)} plants ({breakdown})."
             return f"Total count: **{len(rows)} matching entities**."
 
+    # 0A_HIGHEST_BIN. Highest Bin Utilization (Intent: HIGHEST_BIN_UTILIZATION)
+    if is_highest_bin_utilization_intent(question) and rows:
+        lead_row = rows[0]
+        bin_val = lead_row.get("Bin") or lead_row.get("BinLocation", "N/A")
+        leader_plant = lead_row.get("Plant", "")
+        plant_val = extract_single_plant_safe(q_lower)
+        plant_str = f" in Plant {plant_val}" if plant_val else " across the warehouse"
+        lead_plant_str = f" in Plant {leader_plant}" if (leader_plant and not plant_val) else ""
+        
+        util_val = lead_row.get("Utilization %") or lead_row.get("Utilization") or lead_row.get("Capacity Utilization %", "")
+        cap_val = lead_row.get("Bin Capacity") or lead_row.get("Capacity", "")
+        
+        is_bin_only = is_bin_utilization_primary(q_lower)
+        if is_bin_only or is_single_statement_requested:
+            single_stmt = f"The bin with the highest utilization{plant_str} is **`{bin_val}`**{lead_plant_str} at **{util_val}**."
+        else:
+            cap_part = f" (Capacity: {cap_val})" if cap_val else ""
+            single_stmt = f"The bin with the highest utilization{plant_str} is **`{bin_val}`**{lead_plant_str} at **{util_val}**{cap_part}."
+            
+        is_table_req = any(k in q_lower for k in ["table", "table form", "show table", "in table"])
+        if is_table_req:
+            return (
+                f"### 🏆 Highest Utilized Bin{plant_str}\n\n"
+                f"{single_stmt}\n\n"
+                f"| Bin | Plant | Capacity | Available Capacity | Utilization % | Material / Inventory Information |\n"
+                f"|:---|:---:|:---:|:---:|:---:|:---|\n"
+                f"| `{bin_val}` | {leader_plant} | {lead_row.get('Capacity', '-')} | {lead_row.get('Available Capacity', '-')} | **{util_val}** | {lead_row.get('Material / Inventory Information', '-')} |"
+            )
+        return single_stmt
+
     # 0A_SPECIFIC_BIN. Single specific bin query = Single-line response (Priority Rule: One Specific Bin -> One Concise Line)
     spec_bins = extract_specific_bins(question)
     is_explicit_chart_q = is_explicit_chart_only_requested(question) or any(k in q_lower for k in ["graph", "chart", "plot", "visualize"])
@@ -9780,6 +9933,9 @@ async def generate_answer(question: str, sql: str, rows: list[dict]) -> str:
     if len(spec_bins) == 1 and not any(k in q_lower for k in ["graph", "chart", "plot", "visualize"]):
         return format_deterministic_answer(question, rows)
     
+    if is_highest_bin_utilization_intent(question):
+        return format_deterministic_answer(question, rows)
+    
     cols = list(rows[0].keys()) if rows else []
 
     # Authoritative Plant Bin Utilization Comparison & Multi-Plant Comparisons
@@ -9847,6 +10003,31 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
             "metric": generated.get("metric", "concise_answer"),
             "intent": generated.get("intent", "single_line_answer"),
             "time_range": generated.get("time_range", "current")
+        }
+
+    # 0A0. Highest Bin Utilization Semantic Intent
+    if generated.get("intent") == "HIGHEST_BIN_UTILIZATION" or is_highest_bin_utilization_intent(question):
+        is_graph_explicit = is_explicit_chart_only_requested(question) or generated.get("chart_type") in ["bar", "pie", "line"]
+        if is_graph_explicit and rows:
+            bin_col = "Bin" if "Bin" in cols else ("BinLocation" if "BinLocation" in cols else cols[0])
+            util_col = "Utilization %" if "Utilization %" in cols else ("Capacity Utilization %" if "Capacity Utilization %" in cols else "Utilization")
+            return {
+                "output_type": "bar_chart",
+                "chart_type": "bar",
+                "chart_title": generated.get("chart_title", "Highest Bin Utilization"),
+                "chart_x": bin_col,
+                "chart_y": util_col,
+                "metric": "bin_utilization",
+                "intent": "HIGHEST_BIN_UTILIZATION",
+                "time_range": "current"
+            }
+        is_table_explicit = any(k in q_lower for k in ["table", "table form", "show table", "in table"])
+        return {
+            "output_type": "table" if is_table_explicit else "text",
+            "chart_type": "none",
+            "metric": "bin_utilization",
+            "intent": "HIGHEST_BIN_UTILIZATION",
+            "time_range": "current"
         }
 
     # 0A1. Specific Bin Single-Line Override (Suppress tables, charts, KPI cards unless explicit graph requested)
