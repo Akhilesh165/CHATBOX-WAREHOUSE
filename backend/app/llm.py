@@ -1237,6 +1237,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             uq_clean = normalize_query_typos(uq)
             uq_lower = uq_clean.lower()
             pm_val = None
+            hist_lim = extract_explicit_limit(uq_lower)
             
             # Plant filter and ordered tracking in history
             hist_plants = extract_explicit_plants(uq_lower)
@@ -1249,6 +1250,8 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                 state["operation"] = "comparison"
                 state["topic"] = "plant_comparison"
                 state["entity"] = "plant"
+                state["limit"] = hist_lim
+                state["ranking"] = None
             else:
                 pm_val = extract_single_plant_safe(uq_lower)
                 if any(k in uq_lower for k in ["all plants", "across plants", "by plant", "each plant", "every plant", "plants", "compare plants", "across all", "whole warehouse", "entire warehouse", "network", "overall", "bin utilization", "warehouse utilization"]) and not pm_val:
@@ -1802,6 +1805,8 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["metric"] = "bin_utilization"
         state["comparison_subject"] = "bin_utilization"
         state["operation"] = "comparison"
+        state["limit"] = new_limit
+        state["ranking"] = None
         if is_detail_comp:
             state["topic"] = "multi_plant_bin_detail"
             state["response_mode"] = "DETAIL"
@@ -1857,6 +1862,8 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             state["topic"] = "plant_bin_utilization_detail"
             state["aggregation"] = "summary"
         state["filters"]["plant"] = new_plant or state.get("filters", {}).get("plant")
+        state["limit"] = new_limit
+        state["ranking"] = None
     elif is_fresh_avail_cap_by_plant:
         state["entity"] = "plant"
         state["metric"] = "AVAILABLE_CAPACITY"
@@ -4831,7 +4838,8 @@ ORDER BY [Unique Materials Count] DESC"""
             )
             is_detail_comp = (has_compare_kw or state.get("topic") == "multi_plant_bin_detail") and (is_bin_level_detail_intent(q_lower) or state.get("topic") == "multi_plant_bin_detail" or state.get("response_mode") == "DETAIL")
             if is_detail_comp:
-                comp_limit = state.get("limit") or extract_explicit_limit(q_lower)
+                explicit_lim = extract_explicit_limit(q_lower)
+                comp_limit = explicit_lim or (state.get("limit") if (state.get("limit") and state.get("limit") > 1 and not is_highest_bin_utilization_intent(question) and not is_lowest_bin_utilization_intent(question)) else None)
                 per_plant_limit = comp_limit if comp_limit else (10000 // max(len(target_plants), 1))
                 case_order = " ".join(f"WHEN '{p}' THEN {idx}" for idx, p in enumerate(target_plants, 1))
                 is_explicit_rank = any(k in q_lower for k in ["top", "highest", "lowest", "least", "bottom", "most utilized", "least utilized", "rank", "ranking", "best", "worst"])
@@ -6347,7 +6355,8 @@ ORDER BY [Total Capacity (FT3)] DESC"""
             not is_sloc_explicit
         ):
             plant_val = plant_cand
-            cand_limit = state.get("limit") or extract_explicit_limit(q_lower)
+            explicit_lim = extract_explicit_limit(q_lower)
+            cand_limit = explicit_lim or (state.get("limit") if (state.get("limit") and state.get("limit") > 1 and not is_highest_bin_utilization_intent(question) and not is_lowest_bin_utilization_intent(question)) else None)
             if cand_limit:
                 sql_single_bin_detail = f"""SELECT TOP {cand_limit}
     b.BinLocation AS [Bin],
