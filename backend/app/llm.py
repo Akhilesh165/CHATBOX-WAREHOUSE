@@ -127,13 +127,23 @@ def extract_explicit_plants(text: str) -> list[str]:
     if m_both:
         found.extend([m_both.group(1), m_both.group(2)])
 
-    # Standalone known warehouse plants (1258, 1266, 1268, 7228) in comparison or multi-plant queries
-    known = {"1258", "1266", "1268", "7228"}
-    tokens = re.findall(r"\b(\d{3,5})\b", q)
-    kp = [t for t in tokens if t in known]
-    if len(kp) >= 2 or any(k in q for k in ["compare", "comparison", "comparing", "compared", "versus", "vs", "v/s", "against", "between", "both", "difference", "side by side", "contrast"]):
-        for p in kp:
-            if p not in found:
+    # Dynamic 3-to-5 digit plant IDs in comparison queries (excluding range bounds and units)
+    is_comp_context = any(k in q for k in [
+        "compare", "comparison", "comparing", "compared", "versus", "vs", "v/s", "against", "side by side", "contrast"
+    ]) or (any(k in q for k in ["between", "both", "difference"]) and any(k in q for k in ["plant", "facility"]))
+
+    if is_comp_context:
+        tokens = re.findall(r"\b(\d{3,5})\b", q)
+        range_bounds = set()
+        for rf in parse_range_filters(q):
+            if rf.get("lower") is not None:
+                range_bounds.add(str(int(rf["lower"])))
+            if rf.get("upper") is not None:
+                range_bounds.add(str(int(rf["upper"])))
+        unit_nums = set(re.findall(r"\b(\d+)\s*(?:units?|pcs?|pieces?|items?|materials?|bins?|ft3|m3|%|percent)\b", q))
+        excluded = {"2024", "2025", "2026"} | range_bounds | unit_nums
+        for p in tokens:
+            if p not in excluded and p not in found:
                 found.append(p)
 
     # Exclude years that can appear in otherwise valid questions.
@@ -1817,7 +1827,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                 "compare", "comparison", "comparing", "compared with", "compared to", "compared against",
                 "versus", "vs", "v/s", "against", "difference", "between", "both", "side by side", "side-by-side", "contrast", "relative to"
             ]) or
-            len(explicit_plants) >= 3 or
+            len(explicit_plants) >= 2 or
             any(k in q_lower for k in [
                 "detailed bin utilization", "detail bin utilization", "complete bin utilization",
                 "break down bin utilization", "breakdown of bin utilization", "bin-wise", "all bins", "full details"
@@ -4786,14 +4796,13 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
     if len(explicit_plants_in_gen) >= 2:
         all_plants_unique = explicit_plants_in_gen
     else:
-        all_plants_mentioned = re.findall(r"\b(1258|1266|1268|7228)\b", q_lower)
-        all_plants_unique = list(dict.fromkeys(all_plants_mentioned))
+        all_plants_unique = explicit_plants_in_gen
         if len(all_plants_unique) < 2 and state.get("comparison_entities"):
             saved_plants = [e["value"] for e in state["comparison_entities"] if e.get("type") == "plant"]
             if len(saved_plants) >= 2:
                 all_plants_unique = saved_plants
         elif len(all_plants_unique) < 2 and len(state.get("plants", [])) >= 2:
-            all_plants_unique = state["plants"][-2:]
+            all_plants_unique = state["plants"]
 
     range_filters_pre = parse_range_filters(resolved_q)
     is_ranking_in_q = any(k in q_lower for k in ["rank", "ranking", "rankings", "order by", "sort by"])
@@ -4822,7 +4831,7 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
     )
 
     if is_comparison_query:
-        target_plants = all_plants_unique[:4]
+        target_plants = all_plants_unique
         plants_in_str = ", ".join(f"'{p}'" for p in target_plants)
         comp_entities = [{"type": "plant", "value": p} for p in target_plants]
         state["comparison_entities"] = comp_entities
@@ -4868,7 +4877,7 @@ ORDER BY [Unique Materials Count] DESC"""
                     "compare", "comparison", "comparing", "compared with", "compared to", "compared against",
                     "versus", "vs", "v/s", "against", "difference", "between", "both", "side by side", "side-by-side", "contrast", "relative to"
                 ]) or
-                len(target_plants) >= 3 or
+                len(target_plants) >= 2 or
                 any(k in q_lower for k in [
                     "detailed bin utilization", "detail bin utilization", "complete bin utilization",
                     "break down bin utilization", "breakdown of bin utilization", "bin-wise", "all bins", "full details"
@@ -5533,7 +5542,7 @@ ORDER BY [Total Occupied Volume (FT3)] DESC"""
         }
 
     # 3. SUBSET PLANT RANKING: "Rank Plant 1258 and Plant 7228 by occupied volume"
-    all_plants_in_q = re.findall(r"\b(1258|1266|1268|7228)\b", q_lower)
+    all_plants_in_q = extract_explicit_plants(q_lower) or re.findall(r"\b(1258|1266|1268|7228)\b", q_lower)
     subset_plants = list(dict.fromkeys(all_plants_in_q))
     if len(subset_plants) >= 2 and any(k in q_lower for k in ["rank", "ranking", "sort", "order by", "highest", "lowest", "top", "bottom"]):
         is_least = state.get("ranking") == "lowest" or any(k in q_lower for k in ["least", "lowest", "bottom", "minimum"])
@@ -10153,6 +10162,7 @@ GROUP BY Plant"""
         ("Occupied Bins" in cols or "OccupiedBins" in cols or "Total Bins" in cols or "TotalBins" in cols)
     ) and len(rows) > 1 and (
         any(k in q_lower for k in ["compare", "comparison", "difference", "versus", " vs ", "higher", "lower", "better", "more"]) or
+        len(extract_explicit_plants(q_lower)) >= 2 or
         len(re.findall(r"\b(1258|1266|1268|7228)\b", q_lower)) >= 2
     ):
         sorted_p = sorted(rows, key=lambda x: float(str(x.get("Bin Utilization %", x.get("BinUtilizationPct", 0))).replace("%", "")), reverse=True)
