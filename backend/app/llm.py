@@ -66,6 +66,10 @@ def normalize_query_typos(text: str) -> str:
         (r'\butilising\b', 'utilizing'),
         (r'\b(?:higest|heighest|highst|heighst)\b', 'highest'),
         (r'\b(?:lowes|lowestt|loweat|lowst|loest)\b', 'lowest'),
+        (r'\b(?:versis|verus|versas)\b', 'versus'),
+        (r'\bv/s\b', 'vs'),
+        (r'\bvs\.\b', 'vs'),
+        (r'\bv\.\b', 'vs'),
         (r'\b(?:avrage|averge|avrg|averg)\b', 'average'),
         (r'\b(?:quanity|quantiy|quntity)\b', 'quantity'),
         (r'\b(?:materail|matrial)\b', 'material'),
@@ -95,16 +99,24 @@ def extract_explicit_plants(text: str) -> list[str]:
     q = (text or "").lower()
     found: list[str] = []
 
-    # Capture a plant ID plus any immediately chained plant IDs.
+    # Capture a plant ID plus any immediately chained plant IDs with comparison/coordinating connectors.
+    chain_connector = r"(?:,\s*(?:and|&|or|/|vs\.?|v/s|versus|against|compared\s+(?:to|with|against)|compare\s+(?:to|with)|relative\s+to|with|to)|,|and|&|or|/|vs\.?|v/s|versus|against|compared\s+(?:to|with|against)|compare\s+(?:to|with)|relative\s+to|with|to)"
     chain_re = re.compile(
         r"\bplants?\b\s*(?:#|:|-)?\s*(\d{3,5})"
-        r"((?:\s*(?:,\s*(?:and|&|or)|,|and|&|or|/)\s*(?:plants?\s*)?\d{3,5})*)",
+        rf"((?:\s*{chain_connector}\s*(?:plants?\s*)?\d{{3,5}})*)",
         re.IGNORECASE,
     )
     for m in chain_re.finditer(q):
         found.append(m.group(1))
-        for n in re.findall(r"(?:,\s*(?:and|&|or)|,|and|&|or|/)\s*(?:plants?\s*)?(\d{3,5})", m.group(2), re.I):
+        for n in re.findall(rf"(?:\s*{chain_connector}\s*(?:plants?\s*)?(\d{{3,5}}))", m.group(2), re.I):
             found.append(n)
+
+    # Direct comparison patterns between plant IDs (e.g. '1268 vs 1258', 'plant 1268 vs 1258', '1268 against 1258')
+    comp_connectors_re = r"(?:vs\.?|v/s|versus|against|compared\s+(?:to|with|against)|compare\s+(?:to|with)|relative\s+to)"
+    for m in re.finditer(rf"\b(?:plants?\s*)?(\d{{3,5}})\s+{comp_connectors_re}\s+(?:plants?\s*)?(\d{{3,5}})\b", q):
+        p1, p2 = m.group(1), m.group(2)
+        if p1 not in {"2024", "2025", "2026"} and p2 not in {"2024", "2025", "2026"}:
+            found.extend([p1, p2])
 
     # Also catch repeated explicit forms: "Plant 1258 and Plant 1268".
     for n in re.findall(r"\bplants?\s*(?:#|:|-)?\s*(\d{3,5})\b", q, re.I):
@@ -116,12 +128,13 @@ def extract_explicit_plants(text: str) -> list[str]:
         found.extend([m_both.group(1), m_both.group(2)])
 
     # Standalone known warehouse plants (1258, 1266, 1268, 7228) in comparison or multi-plant queries
-    if not found:
-        known = {"1258", "1266", "1268", "7228"}
-        tokens = re.findall(r"\b(\d{3,5})\b", q)
-        kp = [t for t in tokens if t in known]
-        if len(kp) >= 2 or any(k in q for k in ["compare", "versus", "vs", "between", "both", "difference"]):
-            found.extend(kp)
+    known = {"1258", "1266", "1268", "7228"}
+    tokens = re.findall(r"\b(\d{3,5})\b", q)
+    kp = [t for t in tokens if t in known]
+    if len(kp) >= 2 or any(k in q for k in ["compare", "comparison", "comparing", "compared", "versus", "vs", "v/s", "against", "between", "both", "difference", "side by side", "contrast"]):
+        for p in kp:
+            if p not in found:
+                found.append(p)
 
     # Exclude years that can appear in otherwise valid questions.
     return list(dict.fromkeys(n for n in found if n not in {"2024", "2025", "2026"}))
@@ -1800,7 +1813,10 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
 
     if is_util_comparison:
         has_compare_kw = (
-            any(k in q_lower for k in ["compare", "comparison", "versus", "vs", "difference", "between", "both", "side by side", "contrast"]) or
+            any(k in q_lower for k in [
+                "compare", "comparison", "comparing", "compared with", "compared to", "compared against",
+                "versus", "vs", "v/s", "against", "difference", "between", "both", "side by side", "side-by-side", "contrast", "relative to"
+            ]) or
             len(explicit_plants) >= 3 or
             any(k in q_lower for k in [
                 "detailed bin utilization", "detail bin utilization", "complete bin utilization",
@@ -3811,7 +3827,13 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volum
         and not is_almost_full_req and not is_over_capacity_req
     )
     if is_find_bins_req and not is_mat_entity:
-        plant_filter_fb = f" AND b.Plant = '{plant_cand}'" if plant_cand else ""
+        multi_plants = state.get("plants") or explicit_plants
+        if multi_plants and len(multi_plants) > 1:
+            plant_filter_fb = f" AND b.Plant IN ({', '.join(repr(p) for p in multi_plants)})"
+        elif plant_cand:
+            plant_filter_fb = f" AND b.Plant = '{plant_cand}'"
+        else:
+            plant_filter_fb = ""
         n_limit = state.get("limit") or new_limit
         top_clause = f"TOP {n_limit} " if n_limit else ""
         sql_find_bins = f"""SELECT {top_clause}
@@ -3829,15 +3851,19 @@ WHERE b.Volume > 0{plant_filter_fb}
 GROUP BY b.BinLocation, b.Plant, b.StorageLocation, b.Volume, b.VolumeUnit
 ORDER BY b.BinLocation ASC"""
 
+        plant_title = (
+            f" — Plants {', '.join(multi_plants)}" if multi_plants and len(multi_plants) > 1
+            else (f" — Plant {plant_cand}" if plant_cand else "")
+        )
         return {
             "sql": sql_find_bins,
             "chart_type": "none",
-            "chart_title": f"Warehouse Bins{f' — Plant {plant_cand}' if plant_cand else ''}",
+            "chart_title": f"Warehouse Bins{plant_title}",
             "chart_x": None,
             "chart_y": None,
             "intent": "find_bins_list",
             "metric": "bin_list",
-            "filters": {"plant": plant_cand} if plant_cand else {},
+            "filters": {"plants": multi_plants} if multi_plants and len(multi_plants) > 1 else ({"plant": plant_cand} if plant_cand else {}),
             "time_range": "current",
             "output_type": "table",
             "conversation_state": state
@@ -4772,7 +4798,9 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
     range_filters_pre = parse_range_filters(resolved_q)
     is_ranking_in_q = any(k in q_lower for k in ["rank", "ranking", "rankings", "order by", "sort by"])
     raw_has_compare_kw = any(k in q_lower for k in [
-        "compare", "versus", "vs", "comparison", "difference between", "difference of",
+        "compare", "comparison", "comparing", "compared with", "compared to", "compared against",
+        "versus", "vs", "v/s", "against", "relative to", "side by side", "side-by-side", "contrast",
+        "difference between", "difference of",
         "their total inventory", "their bins", "their unique materials",
         "their materials", "their storage locations", "their empty bins",
         "their occupied bins", "their top materials", "compare those", "compare them", "compare these", "compare both"
@@ -4836,7 +4864,10 @@ ORDER BY [Unique Materials Count] DESC"""
             state.get("comparison_subject") == "bin_utilization" or state.get("metric") in ["BIN_UTILIZATION", "bin_utilization"] or state.get("topic") == "multi_plant_bin_detail"
         ):
             has_compare_kw = (
-                any(k in q_lower for k in ["compare", "comparison", "versus", "vs", "difference", "between", "both", "side by side", "contrast"]) or
+                any(k in q_lower for k in [
+                    "compare", "comparison", "comparing", "compared with", "compared to", "compared against",
+                    "versus", "vs", "v/s", "against", "difference", "between", "both", "side by side", "side-by-side", "contrast", "relative to"
+                ]) or
                 len(target_plants) >= 3 or
                 any(k in q_lower for k in [
                     "detailed bin utilization", "detail bin utilization", "complete bin utilization",
@@ -7520,7 +7551,8 @@ def is_bin_level_detail_intent(q_lower: str) -> bool:
         has_explicit_bin_detail = any(re.search(r'\b' + re.escape(w) + r'\b', q) for w in [
             "detail", "detailed", "in detail", "all bins", "every bin", "each bin",
             "bin-wise", "bin wise", "itemized", "drill down", "breakdown", "break down",
-            "full detail", "full details", "complete bin", "complete details"
+            "full detail", "full details", "complete bin", "complete details",
+            "deep dive", "elaborate", "break it down"
         ])
         if not has_explicit_bin_detail:
             return False
