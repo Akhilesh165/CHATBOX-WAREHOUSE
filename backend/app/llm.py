@@ -807,8 +807,9 @@ def parse_compound_capacity_utilization(q_lower: str) -> dict[str, Any] | None:
 
 
 DETAIL_TRIGGERS = [
-    "detail", "details", "detailed", "explain", "explain in detail",
-    "elaborate", "deep dive", "break it down", "full details",
+    "detail", "details", "detailed", "in detail", "explain", "explain in detail",
+    "elaborate", "deep dive", "break it down", "full details", "full detail",
+    "show details", "show detail", "give details", "give detail",
     "complete breakdown", "comprehensive view", "in-depth",
     "drill down", "granular analysis", "itemized breakdown",
     "show me the details", "give me more detail"
@@ -7551,17 +7552,17 @@ def is_bin_level_detail_intent(q_lower: str) -> bool:
         return False
     if any(k in q for k in ["by storage location", "sloc breakdown", "storage location breakdown", "by sloc"]):
         return False
-    if "explain" in q and "in detail" in q:
+    if "explain" in q and "in detail" in q and len(extract_explicit_plants(q)) < 2:
         return False
 
     # For multi-plant queries (>= 2 explicit plants), a summary or comparison request without explicit bin-level detail keywords
     # is a high-level plant comparison summary, NOT bin-level detail (Section 3: Do not confuse detail with plant-level summary).
     if len(extract_explicit_plants(q)) >= 2:
         has_explicit_bin_detail = any(re.search(r'\b' + re.escape(w) + r'\b', q) for w in [
-            "detail", "detailed", "in detail", "all bins", "every bin", "each bin",
+            "detail", "detailed", "in detail", "show details", "show detail", "give details", "give detail",
+            "explain in detail", "full detail", "full details", "all bins", "every bin", "each bin",
             "bin-wise", "bin wise", "itemized", "drill down", "breakdown", "break down",
-            "full detail", "full details", "complete bin", "complete details",
-            "deep dive", "elaborate", "break it down"
+            "complete bin", "complete details", "deep dive", "elaborate", "break it down"
         ])
         if not has_explicit_bin_detail:
             return False
@@ -7574,9 +7575,11 @@ def is_bin_level_detail_intent(q_lower: str) -> bool:
     if not has_bin:
         return False
 
-    # Check for detail / complete / breakdown / summary / all bins triggers (Semantic Intent)
+    # Check for detail / complete / breakdown / summary / all bins triggers (Semantic Intent - Section 8)
     detail_keywords = [
-        "detail", "detailed", "bins in detail", "bin utilization in detail", "in detail",
+        "detail", "details", "detailed", "bins in detail", "bin utilization in detail", "in detail",
+        "show details", "show detail", "give details", "give detail", "explain in detail",
+        "full details", "full detail", "break it down",
         "detailed version", "detailed analysis", "detailed breakdown", "give me detailed",
         "give detailed", "show detailed", "detail bin", "details of", "summary of bin", "summary of bins",
         "bin-wise", "bin wise", "complete bin", "complete bin-wise", "complete details",

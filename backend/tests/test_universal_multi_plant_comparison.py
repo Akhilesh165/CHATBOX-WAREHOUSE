@@ -116,3 +116,24 @@ class TestUniversalMultiPlantComparison:
         answer = data.get("answer", "")
         # Should gracefully report no records found, NOT invent data
         assert any(k in answer.lower() for k in ["no matching", "not found", "no records"])
+
+    @pytest.mark.parametrize("query", [
+        "the bin utilization of plant 1258 and 7228 in detail",
+        "the bin utilization of plant 1258 and 7228 detailed",
+        "the bin utilization of plant 1258 and 7228 show details",
+        "the bin utilization of plant 1258 and 7228 give details",
+        "explain in detail the bin utilization of plant 1258 and 7228",
+        "the bin utilization of plant 1258 and 7228 full details",
+        "the bin utilization of plant 1258 and 7228 elaborate",
+        "the bin utilization of plant 1258 and 7228 deep dive",
+        "the bin utilization of plant 1258 and 7228 break it down",
+    ])
+    def test_section_8_detail_triggers_all_route_to_multi_plant_bin_detail(self, query):
+        """Rule 8: All detail triggers from Section 8 must set Detail = TRUE and route to multi_plant_bin_detail."""
+        state = extract_and_update_conversation_state(query, [])
+        assert state.get("topic") == "multi_plant_bin_detail"
+        assert state.get("response_mode") == "DETAIL"
+
+        res = deterministic_warehouse_sql_generator(query, [])
+        assert res.get("intent") == "multi_plant_bin_detail"
+
