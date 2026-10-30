@@ -65,7 +65,7 @@ def normalize_query_typos(text: str) -> str:
         (r'\butlised\b', 'utilized'),
         (r'\butilising\b', 'utilizing'),
         (r'\b(?:higest|heighest|highst|heighst)\b', 'highest'),
-        (r'\b(?:lowes|lowestt)\b', 'lowest'),
+        (r'\b(?:lowes|lowestt|loweat|lowst|loest)\b', 'lowest'),
         (r'\b(?:avrage|averge|avrg|averg)\b', 'average'),
         (r'\b(?:quanity|quantiy|quntity)\b', 'quantity'),
         (r'\b(?:materail|matrial)\b', 'material'),
@@ -97,28 +97,28 @@ def extract_explicit_plants(text: str) -> list[str]:
 
     # Capture a plant ID plus any immediately chained plant IDs.
     chain_re = re.compile(
-        r"\bplants?\b\s*(?:#|:|-)?\s*(\d{4,5})"
-        r"((?:\s*(?:,\s*(?:and|&|or)|,|and|&|or|/)\s*(?:plants?\s*)?\d{4,5})*)",
+        r"\bplants?\b\s*(?:#|:|-)?\s*(\d{3,5})"
+        r"((?:\s*(?:,\s*(?:and|&|or)|,|and|&|or|/)\s*(?:plants?\s*)?\d{3,5})*)",
         re.IGNORECASE,
     )
     for m in chain_re.finditer(q):
         found.append(m.group(1))
-        for n in re.findall(r"(?:,\s*(?:and|&|or)|,|and|&|or|/)\s*(?:plants?\s*)?(\d{4,5})", m.group(2), re.I):
+        for n in re.findall(r"(?:,\s*(?:and|&|or)|,|and|&|or|/)\s*(?:plants?\s*)?(\d{3,5})", m.group(2), re.I):
             found.append(n)
 
     # Also catch repeated explicit forms: "Plant 1258 and Plant 1268".
-    for n in re.findall(r"\bplants?\s*(?:#|:|-)?\s*(\d{4,5})\b", q, re.I):
+    for n in re.findall(r"\bplants?\s*(?:#|:|-)?\s*(\d{3,5})\b", q, re.I):
         found.append(n)
 
     # "both 7228 and 1268"
-    m_both = re.search(r"\bboth\s+(\d{4,5})\s*(?:and|&)\s*(\d{4,5})\b", q)
+    m_both = re.search(r"\bboth\s+(\d{3,5})\s*(?:and|&)\s*(\d{3,5})\b", q)
     if m_both:
         found.extend([m_both.group(1), m_both.group(2)])
 
     # Standalone known warehouse plants (1258, 1266, 1268, 7228) in comparison or multi-plant queries
     if not found:
         known = {"1258", "1266", "1268", "7228"}
-        tokens = re.findall(r"\b(\d{4})\b", q)
+        tokens = re.findall(r"\b(\d{3,5})\b", q)
         kp = [t for t in tokens if t in known]
         if len(kp) >= 2 or any(k in q for k in ["compare", "versus", "vs", "between", "both", "difference"]):
             found.extend(kp)
@@ -277,7 +277,14 @@ def extract_single_plant_safe(text: str) -> Optional[str]:
         return explicit[0]
     if len(explicit) > 1:
         return None
-    m = re.findall(r"\b(1258|1266|1268|7228)\b", (text or "").lower())
+    q = (text or "").lower()
+    # Check for contextual plant filter after preposition in bin/entity queries: e.g. "in 234", "for 234", "at 234", "in Plant 234"
+    m_prep = re.search(r"\b(?:in|for|at|from)\s+(?:plant\s+)?(\d{3,5})\b(?!\s*%)", q)
+    if m_prep:
+        val = m_prep.group(1)
+        if val not in {"2024", "2025", "2026"}:
+            return val
+    m = re.findall(r"\b(1258|1266|1268|7228)\b", q)
     if len(m) == 1:
         return m[0]
     return None
@@ -1197,7 +1204,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     
     # Extract any explicit plant filter in the current question safely
     explicit_plants = extract_explicit_plants(q_lower)
-    new_plant = explicit_plants[0] if len(explicit_plants) == 1 else None
+    new_plant = explicit_plants[0] if len(explicit_plants) == 1 else extract_single_plant_safe(q_lower)
 
     # Extract any explicit limit in the current question safely
     new_limit = extract_explicit_limit(q_lower)
