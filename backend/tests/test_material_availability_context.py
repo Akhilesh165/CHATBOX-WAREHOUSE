@@ -143,3 +143,86 @@ def test_followup_conversation_context():
     ans = format_deterministic_answer(followup_q, rows)
     assert "Plant 1258" in ans
     assert "1,453" in ans
+
+
+def test_reverse_availability_queries():
+    # 1. In which plants is material BCH20DBB21 available?
+    q1 = "In which plants is material BCH20DBB21 available?"
+    gen1 = deterministic_warehouse_sql_generator(q1)
+    assert gen1["intent"] == "material_plants_lookup"
+    rows1, _ = execute_readonly(gen1["sql"])
+    assert len(rows1) == 4
+    ans1 = format_deterministic_answer(q1, rows1)
+    assert "BCH20DBB21" in ans1
+    assert "Plant 1258" in ans1 and "Plant 7228" in ans1
+
+    # 2. Which plants contain material BCH20DBB21?
+    q2 = "Which plants contain material BCH20DBB21?"
+    gen2 = deterministic_warehouse_sql_generator(q2)
+    assert gen2["intent"] == "material_plants_lookup"
+
+    # 3. Where is material BCH20DBB21 stored?
+    q3 = "Where is material BCH20DBB21 stored?"
+    gen3 = deterministic_warehouse_sql_generator(q3)
+    assert gen3["intent"] == "material_plants_lookup"
+
+    # 4. Is material BCH20DBB21 available in Plant 7228?
+    q4 = "Is material BCH20DBB21 available in Plant 7228?"
+    gen4 = deterministic_warehouse_sql_generator(q4)
+    assert gen4["intent"] == "material_plants_lookup"
+    rows4, _ = execute_readonly(gen4["sql"])
+    assert len(rows4) == 1
+    ans4 = format_deterministic_answer(q4, rows4)
+    assert "Yes" in ans4
+    assert "Plant 7228" in ans4
+
+
+def test_common_materials_queries():
+    q = "Which materials are common in Plant 1258 and 7228?"
+    gen = deterministic_warehouse_sql_generator(q)
+    assert gen["intent"] == "common_materials"
+    rows, _ = execute_readonly(gen["sql"])
+    assert len(rows) == 436
+    ans = format_deterministic_answer(q, rows)
+    assert "436" in ans
+    assert "Common Materials" in ans or "common materials" in ans.lower()
+
+
+def test_unique_and_difference_materials_queries():
+    # 1. Which materials exist only in Plant 1258?
+    q1 = "Which materials exist only in Plant 1258?"
+    gen1 = deterministic_warehouse_sql_generator(q1)
+    assert gen1["intent"] == "unique_materials"
+    rows1, _ = execute_readonly(gen1["sql"])
+    ans1 = format_deterministic_answer(q1, rows1)
+    assert "Plant 1258" in ans1
+    assert "exclusive" in ans1 or "Unique" in ans1
+
+    # 2. Which materials are present in Plant 1258 but not Plant 7228?
+    q2 = "Which materials are present in Plant 1258 but not Plant 7228?"
+    gen2 = deterministic_warehouse_sql_generator(q2)
+    assert gen2["intent"] == "unique_materials"
+    rows2, _ = execute_readonly(gen2["sql"])
+    assert len(rows2) == 1017
+    ans2 = format_deterministic_answer(q2, rows2)
+    assert "1,017" in ans2
+    assert "Plant 1258" in ans2 and "Plant 7228" in ans2
+
+    # 3. Which materials are missing from Plant 7228 compared with Plant 1258?
+    q3 = "Which materials are missing from Plant 7228 compared with Plant 1258?"
+    gen3 = deterministic_warehouse_sql_generator(q3)
+    assert gen3["intent"] == "unique_materials"
+    rows3, _ = execute_readonly(gen3["sql"])
+    assert len(rows3) == 1017
+
+
+def test_names_only_modifier():
+    q = "Only show material names in Plant 1268"
+    gen = deterministic_warehouse_sql_generator(q)
+    rows, _ = execute_readonly(gen["sql"])
+    ans = format_deterministic_answer(q, rows)
+    # ans should be comma-separated material codes without markdown headers
+    assert "###" not in ans
+    assert "," in ans
+    first_mat = rows[0]["Material"]
+    assert first_mat in ans

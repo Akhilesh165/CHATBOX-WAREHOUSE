@@ -154,6 +154,83 @@ def is_material_availability_intent(text: str) -> bool:
 
     return False
 
+def is_material_to_plants_query(text: str) -> tuple[bool, str | None]:
+    """Detects reverse availability: asking which plants contain a specific material.
+    
+    Returns (is_matched, material_code).
+    """
+    q = normalize_query_typos(text).lower()
+    if q.startswith("what is material") or q.startswith("tell me about material") or q.startswith("details of material"):
+        return False, None
+
+    m_match = re.search(r"\b(?:material|sku|item|product|code)\s*[:#-]?\s*([a-z0-9_-]{5,20})\b", q, re.IGNORECASE)
+    if not m_match:
+        tokens = re.findall(r"\b([A-Za-z0-9_-]{6,20})\b", text)
+        for tok in tokens:
+            if any(c.isdigit() for c in tok) and any(c.isalpha() for c in tok):
+                tok_upper = tok.upper()
+                if tok_upper not in ["PLANT", "PLANTS", "FACILITY", "FACILITIES", "DETAIL", "DETAILED", "TABLE", "AVAILABLE", "PRESENT", "COMMON"]:
+                    m_match = tok
+                    break
+    mat_code = m_match.group(1).upper() if hasattr(m_match, "group") else (m_match.upper() if m_match else None)
+    if not mat_code:
+        return False, None
+
+    signals = [
+        "which plant", "which plants", "what plant", "what plants",
+        "in which plant", "in which plants", "where is material", "where is",
+        "contain material", "contains material", "having material", "has material", "have material",
+        "plants contain", "plants have", "plants with material", "plants where",
+        "stored in which plant", "available in which plant",
+        "find plants", "show all plants having", "does plant", "do plants"
+    ]
+    if any(s in q for s in signals):
+        return True, mat_code
+    if "is material" in q and any(k in q for k in ["available", "stored", "present", "in plant", "at plant"]):
+        return True, mat_code
+    return False, None
+
+def is_common_materials_query(text: str) -> bool:
+    """Detects queries asking for materials common/shared between multiple plants."""
+    q = normalize_query_typos(text).lower()
+    signals = ["common", "in both", "available in both", "present in both", "stored in both", "shared between", "shared in", "overlap"]
+    if any(s in q for s in signals) and not any(k in q for k in ["not in", "but not", "missing", "only in"]):
+        return True
+    return False
+
+def is_unique_or_missing_materials_query(text: str) -> bool:
+    """Detects queries asking for materials unique to one plant or missing from another."""
+    q = normalize_query_typos(text).lower()
+    signals = [
+        "only in plant", "exist only in", "unique to plant", "but not in plant",
+        "not in plant", "missing from plant", "missing in plant",
+        "compared with plant", "compared to plant", "but not"
+    ]
+    if any(s in q for s in signals) or re.search(r"\bpresent in plant \d+ but not\b", q) or re.search(r"\bavailable in plant \d+ but not\b", q):
+        return True
+    return False
+
+def extract_difference_plants(q_lower: str) -> tuple[str, str | None]:
+    """Returns (source_plant, excluded_plant). If excluded_plant is None, it means all other plants."""
+    m_missing = re.search(r"\bmissing\s+(?:from|in)\s+plant\s+(\d{3,5})\b.*?\b(?:compared\s+(?:with|to)|relative\s+to|vs\.?|against)\s+plant\s+(\d{3,5})\b", q_lower)
+    if m_missing:
+        return m_missing.group(2), m_missing.group(1)
+
+    m_but_not = re.search(r"\b(?:in\s+)?plant\s+(\d{3,5})\b.*?\b(?:but\s+not|not\s+in)\s+(?:plant\s+)?(\d{3,5})\b", q_lower)
+    if m_but_not:
+        return m_but_not.group(1), m_but_not.group(2)
+
+    m_only = re.search(r"\b(?:only\s+in|exist\s+only\s+in|unique\s+to)\s+plant\s+(\d{3,5})\b", q_lower)
+    if m_only:
+        return m_only.group(1), None
+
+    explicit = extract_explicit_plants(q_lower)
+    if len(explicit) >= 2:
+        return explicit[0], explicit[1]
+    elif len(explicit) == 1:
+        return explicit[0], None
+    return "1258", "7228"
+
 def extract_explicit_plants(text: str) -> list[str]:
     """Extract every plant explicitly requested, including chained forms like
     'Plant 1258 and 1268', 'plants 1258, 1268 & 7228', and repeated 'Plant N'.
@@ -4906,7 +4983,7 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
     ])
     raw_explicit_plants = extract_explicit_plants(question.lower())
 
-    is_comparison_query = not is_ranking_in_q and not range_filters_pre and not is_material_availability_intent(q_lower) and (
+    is_comparison_query = not is_ranking_in_q and not range_filters_pre and not is_material_availability_intent(q_lower) and not is_common_materials_query(q_lower) and not is_unique_or_missing_materials_query(q_lower) and not is_material_to_plants_query(q_lower)[0] and (
         (
             len(all_plants_unique) >= 2 and (
                 state.get("topic") in ["plant_comparison", "multi_plant_bin_detail"] or
@@ -5534,14 +5611,14 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volum
         "show plants ranked", "plants ranked", "ranked by", "based on empty bins", "according to the number of empty bins",
         "plants with the most", "plants with the fewest", "plants with most", "plants with fewest"
     ]
-    is_plant_ranking_inquiry = is_plant_empty_bins_query or (has_plant_word and (
+    is_plant_ranking_inquiry = not is_material_to_plants_query(q_lower)[0] and not is_common_materials_query(q_lower) and not is_unique_or_missing_materials_query(q_lower) and not is_material_availability_intent(q_lower) and (is_plant_empty_bins_query or (has_plant_word and (
         any(k in q_lower for k in plant_rank_keywords) or
         state.get("topic") in [
             "plant_occupied_volume_ranking", "plant_available_capacity_ranking",
             "plant_bin_capacity_ranking", "plant_bins_ranking", "plant_materials_ranking",
             "plant_inventory_ranking", "plant_empty_bins_ranking", "plant_rank_lookup", "plant_rank_explanation"
         ]
-    ))
+    )))
 
     # 1. SPECIFIC ENTITY RANK INQUIRY: "What rank is Plant 1258 by occupied volume?", "Where does Plant 1258 stand?"
     is_specific_rank_lookup = has_plant_word and (
@@ -6855,8 +6932,169 @@ ORDER BY [Total Inventory Quantity] DESC"""
             "output_type": "list"
         }
 
+    # K0. REVERSE AVAILABILITY (Material to Plants Lookup)
+    is_rev_mat, rev_mat_code = is_material_to_plants_query(q_lower)
+    if is_rev_mat and rev_mat_code:
+        explicit_plants_all = extract_explicit_plants(q_lower)
+        plant_clause = ""
+        scope_desc = "all warehouse plants"
+        if len(explicit_plants_all) == 1:
+            plant_clause = f" AND i.Plant = '{explicit_plants_all[0]}'"
+            scope_desc = f"Plant {explicit_plants_all[0]}"
+        elif len(explicit_plants_all) > 1:
+            in_clause = ", ".join(f"'{p}'" for p in explicit_plants_all)
+            plant_clause = f" AND i.Plant IN ({in_clause})"
+            scope_desc = f"Plants {', '.join(explicit_plants_all)}"
+
+        sql = f"""SELECT 
+    i.Plant AS [Plant],
+    i.Material AS [Material],
+    MAX(i.MaterialDescription) AS [Material Description],
+    SUM(i.UnrestrictedQty) AS [Total Stock Qty],
+    MAX(i.BaseUnitOfMeasure) AS [UOM],
+    COUNT(DISTINCT i.BinNo) AS [Occupied Bins]
+FROM dbo.ZWMS_INVENTORY i
+WHERE i.Material = '{rev_mat_code}'{plant_clause}
+GROUP BY i.Plant, i.Material
+ORDER BY i.Plant ASC"""
+
+        query_plan = {
+            "intent": "MATERIAL_PLANTS_LOOKUP",
+            "entity": "material",
+            "material": rev_mat_code,
+            "scope": scope_desc,
+            "operation": "LOOKUP",
+            "response_format": "TABLE"
+        }
+        state["entity"] = "material"
+        state["metric"] = "material_availability"
+        state["operation"] = "lookup"
+        state["topic"] = "plant_materials"
+
+        return {
+            "sql": sql,
+            "query_plan": query_plan,
+            "chart_type": "none",
+            "chart_title": f"Availability of Material {rev_mat_code} Across Plants",
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "material_plants_lookup",
+            "metric": "material_plants_lookup",
+            "filters": {"material": rev_mat_code},
+            "time_range": "current",
+            "output_type": "table",
+            "conversation_state": state
+        }
+
+    # K1. COMMON MATERIALS BETWEEN PLANTS
+    if is_common_materials_query(q_lower):
+        explicit_plants = extract_explicit_plants(q_lower)
+        if len(explicit_plants) >= 2:
+            target_plants = explicit_plants
+        elif len(all_plants_unique) >= 2:
+            target_plants = all_plants_unique
+        else:
+            target_plants = ["1258", "7228"]
+        plants_in = ", ".join(f"'{p}'" for p in target_plants)
+        plants_str = " and ".join(f"Plant {p}" for p in target_plants)
+
+        sql = f"""SELECT 
+    i.Material AS [Material],
+    MAX(i.MaterialDescription) AS [Material Description],
+    COUNT(DISTINCT i.Plant) AS [Plant Count],
+    SUM(i.UnrestrictedQty) AS [Total Stock Qty],
+    MAX(i.BaseUnitOfMeasure) AS [UOM]
+FROM dbo.ZWMS_INVENTORY i
+WHERE i.Plant IN ({plants_in}) AND i.Material IS NOT NULL
+GROUP BY i.Material
+HAVING COUNT(DISTINCT i.Plant) = {len(target_plants)}
+ORDER BY i.Material ASC"""
+
+        query_plan = {
+            "intent": "COMMON_MATERIALS",
+            "entity": "material",
+            "scope": plants_str,
+            "operation": "INTERSECTION",
+            "response_format": "TABLE"
+        }
+        state["entity"] = "material"
+        state["metric"] = "common_materials"
+        state["operation"] = "intersection"
+        state["topic"] = "plant_materials"
+        state["filters"]["plants"] = target_plants
+
+        return {
+            "sql": sql,
+            "query_plan": query_plan,
+            "chart_type": "none",
+            "chart_title": f"Common Materials in {plants_str}",
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "common_materials",
+            "metric": "common_materials",
+            "filters": {"plants": target_plants},
+            "time_range": "current",
+            "output_type": "table",
+            "conversation_state": state
+        }
+
+    # K2. UNIQUE / MISSING MATERIALS (Plant Difference)
+    if is_unique_or_missing_materials_query(q_lower):
+        src_plant, excl_plant = extract_difference_plants(q_lower)
+        if excl_plant:
+            sub_cond = f"Plant = '{excl_plant}'"
+            diff_desc = f"in Plant {src_plant} but missing from Plant {excl_plant}"
+            title_desc = f"Materials in Plant {src_plant} Not in Plant {excl_plant}"
+        else:
+            sub_cond = f"Plant != '{src_plant}'"
+            diff_desc = f"exclusive to Plant {src_plant}"
+            title_desc = f"Materials Unique to Plant {src_plant}"
+
+        sql = f"""SELECT 
+    i.Material AS [Material],
+    MAX(i.MaterialDescription) AS [Material Description],
+    '{src_plant}' AS [Plant],
+    SUM(i.UnrestrictedQty) AS [Total Stock Qty],
+    MAX(i.BaseUnitOfMeasure) AS [UOM],
+    COUNT(DISTINCT i.BinNo) AS [Occupied Bins]
+FROM dbo.ZWMS_INVENTORY i
+WHERE i.Plant = '{src_plant}' AND i.Material IS NOT NULL
+  AND i.Material NOT IN (
+      SELECT DISTINCT Material FROM dbo.ZWMS_INVENTORY WHERE {sub_cond} AND Material IS NOT NULL
+  )
+GROUP BY i.Material
+ORDER BY i.Material ASC"""
+
+        query_plan = {
+            "intent": "UNIQUE_MATERIALS",
+            "entity": "material",
+            "scope": diff_desc,
+            "operation": "DIFFERENCE",
+            "response_format": "TABLE"
+        }
+        state["entity"] = "material"
+        state["metric"] = "unique_materials"
+        state["operation"] = "difference"
+        state["topic"] = "plant_materials"
+        state["filters"]["plant"] = src_plant
+
+        return {
+            "sql": sql,
+            "query_plan": query_plan,
+            "chart_type": "none",
+            "chart_title": title_desc,
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "unique_materials",
+            "metric": "unique_materials",
+            "filters": {"plant": src_plant, "excluded_plant": excl_plant},
+            "time_range": "current",
+            "output_type": "table",
+            "conversation_state": state
+        }
+
     # J. QUANTITY DIFFERENCES (ZWMS vs ZWS)
-    if any(k in q_lower for k in ["difference", "zws", "unrestrictedqty2"]):
+    if any(k in q_lower for k in ["difference", "zws", "unrestrictedqty2"]) and not is_unique_or_missing_materials_query(q_lower) and not is_common_materials_query(q_lower):
         plant_filter = f" WHERE Plant = '{plant_cand}'" if plant_cand else ""
         filters = {"plant": plant_cand} if plant_cand else {}
         return {
@@ -8494,13 +8732,23 @@ def _format_deterministic_answer_impl(question: str, rows: list[dict]) -> str:
                 return "No matching warehouse records were found for your query in the database."
 
     # 0A_NAMES_ONLY. Return only the entity names when requested
-    if any(k in q_lower for k in ["only names", "only the names", "names only", "just the names", "show only the names"]):
-        if "Plant" in cols:
+    if any(k in q_lower for k in [
+        "only names", "only the names", "names only", "just the names", "show only the names",
+        "only material names", "only show material names", "material names only", "just material names",
+        "just the material names", "show only material names", "only plant names", "only bin names"
+    ]):
+        if any(k in q_lower for k in ["material", "sku", "item"]) and "Material" in cols:
+            unique_mats = list(dict.fromkeys(str(r.get("Material")) for r in rows if r.get("Material")))
+            return ", ".join(unique_mats)
+        elif "Plant" in cols and any(k in q_lower for k in ["plant", "facility"]):
             unique_plants = list(dict.fromkeys(str(r.get("Plant")) for r in rows if r.get("Plant")))
             return ", ".join(f"Plant {p}" for p in unique_plants)
         elif "Material" in cols:
             unique_mats = list(dict.fromkeys(str(r.get("Material")) for r in rows if r.get("Material")))
             return ", ".join(unique_mats)
+        elif "Plant" in cols:
+            unique_plants = list(dict.fromkeys(str(r.get("Plant")) for r in rows if r.get("Plant")))
+            return ", ".join(f"Plant {p}" for p in unique_plants)
         elif "Bin" in cols or "BinLocation" in cols:
             unique_bins = list(dict.fromkeys(str(r.get("Bin") or r.get("BinLocation")) for r in rows if r.get("Bin") or r.get("BinLocation")))
             return ", ".join(unique_bins)
@@ -10542,6 +10790,113 @@ GROUP BY Plant"""
         lines.append(f"\n💡 *The complete list of bin locations for Material **`{mat_code}`** is rendered in the **Data Table** below.*")
         return "\n".join(lines)
 
+    # 5F. Material to Plants Lookup (Reverse Availability)
+    is_rev_mat, rev_mat_code = is_material_to_plants_query(q_lower)
+    if (is_rev_mat and rev_mat_code and "Material" in cols and "Plant" in cols) or (
+        "Material" in cols and "Plant" in cols and any(k in q_lower for k in ["which plant", "what plant", "where is", "is material", "does plant"]) and not is_material_availability_intent(q_lower)
+    ):
+        mat_target = rev_mat_code or (rows[0].get("Material") if rows else "Material")
+        mat_desc = rows[0].get("Material Description", "") if rows else ""
+        desc_str = f" ({mat_desc})" if mat_desc else ""
+        uom = rows[0].get("UOM", "EA") if rows else "EA"
+        total_qty = sum(float(r.get("Total Stock Qty", r.get("Qty", 0)) or 0) for r in rows)
+        total_bins = sum(int(r.get("Occupied Bins", 1) or 1) for r in rows)
+        plants_list = [f"Plant {r.get('Plant')}" for r in rows if r.get('Plant')]
+        plants_str = ", ".join(plants_list)
+        p_count = len(plants_list)
+
+        is_yes_no = any(k in q_lower for k in ["is material", "is sku", "does plant", "do plants", "is this material"])
+        target_plant = extract_single_plant_safe(q_lower)
+        
+        if is_yes_no and target_plant:
+            matching_p = next((r for r in rows if str(r.get("Plant")) == target_plant), None)
+            if matching_p:
+                p_qty = float(matching_p.get("Total Stock Qty", 0) or 0)
+                p_bins = matching_p.get("Occupied Bins", 1)
+                single_stmt = f"**Yes**, material **`{mat_target}`**{desc_str} is available in **Plant {target_plant}** with **{p_qty:,.0f} {uom}** in stock across {p_bins} bin{'s' if p_bins != 1 else ''}."
+            else:
+                single_stmt = f"**No**, material **`{mat_target}`** is not currently stocked in **Plant {target_plant}**."
+        else:
+            single_stmt = f"Material **`{mat_target}`**{desc_str} is available in **{p_count} plant{'s' if p_count != 1 else ''}**: **{plants_str}** with total stock of **{total_qty:,.0f} {uom}** across {total_bins} bins."
+
+        if is_single_statement_requested:
+            return single_stmt
+
+        lines = [
+            f"### 📦 Material Availability: `{mat_target}`{desc_str}\n",
+            single_stmt,
+            "\n**Plant Breakdown:**"
+        ]
+        for r in rows:
+            p = r.get("Plant", "N/A")
+            q = float(r.get("Total Stock Qty", 0) or 0)
+            b = r.get("Occupied Bins", 1)
+            b_lbl = "bin" if b == 1 else "bins"
+            lines.append(f"- **Plant {p}**: **{q:,.0f} {uom}** across {b} {b_lbl}")
+        
+        lines.append(f"\n💡 *Full details for material **`{mat_target}`** are shown in the **Data Table** below.*")
+        return "\n".join(lines)
+
+    # 5G. Common Materials Across Plants (Intersection)
+    if is_common_materials_query(q_lower) or "Plant Count" in cols:
+        target_plants = extract_explicit_plants(q_lower) or ["1258", "7228"]
+        plants_str = " and ".join(f"Plant {p}" for p in target_plants)
+        single_stmt = f"There are **{count:,} common materials** available in both **{plants_str}**."
+
+        if is_single_statement_requested:
+            return single_stmt
+
+        lines = [
+            f"### 🔄 Common Materials in {plants_str}\n",
+            single_stmt,
+            "\nA few examples of shared materials:"
+        ]
+        for r in rows[:4]:
+            mat = r.get("Material", "N/A")
+            desc = r.get("Material Description", "")
+            qty = float(r.get("Total Stock Qty", 0) or 0)
+            uom = r.get("UOM", "EA")
+            desc_str = f" ({desc})" if desc else ""
+            lines.append(f"- **`{mat}`**{desc_str}: **{qty:,.0f} {uom}** combined stock")
+
+        note_text = f"Showing 1 to {min(10, count)} of {count:,} shared materials"
+        lines.append(f"\n💡 *{note_text} in the **searchable Data Table** below (with real-time search, sorting, and CSV export).*")
+        return "\n".join(lines)
+
+    # 5H. Unique / Missing Materials (Plant Difference)
+    if is_unique_or_missing_materials_query(q_lower) and "Material" in cols:
+        src_plant, excl_plant = extract_difference_plants(q_lower)
+        if excl_plant:
+            scope_desc = f"present in **Plant {src_plant}** but missing from **Plant {excl_plant}**"
+            title_desc = f"Materials in Plant {src_plant} Not in Plant {excl_plant}"
+        else:
+            scope_desc = f"exclusive to **Plant {src_plant}** (not found in any other plant)"
+            title_desc = f"Materials Unique to Plant {src_plant}"
+
+        single_stmt = f"Found **{count:,} materials** {scope_desc}."
+
+        if is_single_statement_requested:
+            return single_stmt
+
+        lines = [
+            f"### 🔍 {title_desc}\n",
+            single_stmt,
+            "\nA few examples of matching materials:"
+        ]
+        for r in rows[:4]:
+            mat = r.get("Material", "N/A")
+            desc = r.get("Material Description", "")
+            qty = float(r.get("Total Stock Qty", 0) or 0)
+            uom = r.get("UOM", "EA")
+            bins = r.get("Occupied Bins", 1)
+            b_lbl = "bin" if bins == 1 else "bins"
+            desc_str = f" ({desc})" if desc else ""
+            lines.append(f"- **`{mat}`**{desc_str}: **{qty:,.0f} {uom}** across {bins} {b_lbl} in Plant `{src_plant}`")
+
+        note_text = f"Showing 1 to {min(10, count)} of {count:,} materials"
+        lines.append(f"\n💡 *{note_text} in the **searchable Data Table** below (with real-time search, sorting, and CSV export).*")
+        return "\n".join(lines)
+
     # 5E. Material Availability & Listing (PERMANENT MATERIAL AVAILABILITY CONTEXT)
     if (is_material_availability_intent(q_lower) or any(c in cols for c in ["Total Stock Qty", "Occupied Bins"])) and "Material" in cols:
         req_plants = extract_explicit_plants(q_lower)
@@ -11401,12 +11756,12 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
         }
 
     # 8B. Material Availability / Listing
-    if is_material_availability_intent(question) or generated.get("intent") == "material_availability":
+    if is_material_availability_intent(question) or generated.get("intent") in ["material_availability", "material_plants_lookup", "common_materials", "unique_materials"]:
         return {
             "output_type": "table",
             "chart_type": "none",
-            "metric": "available_materials",
-            "intent": "material_availability",
+            "metric": generated.get("metric", "available_materials"),
+            "intent": generated.get("intent", "material_availability"),
             "time_range": "current"
         }
 
