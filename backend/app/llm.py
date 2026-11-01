@@ -121,8 +121,10 @@ def is_material_availability_intent(text: str) -> bool:
         "highest quantity", "lowest quantity", "top material", "bottom material",
         "most stock", "least stock", "highest stock", "lowest stock",
         "rank material", "ranking of material", "ranked by quantity",
-        "most inventory", "least inventory"
+        "most inventory", "least inventory", "ranking of"
     ]):
+        return False
+    if re.search(r"\b(?:top|bottom|highest|lowest)\s+\d+\b", q):
         return False
     if re.search(r"\bwhich\s+material\s+has\s+(?:the\s+)?(?:highest|lowest|most|least)\b", q):
         return False
@@ -1311,7 +1313,10 @@ def is_elliptical_followup(q_lower: str) -> bool:
         "do they", "they have", "do these", "these have", "do those", "those have", "their total",
         "those two", "these two", "both", "the two", "ones",
         "other plant", "the other plant", "other one", "another plant",
-        "same thing", "the same", "the same thing", "the previous result", "the above", "instead"
+        "same thing", "the same", "the same thing", "the previous result", "the above", "instead",
+        "from that plant", "of that plant", "in that plant", "for that plant", "that plant",
+        "which one", "which one has", "who has", "which of these", "which of those", "which has the highest",
+        "which has the lowest", "which has the most", "who is the highest", "who has the highest"
     ]):
         return True
     
@@ -1321,10 +1326,10 @@ def is_elliptical_followup(q_lower: str) -> bool:
         "and for", "only for", "only in", "just for", "just in",
         "and in", "now for", "and the", "what if", "only materials",
         "compare those", "compare these", "compare them", "compare both", "compare the two",
-        "now show"
+        "now show", "do the same for", "now check", "include plant"
     ]):
         return True
-    if re.search(r"^(?:only in|only for|just in|just for|in|for)?\s*(?:plant\s+)?\d{3,5}\.?$", q_strip):
+    if re.search(r"^(?:only in|only for|just in|just for|in|for|now for|now check)?\s*(?:plant\s+)?\d{3,5}\.?$", q_strip):
         return True
     
     # 5. Incremental adjustments, polarity shifts, ranking pivots, or follow-up counts
@@ -1340,8 +1345,9 @@ def is_elliptical_followup(q_lower: str) -> bool:
         "least utilized ones", "lowest utilized ones", "most utilized ones",
         "show least utilized", "least ones", "most ones",
         "lowest ones", "highest ones", "bottom ones", "top ones",
+        "what about the lowest", "what about the highest", "what about lowest", "what about highest",
         "how many are there", "what is the count", "how many are in there", "how many?", "how many",
-        "only materials", "top materials"
+        "only materials", "top materials", "top materials from that plant"
     ]):
         return True
     if q_strip in ["materials", "only materials", "top materials"]:
@@ -1705,6 +1711,78 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                 state["topic"] = "total_inventory_quantity"
                 state["condition"] = None
                 state["aggregation"] = "sum"
+            elif any(m in uq_lower for m in ["material", "materials", "sku", "skus", "item", "items"]) and any(k in uq_lower for k in ["top", "bottom", "highest", "lowest", "most", "least", "rank", "ranking"]):
+                state["entity"] = "material"
+                state["metric"] = "unrestricted_qty"
+                is_least = any(k in uq_lower for k in ["least", "lowest", "bottom", "minimum", "smallest"])
+                state["ranking"] = "lowest" if is_least else "highest"
+                if any(q in uq_lower for q in ["which material", "what material"]) and (hist_lim == 1 or not hist_lim):
+                    state["topic"] = "material_min_quantity" if is_least else "material_max_quantity"
+                    state["limit"] = 1
+                    state["aggregation"] = "scalar"
+                else:
+                    state["topic"] = "material_quantity_ranking"
+                    state["limit"] = hist_lim or 10
+                    state["aggregation"] = "list"
+                if pm_val:
+                    state["filters"]["plant"] = pm_val
+            elif any(k in uq_lower for k in ["which material", "what material"]) and any(k in uq_lower for k in ["highest", "most", "maximum", "max", "largest", "greatest"]) and any(k in uq_lower for k in ["quantity", "stock", "inventory", "units"]):
+                state["entity"] = "material"
+                state["metric"] = "unrestricted_qty"
+                state["ranking"] = "highest"
+                state["topic"] = "material_max_quantity"
+                state["limit"] = 1
+                state["aggregation"] = "scalar"
+                if pm_val:
+                    state["filters"]["plant"] = pm_val
+            elif any(k in uq_lower for k in ["which material", "what material"]) and any(k in uq_lower for k in ["lowest", "least", "minimum", "min", "smallest"]) and any(k in uq_lower for k in ["quantity", "stock", "inventory", "units"]):
+                state["entity"] = "material"
+                state["metric"] = "unrestricted_qty"
+                state["ranking"] = "lowest"
+                state["topic"] = "material_min_quantity"
+                state["limit"] = 1
+                state["aggregation"] = "scalar"
+                if pm_val:
+                    state["filters"]["plant"] = pm_val
+            elif any(k in uq_lower for k in ["inventory summary", "inventory overview", "inventory report"]) and len(hist_plants) >= 2:
+                state["entity"] = "inventory"
+                state["metric"] = "inventory_summary"
+                state["topic"] = "inventory_summary"
+                state["plants"] = list(hist_plants)
+                state["filters"]["plants"] = list(hist_plants)
+                state["comparison_entities"] = [{"type": "plant", "value": p} for p in hist_plants]
+            elif any(k in uq_lower for k in ["which one has", "which one", "who has", "which of these", "which of those", "who is the highest", "which has the highest", "which has the most", "which plant has the highest", "which plant has highest"]) and any(k in uq_lower for k in ["highest inventory", "most inventory", "highest stock", "most stock", "highest", "most", "lowest", "least", "inventory", "stock"]):
+                state["entity"] = "plant"
+                state["metric"] = "total_inventory"
+                is_least = any(k in uq_lower for k in ["lowest", "least", "smallest"])
+                state["ranking"] = "lowest" if is_least else "highest"
+                state["topic"] = "plant_inventory_ranking"
+                state["limit"] = 1
+                if len(state["plants"]) >= 2:
+                    state["filters"]["plants"] = list(state["plants"])
+            elif any(k in uq_lower for k in ["from that plant", "in that plant", "of that plant", "for that plant"]) or ("that plant" in uq_lower):
+                target_plant = None
+                if history:
+                    for msg in reversed(history):
+                        if msg.get("role") == "assistant":
+                            p_match = re.search(r"\bPlant\s+(\d{3,5})\b", msg.get("content", ""), re.IGNORECASE)
+                            if p_match:
+                                target_plant = p_match.group(1)
+                                break
+                            num_match = re.search(r"\b(1258|1266|1268|7228)\b", msg.get("content", ""))
+                            if num_match:
+                                target_plant = num_match.group(1)
+                                break
+                if not target_plant:
+                    target_plant = state.get("active_plant") or (state.get("plants")[0] if state.get("plants") else None)
+                if target_plant:
+                    state["filters"]["plant"] = target_plant
+                    state["active_plant"] = target_plant
+                state["entity"] = "material"
+                state["metric"] = "unrestricted_qty"
+                state["topic"] = "material_quantity_ranking"
+                state["ranking"] = "highest"
+                state["limit"] = hist_lim or 10
             # Incremental ranking polarity flips & modifiers in history
             elif any(k in uq_lower for k in ["reverse", "flip the ranking", "flip order", "in reverse order"]):
                 state["ranking"] = "lowest" if state.get("ranking") == "highest" else "highest"
@@ -1724,7 +1802,12 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                     elif state.get("topic") in ["highest_bin_utilization", "lowest_bin_utilization"]:
                         state["topic"] = "lowest_bin_utilization"
                 elif state.get("entity") == "material":
-                    state["topic"] = "material_quantity_ranking"
+                    if state.get("topic") == "material_max_quantity" or state.get("limit") == 1:
+                        state["topic"] = "material_min_quantity"
+                        state["limit"] = 1
+                        state["aggregation"] = "scalar"
+                    else:
+                        state["topic"] = "material_quantity_ranking"
                 elif state.get("entity") == "storage_location":
                     state["topic"] = "storage_location_ranking"
                 else:
@@ -1749,7 +1832,12 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                     elif state.get("topic") in ["highest_bin_utilization", "lowest_bin_utilization"]:
                         state["topic"] = "highest_bin_utilization"
                 elif state.get("entity") == "material":
-                    state["topic"] = "material_quantity_ranking"
+                    if state.get("topic") == "material_min_quantity" and (not lm or lm == 1):
+                        state["topic"] = "material_max_quantity"
+                        state["limit"] = 1
+                        state["aggregation"] = "scalar"
+                    else:
+                        state["topic"] = "material_quantity_ranking"
                 elif state.get("entity") == "storage_location":
                     state["topic"] = "storage_location_ranking"
                 else:
@@ -1903,7 +1991,8 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
     is_fresh_mat_rank = (
         is_mat_entity and
         any(k in q_lower for k in ["rank", "ranking", "rankings", "top", "bottom", "highest", "lowest", "most", "least"]) and
-        not is_fresh_mat_vol and not is_fresh_missing_master and not is_fresh_dq and not is_fresh_mat_count
+        not is_fresh_mat_vol and not is_fresh_missing_master and not is_fresh_dq and not is_fresh_mat_count and
+        not any(k in q_lower for k in ["that plant", "from that", "in that", "of that", "lowest ones", "least ones", "instead"])
     )
     is_fresh_sloc_rank = (
         any(k in q_lower for k in ["storage location", "storage locations", "sloc", "slocs"]) and
@@ -2575,6 +2664,12 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["filters"] = {"plant": new_plant} if new_plant else {}
         state["limit"] = new_limit or 10
         state["aggregation"] = "list"
+        if not new_plant:
+            state["plants"] = []
+            state["active_plant"] = None
+            state["comparison_entities"] = []
+            state["filters"].pop("plant", None)
+            state["filters"].pop("plants", None)
     elif is_fresh_sloc_rank:
         is_least = any(k in q_lower for k in ["least", "lowest", "bottom", "minimum"])
         state["entity"] = "storage_location"
@@ -2664,9 +2759,45 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             elif state["topic"] in ["data_quality", "materials_missing_from_volume_master"]:
                 state["topic"] = "data_quality_count"
 
+        # Handle candidate plant ranking inquiry (e.g. "Which one has the highest inventory?", "Which plant has the lowest stock?")
+        if any(k in q_lower for k in ["which one has", "which one", "who has", "which of these", "which of those", "who is the highest", "which has the highest", "which has the most", "which plant has the highest", "which plant has highest"]) and any(k in q_lower for k in ["highest inventory", "most inventory", "highest stock", "most stock", "highest", "most", "lowest", "least", "inventory", "stock"]):
+            state["entity"] = "plant"
+            state["metric"] = "total_inventory"
+            is_least = any(k in q_lower for k in ["lowest", "least", "smallest"])
+            state["ranking"] = "lowest" if is_least else "highest"
+            state["topic"] = "plant_inventory_ranking"
+            state["limit"] = 1
+            if len(state["plants"]) >= 2:
+                state["filters"]["plants"] = list(state["plants"])
+
+        # Handle "from that plant" / "in that plant" / "of that plant"
+        elif any(k in q_lower for k in ["from that plant", "in that plant", "of that plant", "for that plant"]) or ("that plant" in q_lower):
+            target_plant = None
+            if history:
+                for msg in reversed(history):
+                    if msg.get("role") == "assistant":
+                        p_match = re.search(r"\bPlant\s+(\d{3,5})\b", msg.get("content", ""), re.IGNORECASE)
+                        if p_match:
+                            target_plant = p_match.group(1)
+                            break
+                        num_match = re.search(r"\b(1258|1266|1268|7228)\b", msg.get("content", ""))
+                        if num_match:
+                            target_plant = num_match.group(1)
+                            break
+            if not target_plant:
+                target_plant = state.get("active_plant") or (state.get("plants")[0] if state.get("plants") else None)
+            if target_plant:
+                state["filters"]["plant"] = target_plant
+                state["active_plant"] = target_plant
+            state["entity"] = "material"
+            state["metric"] = "unrestricted_qty"
+            state["topic"] = "material_quantity_ranking"
+            state["ranking"] = "highest"
+            state["limit"] = new_limit or 10
+
         # Handle Polarity shifts & Ranking modifications:
         # 0. "Reverse it" / "reverse the ranking" / "in reverse order"
-        if any(k in q_lower for k in ["reverse", "flip the ranking", "flip order"]):
+        elif any(k in q_lower for k in ["reverse", "flip the ranking", "flip order"]):
             state["ranking"] = "lowest" if state.get("ranking") == "highest" else "highest"
             state["aggregation"] = "list"
             if state.get("entity") == "plant":
@@ -2707,7 +2838,12 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                 else:
                     state["topic"] = "plant_occupied_volume_ranking"
             elif state.get("entity") == "material":
-                state["topic"] = "material_quantity_ranking"
+                if state.get("topic") == "material_max_quantity" or state.get("limit") == 1:
+                    state["topic"] = "material_min_quantity"
+                    state["limit"] = 1
+                    state["aggregation"] = "scalar"
+                else:
+                    state["topic"] = "material_quantity_ranking"
             elif state.get("entity") == "storage_location":
                 state["topic"] = "storage_location_ranking"
             else:
@@ -2739,8 +2875,13 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                     state["topic"] = "highest_bin_utilization"
                 else:
                     state["topic"] = "plant_occupied_volume_ranking"
-            elif state.get("entity") == "material" or state.get("topic") == "material_quantity_ranking":
-                state["topic"] = "material_quantity_ranking"
+            elif state.get("entity") == "material" or state.get("topic") in ["material_quantity_ranking", "material_min_quantity", "material_max_quantity"]:
+                if state.get("topic") == "material_min_quantity" and not new_limit:
+                    state["topic"] = "material_max_quantity"
+                    state["limit"] = 1
+                    state["aggregation"] = "scalar"
+                else:
+                    state["topic"] = "material_quantity_ranking"
             elif state.get("entity") == "storage_location":
                 state["topic"] = "storage_location_ranking"
             else:
@@ -2852,6 +2993,10 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         elif state["topic"] == "material_quantity_ranking":
             direction_word = "bottom" if state.get("ranking") == "lowest" else "top"
             state["resolved_query"] = f"ranking of {direction_word}{limit_clause} materials by stock quantity{plant_clause}"
+        elif state["topic"] == "material_max_quantity":
+            state["resolved_query"] = f"which material has the highest quantity{plant_clause}"
+        elif state["topic"] == "material_min_quantity":
+            state["resolved_query"] = f"which material has the lowest quantity{plant_clause}"
         elif state["topic"] == "storage_location_ranking":
             state["resolved_query"] = f"ranking of top{limit_clause} storage locations by inventory quantity{plant_clause}"
         elif state["topic"] == "capacity_summary":
@@ -5007,6 +5152,35 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
         if any(k in q_lower for k in ["total inventory", "inventory quantity", "total stock", "how much stock", "how much inventory", "stock quantity", "their total inventory"]) or (
             any(k in q_lower for k in ["inventory", "stock", "quantity"]) and not any(k in q_lower for k in ["material", "bin", "utiliz", "sloc", "location"])
         ):
+            if is_detail_requested:
+                sql_comp = f"""SELECT 
+    b.Plant AS [Plant],
+    COALESCE(SUM(i.UnrestrictedQty), 0) AS [Total Inventory Quantity],
+    COUNT(DISTINCT i.Material) AS [Unique Materials],
+    COUNT(i.Material) AS [Inventory Records],
+    COUNT(DISTINCT i.BinNo) AS [Occupied Bins],
+    (COUNT(DISTINCT b.BinLocation) - COUNT(DISTINCT i.BinNo)) AS [Empty Bins],
+    COUNT(DISTINCT b.BinLocation) AS [Total Bins],
+    ROUND(COALESCE(SUM(i.UnrestrictedQty), 0) * 1.0 / NULLIF(COUNT(DISTINCT i.Material), 0), 2) AS [Avg Qty per Material]
+FROM dbo.ZWMS_BIN_MASTER b
+LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+WHERE b.Plant IN ({plants_in_str})
+GROUP BY b.Plant
+ORDER BY [Total Inventory Quantity] DESC"""
+                is_explicit_chart_in_q = is_explicit_chart_only_requested(question) or bool(state.get("is_explicit_chart_request"))
+                return {
+                    "sql": sql_comp,
+                    "chart_type": "bar" if is_explicit_chart_in_q else "none",
+                    "chart_title": f"Detailed Inventory Comparison ({', '.join(f'Plant {p}' for p in target_plants)})",
+                    "chart_x": "Plant" if is_explicit_chart_in_q else None,
+                    "chart_y": "Total Inventory Quantity" if is_explicit_chart_in_q else None,
+                    "intent": "multi_plant_inventory_detail",
+                    "metric": "inventory_comparison_detail",
+                    "filters": {"plants": target_plants},
+                    "time_range": "current",
+                    "output_type": "table",
+                    "conversation_state": state
+                }
             sql_comp = f"""SELECT 
     Plant,
     SUM(UnrestrictedQty) AS [Total Inventory Quantity],
@@ -5611,7 +5785,7 @@ ORDER BY SUM(i.UnrestrictedQty * COALESCE(m.Volume, 0)) * 100.0 / NULLIF(b.Volum
         "show plants ranked", "plants ranked", "ranked by", "based on empty bins", "according to the number of empty bins",
         "plants with the most", "plants with the fewest", "plants with most", "plants with fewest"
     ]
-    is_plant_ranking_inquiry = not is_material_to_plants_query(q_lower)[0] and not is_common_materials_query(q_lower) and not is_unique_or_missing_materials_query(q_lower) and not is_material_availability_intent(q_lower) and (is_plant_empty_bins_query or (has_plant_word and (
+    is_plant_ranking_inquiry = not is_material_to_plants_query(q_lower)[0] and not is_common_materials_query(q_lower) and not is_unique_or_missing_materials_query(q_lower) and not is_material_availability_intent(q_lower) and not (state.get("entity") == "material" or state.get("topic") in ["material_quantity_ranking", "material_max_quantity", "material_min_quantity"]) and (is_plant_empty_bins_query or (has_plant_word and (
         any(k in q_lower for k in plant_rank_keywords) or
         state.get("topic") in [
             "plant_occupied_volume_ranking", "plant_available_capacity_ranking",
@@ -6023,6 +6197,11 @@ ORDER BY [Unique Materials] {order_dir}"""
             ])
         )
         if is_inv_qty:
+            candidate_plants = state.get("filters", {}).get("plants") or (state.get("plants") if len(state.get("plants", [])) >= 2 else None)
+            where_cand = ""
+            if candidate_plants:
+                c_str = ", ".join(f"'{p}'" for p in candidate_plants)
+                where_cand = f"WHERE i.Plant IN ({c_str})"
             sql_plant_inv = f"""SELECT {top_kw}
     RANK() OVER (ORDER BY SUM(i.UnrestrictedQty) {order_dir}) AS [Rank],
     i.Plant AS [Plant],
@@ -6030,6 +6209,7 @@ ORDER BY [Unique Materials] {order_dir}"""
     COUNT(DISTINCT i.Material) AS [Unique Materials],
     COUNT(DISTINCT i.BinNo) AS [Occupied Bins]
 FROM dbo.ZWMS_INVENTORY i
+{where_cand}
 GROUP BY i.Plant
 ORDER BY [Total Inventory Quantity] {order_dir}"""
             return {
@@ -7347,11 +7527,13 @@ ORDER BY SUM(i.UnrestrictedQty) DESC"""
         }
 
     # N0_RANK. GENERALIZED RANKING SYSTEM FOR MATERIALS AND STORAGE LOCATIONS
-    is_general_ranking_req = any(k in q_lower for k in [
+    is_general_ranking_req = state.get("topic") in ["material_quantity_ranking", "storage_location_ranking"] or any(k in q_lower for k in [
         "rank", "ranking", "rankings", "top materials", "highest materials", "lowest materials",
         "least materials", "most materials", "material ranking", "materials ranking",
         "top storage locations", "highest storage locations", "storage location ranking"
-    ])
+    ]) or (
+        is_mat_entity and any(k in q_lower for k in ["top", "bottom", "highest", "lowest", "least", "most"])
+    )
     if is_general_ranking_req and not is_mat_vol_intent:
         n_val = state.get("limit") or 10
         if not state.get("limit"):
@@ -7569,6 +7751,73 @@ ORDER BY SUM(UnrestrictedQty) {order_dir}"""
             "filters": filters,
             "time_range": "current",
             "output_type": "text",
+            "conversation_state": state
+        }
+
+    # N3_DETAIL. SINGLE PLANT DETAILED INVENTORY REPORT
+    is_plant_inv_detail = (
+        plant_cand and
+        (is_detail_requested or state.get("topic") == "plant_inventory_detail") and
+        any(k in q_lower for k in ["inventory", "stock"]) and
+        not any(k in q_lower for k in ["utiliz", "bin level", "capacity", "volume", "ft3", "cubic", "dimension", "master", "difference"]) and
+        not any(k in q_lower for k in ["compare", "vs", "versus", "against", "between"])
+    )
+    if is_plant_inv_detail:
+        sql_plant_detail = f"""WITH PlantSummary AS (
+    SELECT 
+        b.Plant,
+        COUNT(DISTINCT b.BinLocation) AS [Plant Total Bins],
+        COUNT(DISTINCT i.BinNo) AS [Plant Occupied Bins],
+        COUNT(i.Material) AS [Plant Total Records]
+    FROM dbo.ZWMS_BIN_MASTER b
+    LEFT JOIN dbo.ZWMS_INVENTORY i ON b.BinLocation = i.BinNo AND b.Plant = i.Plant
+    WHERE b.Plant = '{plant_cand}'
+    GROUP BY b.Plant
+),
+MatAgg AS (
+    SELECT 
+        i.Material AS [Material],
+        MAX(i.MaterialDescription) AS [Material Description],
+        i.Plant AS [Plant],
+        SUM(i.UnrestrictedQty) AS [Total Stock Quantity],
+        MAX(i.BaseUnitOfMeasure) AS [UOM],
+        COUNT(DISTINCT i.BinNo) AS [Occupied Bins]
+    FROM dbo.ZWMS_INVENTORY i
+    WHERE i.Plant = '{plant_cand}' AND i.UnrestrictedQty > 0
+    GROUP BY i.Material, i.Plant
+)
+SELECT 
+    ROW_NUMBER() OVER (ORDER BY m.[Total Stock Quantity] DESC) AS [Rank],
+    m.[Material],
+    m.[Material Description],
+    m.[Plant],
+    m.[Total Stock Quantity],
+    m.[UOM],
+    m.[Occupied Bins],
+    s.[Plant Total Bins],
+    s.[Plant Occupied Bins],
+    s.[Plant Total Records]
+FROM MatAgg m
+CROSS JOIN PlantSummary s
+ORDER BY m.[Total Stock Quantity] DESC"""
+        return {
+            "sql": sql_plant_detail,
+            "query_plan": {
+                "entity": "PLANT",
+                "metric": "INVENTORY_DETAIL",
+                "operation": "DETAILED_REPORT",
+                "filters": {"plant": plant_cand},
+                "response_mode": "DETAIL"
+            },
+            "chart_type": "none",
+            "chart_title": f"Plant {plant_cand} Detailed Inventory",
+            "chart_x": None,
+            "chart_y": None,
+            "intent": "plant_inventory_detail",
+            "metric": "plant_inventory_detail",
+            "filters": {"plant": plant_cand},
+            "time_range": "current",
+            "output_type": "table",
             "conversation_state": state
         }
 
@@ -8778,6 +9027,119 @@ def _format_deterministic_answer_impl(question: str, rows: list[dict]) -> str:
                 breakdown = ", ".join(f"Plant {r.get('Plant')}: {float(r.get(num_col, 0) or 0):,.0f}" for r in rows)
                 return f"Total count: **{tot:,.0f} units** across {len(rows)} plants ({breakdown})."
             return f"Total count: **{len(rows)} matching entities**."
+
+    # 0A_DETAILED_INV_SINGLE. Single-Plant Detailed Inventory Report
+    if "Plant Total Bins" in cols and "Total Stock Quantity" in cols and "Material" in cols and rows:
+        plant_val = str(rows[0].get("Plant", ""))
+        total_stock = sum(float(r.get("Total Stock Quantity", 0) or 0) for r in rows)
+        unique_skus = len(rows)
+        total_bins = int(rows[0].get("Plant Total Bins", 0) or 0)
+        occupied_bins = int(rows[0].get("Plant Occupied Bins", 0) or 0)
+        empty_bins = max(0, total_bins - occupied_bins)
+        total_records = int(rows[0].get("Plant Total Records", 0) or 0)
+        avg_qty = round(total_stock / unique_skus, 1) if unique_skus > 0 else 0.0
+        occ_pct = round(occupied_bins * 100.0 / total_bins, 1) if total_bins > 0 else 0.0
+        empty_pct = round(empty_bins * 100.0 / total_bins, 1) if total_bins > 0 else 0.0
+
+        top_sku = rows[0]
+        bot_sku = rows[-1]
+        top_sku_pct = round(float(top_sku.get("Total Stock Quantity", 0) or 0) * 100.0 / total_stock, 1) if total_stock > 0 else 0.0
+
+        top_5 = rows[:5]
+        top5_qty = sum(float(r.get("Total Stock Quantity", 0) or 0) for r in top_5)
+        top5_pct = round(top5_qty * 100.0 / total_stock, 1) if total_stock > 0 else 0.0
+
+        single_stmt = f"**Plant {plant_val}** holds **{total_stock:,.0f} units** across **{unique_skus:,} unique materials** with **{occupied_bins:,} occupied bins** ({occ_pct}%) and **{empty_bins:,} empty bins** ({empty_pct}%)."
+        if is_single_statement_requested:
+            return single_stmt
+
+        lines = [
+            f"### 📊 Detailed Inventory Report — Plant {plant_val}\n",
+            single_stmt,
+            "\n#### 1. Key Inventory & Storage Metrics",
+            f"| Metric | Value |",
+            f"| :--- | :--- |",
+            f"| **Total Stock Quantity** | **{total_stock:,.0f} units** |",
+            f"| **Unique Materials (SKUs)** | **{unique_skus:,}** |",
+            f"| **Total Inventory Records** | **{total_records:,}** |",
+            f"| **Total Configured Bins** | **{total_bins:,}** |",
+            f"| **Occupied Bins** | **{occupied_bins:,}** ({occ_pct}%) |",
+            f"| **Empty Bins (Available)** | **{empty_bins:,}** ({empty_pct}%) |",
+            f"| **Average Quantity per SKU** | **{avg_qty:,.1f} units** |",
+            "\n#### 2. Inventory Distribution Highlights",
+            f"- **Highest Stock SKU**: **`{top_sku.get('Material')}`** ({top_sku.get('Material Description', '')}) with **{float(top_sku.get('Total Stock Quantity', 0)):,.0f} {top_sku.get('UOM', 'EA')}** across **{top_sku.get('Occupied Bins', 1)} bins** ({top_sku_pct}% of plant stock).",
+            f"- **Lowest Stock SKU**: **`{bot_sku.get('Material')}`** ({bot_sku.get('Material Description', '')}) with **{float(bot_sku.get('Total Stock Quantity', 0)):,.0f} {bot_sku.get('UOM', 'EA')}** in **{bot_sku.get('Occupied Bins', 1)} bin(s)**.",
+            "\n#### 3. Top 5 Materials by Stock Quantity",
+            "| Rank | Material | Description | Stock Quantity | UOM | Share % | Occupied Bins |",
+            "| :---: | :--- | :--- | :---: | :---: | :---: | :---: |"
+        ]
+        for r in top_5:
+            m_code = r.get("Material", "N/A")
+            m_desc = r.get("Material Description", "")
+            m_qty = float(r.get("Total Stock Quantity", 0) or 0)
+            m_uom = r.get("UOM", "EA")
+            m_bins = r.get("Occupied Bins", 1)
+            m_share = round(m_qty * 100.0 / total_stock, 1) if total_stock > 0 else 0.0
+            lines.append(f"| {r.get('Rank', 1)} | `{m_code}` | {m_desc} | {m_qty:,.0f} | {m_uom} | {m_share}% | {m_bins} |")
+
+        lines.extend([
+            "\n#### 4. Operational Observations",
+            f"- **SKU Concentration**: Top 5 materials account for **{top5_pct}%** of all inventory stock in Plant {plant_val}.",
+            f"- **Storage Capacity**: **{occ_pct}%** of bins are currently holding inventory, leaving **{empty_bins:,} empty bins** ready for incoming put-away.",
+            f"\n💡 *The complete catalog of **{unique_skus:,} materials** for Plant {plant_val} is loaded into the **interactive, paginated Data Table** below.*"
+        ])
+        return "\n".join(lines)
+
+    # 0A_DETAILED_INV_COMP. Multi-Plant Detailed Inventory Comparison Report
+    if "Avg Qty per Material" in cols and "Total Inventory Quantity" in cols and "Plant" in cols and len(rows) > 1:
+        sorted_by_qty = sorted(rows, key=lambda x: float(x.get("Total Inventory Quantity", 0) or 0), reverse=True)
+        winner = sorted_by_qty[0]
+        runner_up = sorted_by_qty[1]
+        w_p = str(winner.get("Plant", ""))
+        r_p = str(runner_up.get("Plant", ""))
+        w_qty = float(winner.get("Total Inventory Quantity", 0) or 0)
+        r_qty = float(runner_up.get("Total Inventory Quantity", 0) or 0)
+        qty_diff = w_qty - r_qty
+        pct_diff = round(qty_diff * 100.0 / r_qty, 1) if r_qty > 0 else 0.0
+
+        sorted_by_sku = sorted(rows, key=lambda x: int(x.get("Unique Materials", 0) or 0), reverse=True)
+        sku_leader = sorted_by_sku[0]
+        sku_runner = sorted_by_sku[1]
+
+        sorted_by_empty = sorted(rows, key=lambda x: int(x.get("Empty Bins", 0) or 0), reverse=True)
+        empty_leader = sorted_by_empty[0]
+
+        single_stmt = f"**Plant {w_p}** holds the highest total inventory with **{w_qty:,.0f} units** (+{pct_diff}% vs Plant {r_p} at {r_qty:,.0f} units)."
+        if is_single_statement_requested:
+            return single_stmt
+
+        plants_title = " vs ".join(f"Plant {r.get('Plant')}" for r in rows)
+        lines = [
+            f"### ⚖️ Detailed Inventory Comparison — {plants_title}\n",
+            single_stmt,
+            "\n#### 1. Comparative Plant KPIs",
+            "| Plant | Total Inventory Qty | Unique Materials | Inventory Records | Occupied Bins | Empty Bins | Total Bins | Avg Qty / Material |",
+            "| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |"
+        ]
+        for r in rows:
+            p = r.get("Plant", "N/A")
+            q = float(r.get("Total Inventory Quantity", 0) or 0)
+            u_m = int(r.get("Unique Materials", 0) or 0)
+            rec = int(r.get("Inventory Records", 0) or 0)
+            o_b = int(r.get("Occupied Bins", 0) or 0)
+            e_b = int(r.get("Empty Bins", 0) or 0)
+            t_b = int(r.get("Total Bins", 0) or 0)
+            avg_q = float(r.get("Avg Qty per Material", 0) or 0)
+            lines.append(f"| **Plant {p}** | {q:,.0f} | {u_m:,} | {rec:,} | {o_b:,} | {e_b:,} | {t_b:,} | {avg_q:,.1f} |")
+
+        lines.extend([
+            "\n#### 2. Key Comparative Insights & Observations",
+            f"- **Inventory Volume Leader**: **Plant {w_p}** leads with **{w_qty:,.0f} units**, which is **{qty_diff:,.0f} units (+{pct_diff}%)** higher than Plant {r_p}.",
+            f"- **Material Diversity**: **Plant {sku_leader.get('Plant')}** maintains greater SKU variety with **{int(sku_leader.get('Unique Materials', 0)):,} unique materials** vs **{int(sku_runner.get('Unique Materials', 0)):,}** in Plant {sku_runner.get('Plant')}.",
+            f"- **Storage & Put-Away Availability**: **Plant {empty_leader.get('Plant')}** has the most available put-away space with **{int(empty_leader.get('Empty Bins', 0)):,} empty bins**."
+        ])
+        lines.append(f"\n💡 *Detailed itemized metrics and cross-facility figures are available in the **Comparative Table** below.*")
+        return "\n".join(lines)
 
     # 0A_HIGHEST_BIN. Highest Bin Utilization (Intent: HIGHEST_BIN_UTILIZATION)
     if is_highest_bin_utilization_intent(question) and rows:
@@ -11240,6 +11602,19 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
             "chart_type": "none",
             "metric": "bin_utilization",
             "intent": generated.get("intent", "multi_plant_bin_detail"),
+            "time_range": "current"
+        }
+
+    # 0A3. Detailed Inventory (Single-Plant or Multi-Plant Comparison)
+    if generated.get("intent") in ["plant_inventory_detail", "multi_plant_inventory_detail"] or (
+        ("Plant Total Bins" in cols and "Total Stock Quantity" in cols) or
+        ("Avg Qty per Material" in cols and "Total Inventory Quantity" in cols and "Plant" in cols)
+    ):
+        return {
+            "output_type": "table",
+            "chart_type": "none",
+            "metric": "inventory_detail",
+            "intent": generated.get("intent", "plant_inventory_detail"),
             "time_range": "current"
         }
 
