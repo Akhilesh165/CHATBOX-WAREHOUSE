@@ -74,6 +74,8 @@ def normalize_query_typos(text: str) -> str:
         (r'\b(?:quanity|quantiy|quntity)\b', 'quantity'),
         (r'\b(?:materail|matrial)\b', 'material'),
         (r'\b(?:materails|matrials)\b', 'materials'),
+        (r'\b(?:matirials|matirial)\b', 'materials'),
+        (r'\b(?:availble|availabe|avaialble|avialable|avaiable)\b', 'available'),
         (r'\b(?:capcity|capacit)\b', 'capacity'),
         (r'\boccypied\b', 'occupied'),
         (r'\boccupenc(?:y|ies)\b', 'occupancy'),
@@ -89,6 +91,68 @@ def normalize_query_typos(text: str) -> str:
     for pattern, repl in typo_patterns:
         res = re.sub(pattern, repl, res, flags=re.IGNORECASE)
     return res
+
+def is_material_availability_intent(text: str) -> bool:
+    """Detects if query is asking to list available/present/stored materials in a plant or across the warehouse.
+    
+    Must NOT trigger for:
+    - Counts ('How many materials...')
+    - Inventory summaries ('inventory summary', 'total inventory', 'inventory overview')
+    - Extremes / rankings ('highest quantity', 'lowest quantity', 'top material')
+    - Reverse queries ('In which plants is Material X available?')
+    - Bin queries / bin utilization
+    """
+    q = normalize_query_typos(text).lower()
+    
+    # Exclusions
+    if any(k in q for k in [
+        "how many", "count of", "number of", "total number of",
+        "how much inventory", "how much stock", "records are there",
+        "count the materials", "count of materials"
+    ]):
+        return False
+    if any(k in q for k in [
+        "inventory summary", "inventory overview", "total inventory",
+        "inventory status", "warehouse inventory summary", "overall inventory",
+        "inventory dashboard", "inventory highlights"
+    ]):
+        return False
+    if any(k in q for k in [
+        "highest quantity", "lowest quantity", "top material", "bottom material",
+        "most stock", "least stock", "highest stock", "lowest stock",
+        "rank material", "ranking of material", "ranked by quantity",
+        "most inventory", "least inventory"
+    ]):
+        return False
+    if re.search(r"\bwhich\s+material\s+has\s+(?:the\s+)?(?:highest|lowest|most|least)\b", q):
+        return False
+    if re.search(r"\b(?:in\s+)?which\s+plants?\s+(?:is|are|has|have)\b", q) or re.search(r"\bwhere\s+is\s+material\b", q):
+        return False
+    if any(b in q for b in ["which bin", "what bin", "bin utilization", "plant utilization"]):
+        return False
+
+    # Positive signals
+    signals = [
+        "which materials", "what materials", "list materials", "list of materials",
+        "show materials", "show me materials", "give me materials", "materials available",
+        "materials present", "materials stored", "materials in stock", "materials currently in stock",
+        "materials currently stored", "materials currently available", "available materials",
+        "what items", "which items", "list items", "show items", "items available",
+        "items present", "items stored", "what inventory materials", "which inventory materials",
+        "all warehouse materials", "list all warehouse materials", "all available materials",
+        "which material are available", "what material are available",
+        "which material is available", "what material is available",
+        "which material does plant", "what material does plant"
+    ]
+    if any(s in q for s in signals):
+        return True
+
+    if re.search(r"\bmaterials?\b.*?\b(?:available|present|stored|in|at)\b.*?\b(?:plants?|facility|facilities)\b", q):
+        return True
+    if re.search(r"\bmaterials?\b.*?\bdoes\b.*?\bplant\b.*?\bhave\b", q):
+        return True
+
+    return False
 
 def extract_explicit_plants(text: str) -> list[str]:
     """Extract every plant explicitly requested, including chained forms like
@@ -1249,7 +1313,19 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         "response_mode": "TABLE",
         "topic": "inventory_summary"
     }
-    if len(explicit_plants) >= 2:
+    if is_material_availability_intent(q_lower):
+        state["entity"] = "material"
+        state["metric"] = "material_availability"
+        state["operation"] = "list"
+        state["topic"] = "plant_materials"
+        state["response_mode"] = "TABLE"
+        if explicit_plants:
+            state["filters"]["plants"] = list(explicit_plants)
+            state["plants"] = list(explicit_plants)
+            if len(explicit_plants) == 1:
+                state["filters"]["plant"] = explicit_plants[0]
+                state["active_plant"] = explicit_plants[0]
+    elif len(explicit_plants) >= 2:
         state["filters"]["plants"] = list(explicit_plants)
         state["operation"] = "comparison"
         state["topic"] = "plant_comparison"
@@ -1607,9 +1683,11 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                     state["aggregation"] = "list"
             elif "instead" in uq_lower and lm:
                 pass  # limit already updated above; preserve active topic & ranking
-            elif any(k in uq_lower for k in ["materials in plant", "materials of plant", "plant inventory records", "show materials", "list materials"]):
+            elif is_material_availability_intent(uq_lower) or any(k in uq_lower for k in ["materials in plant", "materials of plant", "plant inventory records", "show materials", "list materials"]):
                 state["entity"] = "material"
                 state["topic"] = "plant_materials"
+                state["metric"] = "material_availability"
+                state["operation"] = "list"
                 state["aggregation"] = "list"
 
     # Now apply the current query modifiers on top of previous state
@@ -2112,11 +2190,22 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["condition"] = None
         state["aggregation"] = "single_value"
         state["filters"] = {}
-    elif is_plant_scope and any(w in q_lower for w in ["show me the materials", "show me materials", "show materials", "list materials", "materials in plant", "materials of plant", "which materials in plant", "list of materials"]):
+    elif is_material_availability_intent(q_lower) or (is_plant_scope and any(w in q_lower for w in ["show me the materials", "show me materials", "show materials", "list materials", "materials in plant", "materials of plant", "which materials in plant", "list of materials"])):
         state["entity"] = "material"
         state["topic"] = "plant_materials"
+        state["metric"] = "material_availability"
+        state["operation"] = "list"
         state["aggregation"] = "list"
-        state["filters"] = {"plant": new_plant or state.get("filters", {}).get("plant")}
+        if explicit_plants:
+            state["filters"]["plants"] = list(explicit_plants)
+            state["plants"] = list(explicit_plants)
+            if len(explicit_plants) == 1:
+                state["filters"]["plant"] = explicit_plants[0]
+                state["active_plant"] = explicit_plants[0]
+        elif new_plant or state.get("filters", {}).get("plant"):
+            p_val = new_plant or state.get("filters", {}).get("plant")
+            state["filters"]["plant"] = p_val
+            state["active_plant"] = p_val
     elif is_fresh_bin_avail_cap:
         state["entity"] = "bin"
         state["metric"] = "available_capacity"
@@ -4817,7 +4906,7 @@ ORDER BY b.Plant, b.StorageLocation, b.BinLocation"""
     ])
     raw_explicit_plants = extract_explicit_plants(question.lower())
 
-    is_comparison_query = not is_ranking_in_q and not range_filters_pre and (
+    is_comparison_query = not is_ranking_in_q and not range_filters_pre and not is_material_availability_intent(q_lower) and (
         (
             len(all_plants_unique) >= 2 and (
                 state.get("topic") in ["plant_comparison", "multi_plant_bin_detail"] or
@@ -6783,37 +6872,99 @@ ORDER BY [Total Inventory Quantity] DESC"""
             "output_type": "bar_chart"
         }
 
-    # K. SPECIFIC PLANT MATERIAL INQUIRIES (Detail Table List)
-    is_plant_materials_query = (
-        plant_cand and
+    # K. MATERIAL AVAILABILITY & MATERIAL LISTING (PERMANENT MATERIAL AVAILABILITY CONTEXT)
+    is_mat_avail_query = (
+        is_material_availability_intent(q_lower) or
         (
-            state.get("topic") == "plant_materials" or
-            any(w in q_lower for w in ["show me the materials", "show me materials", "show materials", "list materials", "materials in plant", "materials of plant", "which materials in plant", "materials in", "skus in"])
-        ) and
-        not any(k in q_lower for k in [
-            "how many", "count", "number of", "total inventory", "total stock", "how much inventory",
-            "how much stock", "total unrestricted", "total units", "inventory quantity", "units in inventory",
-            "total quantity", "records are there", "how many records", "count of records"
-        ])
+            (state.get("topic") == "plant_materials" or any(w in q_lower for w in ["show me the materials", "show me materials", "show materials", "list materials", "materials in plant", "materials of plant", "which materials in plant", "materials available"])) and
+            not any(k in q_lower for k in [
+                "how many", "count", "number of", "total inventory", "total stock", "how much inventory",
+                "how much stock", "total unrestricted", "total units", "inventory quantity", "units in inventory",
+                "total quantity", "records are there", "how many records", "count of records",
+                "inventory summary", "inventory overview", "highest quantity", "lowest quantity"
+            ])
+        )
     )
-    if is_plant_materials_query:
+    if is_mat_avail_query:
+        explicit_plants_all = extract_explicit_plants(q_lower)
+        target_plants: list[str] = []
+        if explicit_plants_all:
+            target_plants = list(explicit_plants_all)
+        elif plant_cand:
+            target_plants = [plant_cand]
+        elif state.get("filters", {}).get("plants"):
+            target_plants = list(state["filters"]["plants"])
+        elif state.get("filters", {}).get("plant"):
+            target_plants = [state["filters"]["plant"]]
+
+        rf_list = parse_range_filters(q_lower)
+        having_clauses: list[str] = []
+        for rf in rf_list:
+            op = rf.get("operator", "GT")
+            low = rf.get("lower")
+            up = rf.get("upper")
+            if op == "BETWEEN" and low is not None and up is not None:
+                having_clauses.append(f"SUM(i.UnrestrictedQty) BETWEEN {low} AND {up}")
+            elif op in ["GT", "GTE"] and low is not None:
+                sym = ">=" if rf.get("inclusive") else ">"
+                having_clauses.append(f"SUM(i.UnrestrictedQty) {sym} {low}")
+            elif op in ["LT", "LTE"] and up is not None:
+                sym = "<=" if rf.get("inclusive") else "<"
+                having_clauses.append(f"SUM(i.UnrestrictedQty) {sym} {up}")
+
+        if any(k in q_lower for k in ["stored in bin", "stored in bins", "in bins", "with bin", "with bins"]):
+            having_clauses.append("COUNT(DISTINCT i.BinNo) > 0")
+
+        where_clauses = ["i.Material IS NOT NULL"]
+        if len(target_plants) == 1:
+            where_clauses.append(f"i.Plant = '{target_plants[0]}'")
+        elif len(target_plants) > 1:
+            in_clause = ", ".join(f"'{p}'" for p in target_plants)
+            where_clauses.append(f"i.Plant IN ({in_clause})")
+
+        having_str = f" HAVING {' AND '.join(having_clauses)}" if having_clauses else ""
+        order_clause = "ORDER BY i.Plant ASC, i.Material ASC" if (len(target_plants) > 1 or not target_plants) else "ORDER BY i.Material ASC"
+
+        sql = f"""SELECT 
+    i.Material AS [Material],
+    MAX(i.MaterialDescription) AS [Material Description],
+    i.Plant AS [Plant],
+    SUM(i.UnrestrictedQty) AS [Total Stock Qty],
+    MAX(i.BaseUnitOfMeasure) AS [UOM],
+    COUNT(DISTINCT i.BinNo) AS [Occupied Bins]
+FROM dbo.ZWMS_INVENTORY i
+WHERE {' AND '.join(where_clauses)}
+GROUP BY i.Material, i.Plant{having_str}
+{order_clause}"""
+
+        scope_desc = f"Plant {', '.join(target_plants)}" if target_plants else "All Plants"
         query_plan = {
-            "intent": "LIST",
+            "intent": "MATERIAL_AVAILABILITY",
             "entity": "material",
-            "scope": f"Plant {plant_cand}",
+            "scope": scope_desc,
             "operation": "LIST",
             "response_format": "TABLE"
         }
+        state["entity"] = "material"
+        state["metric"] = "material_availability"
+        state["operation"] = "list"
+        state["topic"] = "plant_materials"
+        if target_plants:
+            state["filters"]["plants"] = target_plants
+            if len(target_plants) == 1:
+                state["filters"]["plant"] = target_plants[0]
+                state["active_plant"] = target_plants[0]
+
         return {
-            "sql": f"SELECT Material, MaterialDescription AS Description, UnrestrictedQty AS Qty, BaseUnitOfMeasure AS UOM, StorageLocation AS [Storage Location], BinNo AS Bin FROM dbo.ZWMS_INVENTORY WHERE Plant = '{plant_cand}' ORDER BY UnrestrictedQty DESC",
+            "sql": sql,
             "query_plan": query_plan,
             "chart_type": "none",
-            "chart_title": f"Material Inventory Records for Plant {plant_cand}",
+            "chart_title": f"Available Materials in {scope_desc}",
             "chart_x": None,
             "chart_y": None,
-            "intent": "plant_materials",
-            "metric": "plant_stock_records",
-            "filters": {"plant": plant_cand},
+            "intent": "material_availability",
+            "metric": "available_materials",
+            "filters": {"plants": target_plants} if len(target_plants) > 1 else ({"plant": target_plants[0]} if target_plants else {}),
             "time_range": "current",
             "output_type": "table",
             "conversation_state": state
@@ -8499,7 +8650,7 @@ def _format_deterministic_answer_impl(question: str, rows: list[dict]) -> str:
         return format_detailed_bin_utilization_tables(rows, requested_plants=req_p)
 
     # 0A_COMPARISON_ENGINE. Global Comparison Response Engine (Rules 1-17)
-    if is_comparison_intent(q_lower, rows) and rows:
+    if not is_material_availability_intent(q_lower) and is_comparison_intent(q_lower, rows) and rows:
         return format_comparison_response(question, rows)
 
     # 0A_CLARIFICATION. Predefined threshold clarification rule
@@ -9616,7 +9767,7 @@ def _format_deterministic_answer_impl(question: str, rows: list[dict]) -> str:
         return "\n".join(lines)
 
     # 0C_range_1. Range Query: Material Quantity Range (field: UnrestrictedQty)
-    if "Total Stock Qty" in cols and "Occupied Bins" in cols and "Material" in cols and "Plant" in cols:
+    if not is_material_availability_intent(q_lower) and "Total Stock Qty" in cols and "Occupied Bins" in cols and "Material" in cols and "Plant" in cols and parse_range_filters(question):
         rf_list = parse_range_filters(question)
         if rf_list:
             from .validator import validate_and_filter_range_rows
@@ -10389,6 +10540,63 @@ GROUP BY Plant"""
             bt = r.get("Batch", "N/A")
             lines.append(f"- **Bin `{bn}`**: **{q:,.0f} {uom}** | SLoc `{sl}` | Batch `{bt}`")
         lines.append(f"\n💡 *The complete list of bin locations for Material **`{mat_code}`** is rendered in the **Data Table** below.*")
+        return "\n".join(lines)
+
+    # 5E. Material Availability & Listing (PERMANENT MATERIAL AVAILABILITY CONTEXT)
+    if (is_material_availability_intent(q_lower) or any(c in cols for c in ["Total Stock Qty", "Occupied Bins"])) and "Material" in cols:
+        req_plants = extract_explicit_plants(q_lower)
+        plant_val = extract_single_plant_safe(q_lower)
+
+        rf_list = parse_range_filters(q_lower)
+        filter_str = ""
+        if rf_list:
+            rf = rf_list[0]
+            if rf["operator"] == "BETWEEN":
+                filter_str = f" (quantity between {rf['lower']:,.0f} and {rf['upper']:,.0f})"
+            elif rf["operator"] in ["GT", "GTE"]:
+                filter_str = f" (quantity above {rf['lower']:,.0f})"
+            elif rf["operator"] in ["LT", "LTE"]:
+                filter_str = f" (quantity below {rf['upper']:,.0f})"
+        elif any(k in q_lower for k in ["stored in bin", "stored in bins", "in bins"]):
+            filter_str = " (stored in bins)"
+
+        if len(req_plants) > 1:
+            plants_title = " and ".join(f"Plant {p}" for p in req_plants)
+            scope_str = f"across **{plants_title}**{filter_str}"
+            header_str = f"### 📦 Materials Available in {plants_title}{filter_str}"
+            single_stmt = f"Found **{count:,} available materials** {scope_str}."
+        elif len(req_plants) == 1 or plant_val:
+            p_target = req_plants[0] if req_plants else plant_val
+            scope_str = f"in **Plant {p_target}**{filter_str}"
+            header_str = f"### 📦 Materials Available in Plant {p_target}{filter_str}"
+            single_stmt = f"Found **{count:,} available materials** {scope_str}."
+        else:
+            scope_str = f"across warehouse facilities{filter_str}"
+            header_str = f"### 📦 Available Warehouse Materials{filter_str}"
+            single_stmt = f"Found **{count:,} available materials** {scope_str}."
+
+        if is_single_statement_requested:
+            return single_stmt
+
+        lines = [
+            f"{header_str}\n",
+            single_stmt,
+            f"\nA few examples of available materials:",
+        ]
+        for r in rows[:4]:
+            mat = r.get("Material", "N/A")
+            desc = r.get("Material Description", r.get("Description", ""))
+            qty = r.get("Total Stock Qty", r.get("Qty", 0))
+            uom = r.get("UOM", "EA")
+            bins = r.get("Occupied Bins", r.get("Bins", 1))
+            p_val = r.get("Plant")
+            p_str = f" | Plant `{p_val}`" if (p_val and (len(req_plants) > 1 or not plant_val)) else ""
+            desc_str = f" ({desc})" if desc else ""
+            bin_label = "bin" if bins == 1 else "bins"
+            lines.append(f"- **`{mat}`**{desc_str}: **{qty:,.0f} {uom}** across {bins} {bin_label}{p_str}")
+
+        note_text = f"Showing 1 to {min(10, count)} of {count:,} materials"
+        lines.append(f"\n💡 *{note_text} in the **searchable, paginated Data Table** below (with real-time search, sorting, and CSV export).*")
         return "\n".join(lines)
 
     # 6. Specific Plant Material Records
@@ -11189,6 +11397,16 @@ def optimize_response_format(question: str, rows: list[dict], generated: dict[st
             "chart_type": "none",
             "metric": "unoccupied_bins",
             "intent": "putaway_bins",
+            "time_range": "current"
+        }
+
+    # 8B. Material Availability / Listing
+    if is_material_availability_intent(question) or generated.get("intent") == "material_availability":
+        return {
+            "output_type": "table",
+            "chart_type": "none",
+            "metric": "available_materials",
+            "intent": "material_availability",
             "time_range": "current"
         }
 
