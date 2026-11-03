@@ -1254,6 +1254,35 @@ def is_explicit_chart_only_requested(question: str) -> bool:
     return False
 
 
+def is_explicit_inventory_intent(q: str) -> bool:
+    """Returns True if the user is explicitly asking about inventory, materials, stock, or material quantity
+    and NOT asking for bin utilization. (Intent Priority: Business Subject First)
+    """
+    if not q:
+        return False
+    q_low = q.lower().strip()
+
+    # Explicit bin utilization signals override
+    has_explicit_bin_util = any(re.search(r'\b' + re.escape(w) + r'\b', q_low) for w in [
+        "bin utilization", "utilization of bin", "utilization of bins", "utilized bin",
+        "utilized bins", "bin capacity utilization", "utilization percentage",
+        "most utilized bins", "least utilized bins", "highest utilized bins", "lowest utilized bins",
+        "most utilized bin", "least utilized bin", "highest utilized bin", "lowest utilized bin"
+    ]) or ("utiliz" in q_low and any(b in q_low for b in ["bin", "bins"]))
+    if has_explicit_bin_util:
+        return False
+
+    # Explicit inventory signals
+    has_inv = any(re.search(r'\b' + re.escape(w) + r'\b', q_low) for w in [
+        "inventory", "stock", "material", "materials", "sku", "skus", "items", "item",
+        "material quantity", "stock quantity", "inventory quantity", "inventory details",
+        "inventory detail", "material inventory", "inventory report", "inventory summary",
+        "available materials", "materials available", "materials present", "materials stored",
+        "stock in plant", "inventory of plant", "inventory in plant"
+    ])
+    return bool(has_inv)
+
+
 def is_elliptical_followup(q_lower: str) -> bool:
     """Detects if a user question is an elliptical follow-up that relies on prior conversation context."""
     q_strip = q_lower.strip()
@@ -1266,6 +1295,11 @@ def is_elliptical_followup(q_lower: str) -> bool:
     )
     if has_both_kw:
         return False
+
+    # 0B. Standalone queries with explicit business subject (inventory, stock, material) and scope are NOT follow-ups
+    if is_explicit_inventory_intent(q_strip) and (len(extract_explicit_plants(q_strip)) > 0 or any(w in q_strip for w in ["warehouse", "all plants", "across plants", "each plant"])):
+        if not any(k in q_strip for k in ["from that", "of that", "in that plant", "for that plant", "that plant", "instead", "what about the lowest", "what about the highest", "lowest ones", "highest ones"]):
+            return False
     
     # 1. Visualization triggers
     if any(k in q_strip for k in [
@@ -1287,7 +1321,7 @@ def is_elliptical_followup(q_lower: str) -> bool:
     # 2. Affirmative expansions / drilldowns / detail
     if any(q_strip.startswith(w) for w in ["yes", "yeah", "sure", "please", "expand", "yep"]):
         return True
-    if any(k in q_strip for k in [
+    if not is_explicit_inventory_intent(q_strip) and (any(k in q_strip for k in [
         "detailed version", "detailed analysis", "generate detail", "show detail", "detailed breakdown",
         "generate detailed", "in detail", "deep dive", "more detail", "more details",
         "break it down", "expand on this", "detailed view", "detailed form",
@@ -1295,7 +1329,7 @@ def is_elliptical_followup(q_lower: str) -> bool:
         "explain this table", "explain the table", "explain the comparison", "what does this mean", "give me a summary",
         "summarize the above", "summarize above", "which one is better", "which is better", "explain the result",
         "what can you conclude", "give me the comparison summary", "interpret this", "tell me what this table means"
-    ]) or any(w in q_strip.split() for w in ["detailed", "explain", "elaborate"]):
+    ]) or any(w in q_strip.split() for w in ["detailed", "explain", "elaborate"])):
         return True
     
     # 2B. Presentation / Format modifiers (count, names, percentage)
@@ -1487,7 +1521,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                     state["filters"]["plants"] = [p for p in state["plants"][-2:]]
 
             # Check presentation / format modifiers in history
-            if is_bin_level_detail_intent(uq_lower) or any(k in uq_lower for k in ["detailed version", "in detail", "show detail", "detailed breakdown", "detailed"]):
+            if not is_explicit_inventory_intent(uq_lower) and (is_bin_level_detail_intent(uq_lower) or any(k in uq_lower for k in ["detailed version", "in detail", "show detail", "detailed breakdown", "detailed"])):
                 state["response_mode"] = "DETAIL"
                 if len(hist_plants) >= 2:
                     state["topic"] = "multi_plant_bin_detail"
@@ -1497,6 +1531,11 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                     state["topic"] = "plant_bin_level_detail"
                     state["metric"] = "bin_utilization"
                     state["entity"] = "bin"
+            elif is_explicit_inventory_intent(uq_lower) and any(k in uq_lower for k in ["detail", "detailed", "in detail", "full details", "show detail", "show details", "report", "breakdown"]):
+                state["response_mode"] = "DETAIL"
+                state["entity"] = "plant" if pm_val else "inventory"
+                state["topic"] = "plant_inventory_detail" if pm_val else "inventory_summary"
+                state["metric"] = "plant_inventory_detail" if pm_val else "total_inventory"
             elif is_comparison_explanation_requested(uq_lower):
                 state["response_mode"] = "EXPLANATION"
             elif any(k in uq_lower for k in ["only count", "only the count", "just the count", "count only", "give me only the count"]):
@@ -2026,12 +2065,13 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         any(k in q_lower for k in ["generate detailed", "detailed version", "detailed analysis", "show detail", "detailed breakdown", "generate detail"])
     )
     
-    is_followup_for_detail = is_followup and (
+    is_followup_for_detail = is_followup and not is_explicit_inventory_intent(q_lower) and (
         (state.get("topic") in ["plant_bin_utilization_detail", "plant_bin_utilization_summary"] and (is_affirmative_followup or is_explicit_chart_request)) or
         (any(k in q_lower for k in ["generate detailed bin utilization", "detailed bin utilization analysis", "storage location breakdown", "detailed version of this analysis", "sloc breakdown"]) and is_plant_scope) or
         ("detailed version" in q_lower and is_plant_scope and state.get("topic") in ["plant_bin_utilization_detail", "plant_bin_utilization_summary", "warehouse_utilization"])
     )
     is_fresh_plant_bin_util_detail = (
+        not is_explicit_inventory_intent(q_lower) and
         (is_bin_level_detail_intent(q_lower) or any(k in q_lower for k in ["utiliz", "occupan", "capacity", "how full", "space utilization", "bin fill", "fullness", "fill rate"])) and
         len(explicit_plants) < 2 and
         (new_plant is not None or (is_plant_scope and is_followup and state.get("topic") in ["plant_bin_utilization_detail", "warehouse_utilization"])) and
@@ -2049,7 +2089,7 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
         state["is_explicit_chart_request"] = True
 
     is_util_comparison = (
-        not is_fresh_both and
+        not is_fresh_both and not is_explicit_inventory_intent(q_lower) and
         (is_bin_level_detail_intent(q_lower) or any(k in q_lower for k in ["utiliz", "occupan", "how full", "fill rate", "space utilization", "bin utilization", "capacity utilization"]) or (
             any(k in q_lower for k in ["detailed comparison", "compare in detail", "comparison in detail", "detailed plant comparison"]) and not any(k in q_lower for k in ["material", "materials", "sku", "skus", "item", "items", "sloc", "storage location"])
         )) and
@@ -2372,6 +2412,18 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
             p_val = new_plant or state.get("filters", {}).get("plant")
             state["filters"]["plant"] = p_val
             state["active_plant"] = p_val
+    elif is_explicit_inventory_intent(q_lower) and (new_plant or state.get("plants")) and len(explicit_plants) < 2 and any(k in q_lower for k in ["detail", "detailed", "in detail", "show details", "show detail", "give details", "give detail", "report", "all details", "breakdown", "break down", "elaborate"]):
+        p_val = new_plant or (state["plants"][-1] if state.get("plants") else None)
+        state["entity"] = "plant" if p_val else "inventory"
+        state["topic"] = "plant_inventory_detail"
+        state["metric"] = "plant_inventory_detail"
+        state["operation"] = "detailed_report"
+        state["response_mode"] = "DETAIL"
+        state["filters"] = {"plant": p_val} if p_val else {}
+        if p_val:
+            state["active_plant"] = p_val
+            if p_val not in state["plants"]:
+                state["plants"].append(p_val)
     elif is_fresh_bin_avail_cap:
         state["entity"] = "bin"
         state["metric"] = "available_capacity"
@@ -2688,7 +2740,12 @@ def extract_and_update_conversation_state(question: str, history: list[dict] | N
                 state["plants"].append(new_plant)
             if len(state["plants"]) >= 2:
                 state["comparison_entities"] = [{"type": "plant", "value": p} for p in state["plants"][-2:]]
-            if state.get("response_mode") == "DETAIL" or state.get("topic") in ["plant_bin_level_detail", "multi_plant_bin_detail"]:
+            if is_explicit_inventory_intent(q_lower) and (state.get("response_mode") == "DETAIL" or any(k in q_lower for k in ["detail", "detailed", "in detail", "report", "breakdown"])):
+                state["topic"] = "plant_inventory_detail"
+                state["metric"] = "plant_inventory_detail"
+                state["response_mode"] = "DETAIL"
+                state["entity"] = "plant"
+            elif (state.get("response_mode") == "DETAIL" or state.get("topic") in ["plant_bin_level_detail", "multi_plant_bin_detail"]) and not is_explicit_inventory_intent(q_lower) and state.get("entity") == "bin":
                 state["topic"] = "plant_bin_level_detail"
                 state["response_mode"] = "DETAIL"
                 state["entity"] = "bin"
@@ -6731,6 +6788,8 @@ ORDER BY [Total Capacity (FT3)] DESC"""
         any(k in q_lower for k in ["utiliz", "occupan", "capacity", "how full", "warehouse fullness", "facility fill", "fill rate", "space utilization", "bin fill", "fill percentage", "running out of", "out of storage space", "storage capacity"]) or
         (("volume" in q_lower or "space" in q_lower) and ("occup" in q_lower or "capacit" in q_lower or "fill" in q_lower or "running out" in q_lower))
     )
+    if is_explicit_inventory_intent(q_lower):
+        is_utilization_intent = False
     if is_utilization_intent and not any(m in q_lower for m in ["material", "sku", "item", "product", "consuming", "share of total"]):
         is_sloc_explicit = any(k in q_lower for k in ["by storage location", "sloc breakdown", "storage location breakdown", "by sloc"])
         is_explicit_chart_request = bool(state.get("is_explicit_chart_request") or any(k in q_lower for k in [
@@ -7757,8 +7816,8 @@ ORDER BY SUM(UnrestrictedQty) {order_dir}"""
     # N3_DETAIL. SINGLE PLANT DETAILED INVENTORY REPORT
     is_plant_inv_detail = (
         plant_cand and
-        (is_detail_requested or state.get("topic") == "plant_inventory_detail") and
-        any(k in q_lower for k in ["inventory", "stock"]) and
+        (is_detail_requested or state.get("topic") == "plant_inventory_detail" or (is_explicit_inventory_intent(q_lower) and any(k in q_lower for k in ["detail", "detailed", "in detail", "show details", "show detail", "give details", "give detail", "report", "all details", "breakdown", "break down", "elaborate"]))) and
+        is_explicit_inventory_intent(q_lower) and
         not any(k in q_lower for k in ["utiliz", "bin level", "capacity", "volume", "ft3", "cubic", "dimension", "master", "difference"]) and
         not any(k in q_lower for k in ["compare", "vs", "versus", "against", "between"])
     )
@@ -8184,6 +8243,9 @@ def is_bin_level_detail_intent(q_lower: str) -> bool:
     if not q_lower:
         return False
     q = q_lower.strip().lower()
+
+    if is_explicit_inventory_intent(q):
+        return False
 
     # Rule out queries that specifically target plant-level summary template or sloc breakdown
     if "bin utilization details for plant" in q or "bin utilization detail for plant" in q or "fetch bin utilization detail" in q:
