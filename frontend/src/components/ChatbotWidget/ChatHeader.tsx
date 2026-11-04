@@ -1,64 +1,56 @@
 'use client';
 
 import React from 'react';
-import { Bot, X, RotateCcw } from 'lucide-react';
+import { RotateCcw } from 'lucide-react';
 
 interface ChatHeaderProps {
   onClose: () => void;
-  onReset: () => void;
+  onReset?: () => void;
 }
 
 export const ChatHeader: React.FC<ChatHeaderProps> = ({ onClose, onReset }) => {
   return (
-    <div className="flex items-center justify-between px-5 py-4 bg-slate-900/95 border-b border-slate-800/80 backdrop-blur-md select-none shrink-0">
-      {/* Left branding */}
-      <div className="flex items-center gap-3">
-        <div className="relative flex items-center justify-center w-9 h-9 rounded-xl bg-gradient-to-br from-sky-500/20 to-cyan-500/10 border border-sky-500/30 text-sky-400 shadow-inner">
-          <Bot className="w-5 h-5" />
-          <span className="absolute -top-0.5 -right-0.5 flex h-2.5 w-2.5">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500 border border-slate-900"></span>
-          </span>
-        </div>
+    <header className="h-[76px] flex-none border-b border-[#1b3556] bg-[#071a33] flex items-center px-[18px] gap-3 text-[#f8fbff] select-none">
+      {/* ✦ Avatar */}
+      <div className="w-[42px] h-[42px] rounded-[13px] bg-[#102b4d] text-[#7dd3fc] grid place-items-center text-[22px] flex-shrink-0 font-medium">
+        ✦
+      </div>
 
-        <div className="flex flex-col">
-          <div className="flex items-center gap-2">
-            <h3 className="font-semibold text-sm text-slate-100 tracking-tight">
-              Warehouse Assistant
-            </h3>
-            <span className="px-1.5 py-0.5 text-[10px] font-semibold bg-sky-500/15 text-sky-400 border border-sky-500/20 rounded">
-              AI
-            </span>
-          </div>
-          <div className="flex items-center gap-1.5 text-xs text-slate-400">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-            <span className="text-[11px] font-medium text-emerald-400">Online</span>
-            <span className="text-slate-600">•</span>
-            <span className="text-[11px] text-slate-400">Inventory & Bins</span>
-          </div>
+      {/* Title & Online Status */}
+      <div className="flex-1 min-w-0">
+        <strong className="block text-[15px] font-bold text-[#f8fbff] leading-snug">
+          Warehouse Assistant
+        </strong>
+        <div className="text-[12px] text-[#9fb3cc] mt-0.5 flex items-center">
+          <span className="inline-block w-[7px] h-[7px] bg-[#22c55e] rounded-full mr-[6px] shrink-0" />
+          <span>Online · Enterprise AI</span>
         </div>
       </div>
 
-      {/* Right actions */}
-      <div className="flex items-center gap-1 text-slate-400">
-        <button
-          onClick={onReset}
-          title="Reset sample conversation"
-          className="p-1.5 rounded-lg hover:text-slate-200 hover:bg-slate-800/80 transition-colors focus:outline-none focus:ring-1 focus:ring-slate-700"
-          aria-label="Reset Conversation"
-        >
-          <RotateCcw className="w-4 h-4" />
-        </button>
+      {/* Action buttons */}
+      <div className="flex items-center gap-1">
+        {onReset && (
+          <button
+            onClick={onReset}
+            title="Reset conversation"
+            aria-label="Reset conversation"
+            className="w-[34px] h-[34px] rounded-[9px] text-[#a9bbd0] hover:text-white hover:bg-[#102b4d] grid place-items-center transition-colors"
+          >
+            <RotateCcw className="w-4 h-4" />
+          </button>
+        )}
 
+        {/* Close Button matching #close */}
         <button
+          id="close"
           onClick={onClose}
-          title="Close Warehouse Assistant"
-          className="p-1.5 rounded-lg hover:text-rose-400 hover:bg-rose-500/10 transition-colors focus:outline-none focus:ring-1 focus:ring-rose-500/30 ml-1"
-          aria-label="Close Assistant"
+          aria-label="Close chat"
+          title="Close chat"
+          className="border-0 bg-transparent text-[#a9bbd0] hover:text-white text-[26px] cursor-pointer rounded-[9px] w-[36px] h-[36px] grid place-items-center hover:bg-[#102b4d] transition-colors leading-none"
         >
-          <X className="w-5 h-5" />
+          ×
         </button>
       </div>
-    </div>
+    </header>
   );
 };

@@ -28,7 +28,7 @@ export const DashboardBackground: React.FC<DashboardBackgroundProps> = ({
   return (
     <div
       className={`min-h-screen bg-slate-950 text-slate-100 transition-all duration-300 ${
-        isChatOpen ? 'lg:mr-[480px]' : ''
+        isChatOpen ? 'lg:mr-[430px]' : ''
       }`}
     >
       {/* Top Navigation */}

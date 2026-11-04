@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import { ChatHeader } from './ChatHeader';
 import { ChatMessages, ChatWidgetMessage } from './ChatMessages';
 import { ChatInput } from './ChatInput';
@@ -22,33 +22,48 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   onReset,
   isLoading = false,
 }) => {
+  // Listen for Escape key to close panel (matching user JS specification)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isOpen) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
   return (
     <>
-      {/* Mobile backdrop overlay: click outside to dismiss on mobile */}
+      {/* Optional backdrop on mobile view */}
       {isOpen && (
         <div
-          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 sm:hidden transition-opacity duration-300"
+          className="fixed inset-0 bg-black/50 backdrop-blur-xs z-40 sm:hidden transition-opacity duration-300"
           onClick={onClose}
           aria-hidden="true"
         />
       )}
 
-      {/* Slide-in Right Panel */}
+      {/* Right-Side Chat Panel matching #panel */}
       <aside
-        className={`fixed top-0 right-0 h-screen w-full sm:w-[460px] md:w-[480px] z-50 bg-slate-950/95 backdrop-blur-xl border-l border-slate-800/90 shadow-2xl shadow-black/80 flex flex-col transform transition-transform duration-300 ease-in-out ${
-          isOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'
-        }`}
-        aria-label="Warehouse Assistant Chatbot"
+        id="panel"
         role="dialog"
+        aria-label="Warehouse Assistant"
         aria-modal="true"
+        className={`fixed right-0 top-0 h-[100dvh] w-[min(430px,100vw)] bg-[#071a33] border-l border-[#1b3556] shadow-[-12px_0_36px_#02081766] flex flex-col z-50 transition-all duration-[320ms] ease-out ${
+          isOpen
+            ? 'translate-x-0 visible opacity-100 open'
+            : 'translate-x-[105%] invisible opacity-0 pointer-events-none'
+        }`}
       >
-        {/* Top Header */}
         <ChatHeader onClose={onClose} onReset={onReset} />
 
-        {/* Scrollable Conversation Content */}
-        <ChatMessages messages={messages} isLoading={isLoading} />
+        <ChatMessages
+          messages={messages}
+          isLoading={isLoading}
+          onSelectChip={(query) => onSendMessage(query)}
+        />
 
-        {/* Fixed Bottom Input Area */}
         <ChatInput onSendMessage={onSendMessage} isLoading={isLoading} />
       </aside>
     </>
