@@ -15,6 +15,12 @@ from .models import ChatRequest, ChatResponse, Chart, Meta, FeedbackRequest, Fee
 from .llm import generate_sql, generate_answer, optimize_response_format, deterministic_warehouse_sql_generator, is_single_line_requested, is_number_only_requested, extract_only_number, extract_specific_bins, extract_explicit_plants, get_plant_level_bin_metrics
 from .validator import validate_sql, validate_query_result
 from .db import execute_readonly, get_engine
+from .query_planner import (
+    build_structured_query_plan,
+    validate_and_sanitize_query_plan,
+    validate_response_match,
+    log_pipeline_diagnostics,
+)
 
 # Configure Logging
 logging.basicConfig(
@@ -157,6 +163,32 @@ async def chat_endpoint(req: ChatRequest):
     
     logger.info(f"Received question [conv={conversation_id}]: {req.message}")
     
+    # 0. Structured Query-Understanding & Plan Generation (Requirements 1, 2, 3, 4, 7)
+    plan = build_structured_query_plan(req.message, history=history)
+    plan, plan_warnings = validate_and_sanitize_query_plan(plan, req.message)
+    warnings.extend(plan_warnings)
+
+    # Ambiguity Handling (Requirement 7)
+    if plan.get("intent") == "CLARIFICATION" and plan.get("clarification_question"):
+        log_pipeline_diagnostics(
+            raw_query=req.message,
+            plan=plan,
+            handler_name="clarification_handler",
+            validation_status="CLARIFICATION_REQUIRED",
+            final_summary=plan["clarification_question"]
+        )
+        return ChatResponse(
+            answer=plan["clarification_question"],
+            data=[],
+            rows=[],
+            chart=Chart(type="none"),
+            meta=Meta(rowCount=0, executionMs=int((time.perf_counter() - start_total) * 1000), llmMs=0, sqlMs=0),
+            warnings=warnings,
+            intent="CLARIFICATION",
+            output_type="text",
+            query_plan=plan
+        )
+
     # 1. Generate SQL via LLM with Retry logic on validation error
     llm_start = time.perf_counter()
     generated = None
@@ -167,7 +199,7 @@ async def chat_endpoint(req: ChatRequest):
         try:
             failed_sql = generated.get("sql", "") if isinstance(generated, dict) else ""
             retry_ctx = {"error": str(last_error), "sql": failed_sql} if last_error else None
-            generated = await generate_sql(req.message, history, retry_context=retry_ctx)
+            generated = await generate_sql(req.message, history, retry_context=retry_ctx, structured_plan=plan)
             raw_sql = generated.get("sql", "") if isinstance(generated, dict) else ""
             
             # 2. Validate SQL with SQLGlot AST Checker
@@ -179,7 +211,7 @@ async def chat_endpoint(req: ChatRequest):
             if attempt >= settings.llm_max_retries:
                 logger.info("Falling back to deterministic warehouse SQL generator...")
                 try:
-                    generated = deterministic_warehouse_sql_generator(req.message, history=history)
+                    generated = deterministic_warehouse_sql_generator(req.message, history=history, structured_plan=plan)
                     raw_sql = generated.get("sql", "") if isinstance(generated, dict) else ""
                     validated_sql = validate_sql(raw_sql)
                     break
@@ -248,7 +280,7 @@ async def chat_endpoint(req: ChatRequest):
         except Exception as db_err:
             logger.warning(f"Database execution failed for SQL [{validated_sql}]: {db_err}. Retrying with deterministic generator...")
             try:
-                corrected_gen = deterministic_warehouse_sql_generator(req.message, history=history)
+                corrected_gen = deterministic_warehouse_sql_generator(req.message, history=history, structured_plan=plan)
                 corrected_sql = validate_sql(corrected_gen.get("sql", ""))
                 rows, sql_duration_ms = execute_readonly(corrected_sql, max_rows=settings.sql_max_result_rows)
                 generated = corrected_gen
@@ -281,7 +313,7 @@ async def chat_endpoint(req: ChatRequest):
         if not is_valid_result:
             logger.warning(f"Semantic Result Validator FAIL: {validation_reason}. Triggering self-correction regeneration...")
             try:
-                corrected_gen = deterministic_warehouse_sql_generator(req.message, history=history)
+                corrected_gen = deterministic_warehouse_sql_generator(req.message, history=history, structured_plan=plan)
                 corrected_sql = validate_sql(corrected_gen.get("sql", ""))
                 corrected_rows, sql_duration_ms = execute_readonly(corrected_sql, max_rows=settings.sql_max_result_rows)
                 generated = corrected_gen
@@ -340,6 +372,24 @@ async def chat_endpoint(req: ChatRequest):
                 answer = format_deterministic_answer(resolved_query_for_answer, rows)
             else:
                 answer = f"Found {len(rows)} matching record(s). Please review the data table below for details."
+
+    # 5B. Post-Execution Response Validation & Mismatch Re-routing (Requirement 5)
+    is_valid_resp, resp_reason, resp_action = validate_response_match(plan, rows, answer)
+    if not is_valid_resp and resp_action == "reroute_to_inventory":
+        logger.warning(f"Response Validation Mismatch: {resp_reason} -> Re-routing to Inventory Handler")
+        plan["intent"] = "INVENTORY"
+        plan["metric"] = "INVENTORY_DETAIL" if plan.get("detail_mode") else "TOTAL_INVENTORY"
+        try:
+            corrected_gen = deterministic_warehouse_sql_generator(req.message, history=history, structured_plan=plan)
+            corrected_sql = validate_sql(corrected_gen.get("sql", ""))
+            corrected_rows, sql_duration_ms = execute_readonly(corrected_sql, max_rows=settings.sql_max_result_rows)
+            generated = corrected_gen
+            validated_sql = corrected_sql
+            rows = corrected_rows
+            answer = await generate_answer(resolved_query_for_answer, validated_sql, rows)
+            is_valid_resp = True
+        except Exception as reroute_err:
+            logger.error(f"Inventory re-routing failed: {reroute_err}")
     
     total_llm_ms = llm_duration_ms + int((time.perf_counter() - answer_start) * 1000)
 
@@ -579,6 +629,17 @@ async def chat_endpoint(req: ChatRequest):
             logger.warning(f"Error extracting relevant KPIs: {kpi_err}")
             relevant_kpis = None
 
+    # Developer Diagnostics Logging (Requirement 10)
+    log_pipeline_diagnostics(
+        raw_query=req.message,
+        plan=plan,
+        handler_name=str(generated.get("intent", "warehouse_handler")),
+        validation_status="VALID" if is_valid_resp else f"RE-ROUTED: {resp_reason}",
+        final_summary=answer.splitlines()[0] if answer else ""
+    )
+
+    combined_query_plan = {**plan, **(query_plan if isinstance(query_plan, dict) else {})}
+
     return ChatResponse(
         answer=answer,
         data=rows,
@@ -595,7 +656,7 @@ async def chat_endpoint(req: ChatRequest):
         metric=metric,
         filters=generated.get("filters", {}),
         time_range=time_range,
-        query_plan=query_plan,
+        query_plan=combined_query_plan,
         follow_up_action=follow_up_action,
         relevant_kpis=relevant_kpis
     )

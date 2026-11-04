@@ -3106,7 +3106,7 @@ def resolve_conversation_context(question: str, history: list[dict] | None = Non
     state = extract_and_update_conversation_state(question, history)
     return state.get("resolved_query", question)
 
-def deterministic_warehouse_sql_generator(question: str, history: list[dict] | None = None) -> dict[str, Any]:
+def deterministic_warehouse_sql_generator(question: str, history: list[dict] | None = None, structured_plan: dict | None = None) -> dict[str, Any]:
     """Context-Driven Semantic Query Resolver.
     
     Dynamically maps warehouse business concepts (Entities, Metrics, Dimensions, Calculations, Rankings)
@@ -3114,6 +3114,32 @@ def deterministic_warehouse_sql_generator(question: str, history: list[dict] | N
     """
     question = normalize_query_typos(question)
     state = extract_and_update_conversation_state(question, history)
+    if structured_plan is None:
+        try:
+            from .query_planner import build_structured_query_plan
+            structured_plan = build_structured_query_plan(question, history=history)
+        except Exception:
+            structured_plan = None
+
+    if structured_plan:
+        if structured_plan.get("intent") == "INVENTORY":
+            if structured_plan.get("detail_mode"):
+                state["topic"] = "plant_inventory_detail"
+                state["metric"] = "plant_inventory_detail"
+                state["response_mode"] = "DETAIL"
+                state["entity"] = "plant"
+        elif structured_plan.get("intent") == "BIN_UTILIZATION":
+            if structured_plan.get("detail_mode"):
+                state["topic"] = "plant_bin_level_detail"
+                state["metric"] = "bin_utilization"
+                state["response_mode"] = "DETAIL"
+                state["entity"] = "bin"
+        if structured_plan.get("plants") and not state.get("filters", {}).get("plant"):
+            p0 = structured_plan["plants"][0]
+            state["filters"]["plant"] = p0
+            state["active_plant"] = p0
+            if p0 not in state.get("plants", []):
+                state["plants"].append(p0)
     resolved_q = state.get("resolved_query", question)
     q_lower = resolved_q.lower()
     is_followup = is_elliptical_followup(question.lower()) and bool(history)
@@ -8089,9 +8115,9 @@ async def _call_llm(system_prompt: str, user_prompt: str) -> str:
 
     raise ValueError("No LLM API key configured.")
 
-async def generate_sql(question: str, history: list[dict], retry_context: dict | None = None) -> dict[str, Any]:
+async def generate_sql(question: str, history: list[dict], retry_context: dict | None = None, structured_plan: dict | None = None) -> dict[str, Any]:
     """Context-grounded SQL generator leveraging warehouse semantic layer."""
-    det_plan = deterministic_warehouse_sql_generator(question, history=history)
+    det_plan = deterministic_warehouse_sql_generator(question, history=history, structured_plan=structured_plan)
     det_intent = det_plan.get("intent", "")
     q_lower = question.lower()
     
