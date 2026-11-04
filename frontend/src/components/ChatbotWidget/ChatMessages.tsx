@@ -1,176 +1,526 @@
 'use client';
 
-import React, { useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import {
+  Copy,
+  Check,
+  Code,
+  Clock,
+  Sparkles,
+  ArrowRight,
+  ChevronRight
+} from 'lucide-react';
+import { ChatMessage, TableDataset, TableMiniSummary } from '../../types/chat';
+import { ResultTable } from '../ResultTable';
+import { InventoryBarChart } from '../InventoryBarChart';
+import { InventoryLineChart } from '../InventoryLineChart';
+import { InventoryPieChart } from '../InventoryPieChart';
+import { KpiCard } from '../KpiCard';
+import { ListView } from '../ListView';
+import { AdminSqlModal } from '../AdminSqlModal';
 
-export interface ChatWidgetMessage {
-  id: string;
-  sender: 'user' | 'assistant';
-  content: string;
-  timestamp?: string;
-  showChips?: boolean;
-  showSnapshot?: boolean;
-  rows?: Array<Record<string, any>>;
-  sql?: string;
+function parseMultiPlantTablesFromContent(content: string): TableDataset[] {
+  if (!content || !content.includes('|') || !content.includes('## Plant ')) {
+    return [];
+  }
+  const plantSections = content.split(/(?:^|\n)##\s+Plant\s+/).filter(Boolean);
+  if (plantSections.length < 1) return [];
+
+  const datasets: TableDataset[] = [];
+
+  for (const section of plantSections) {
+    const firstLineEnd = section.indexOf('\n');
+    const headerLine = firstLineEnd !== -1 ? section.slice(0, firstLineEnd).trim() : section.trim();
+    const plantMatch = headerLine.match(/^([A-Za-z0-9_-]+)/);
+    if (!plantMatch) continue;
+    const plantId = plantMatch[1];
+    const title = `Plant ${plantId} — Detailed Bin Utilization`;
+
+    const tableLines = section.split('\n').filter((l) => l.trim().startsWith('|') && l.trim().endsWith('|'));
+    if (tableLines.length < 3) continue;
+
+    const rawHeaders = tableLines[0].split('|').map((h) => h.trim()).filter(Boolean);
+    const dataLines = tableLines.slice(2);
+    const rows: Array<Record<string, any>> = [];
+
+    for (const dLine of dataLines) {
+      const cells = dLine.split('|').map((c) => c.trim()).filter((_, idx, arr) => idx > 0 && idx < arr.length - 1);
+      const rowObj: Record<string, any> = {};
+      rawHeaders.forEach((h, hIdx) => {
+        rowObj[h] = cells[hIdx] ?? '';
+      });
+      rows.push(rowObj);
+    }
+
+    let miniSummary: TableMiniSummary | undefined;
+    const summaryMatch = section.match(/###\s*Mini Summary([\s\S]*?)(?:$|---)/i);
+    if (summaryMatch) {
+      const sumText = summaryMatch[1];
+      const totalMatch = sumText.match(/Total bins:\s*([\d,]+)/i);
+      const utilMatch = sumText.match(/Utilized bins:\s*([\d,]+)/i);
+      const emptyMatch = sumText.match(/Empty bins:\s*([\d,]+)/i);
+      const avgMatch = sumText.match(/Average utilization:\s*([\d.]+%?)/i);
+
+      if (totalMatch || avgMatch) {
+        miniSummary = {
+          total_bins: totalMatch ? parseInt(totalMatch[1].replace(/,/g, ''), 10) : rows.length,
+          utilized_bins: utilMatch ? parseInt(utilMatch[1].replace(/,/g, ''), 10) : 0,
+          empty_bins: emptyMatch ? parseInt(emptyMatch[1].replace(/,/g, ''), 10) : 0,
+          average_utilization: avgMatch ? avgMatch[1] : '0%',
+        };
+      }
+    }
+
+    if (rows.length > 0) {
+      datasets.push({
+        title,
+        plant: plantId,
+        count: rows.length,
+        total_count: miniSummary ? miniSummary.total_bins : rows.length,
+        displayed_count: rows.length,
+        rows,
+        mini_summary: miniSummary,
+      });
+    }
+  }
+
+  return datasets;
 }
 
 interface ChatMessagesProps {
-  messages: ChatWidgetMessage[];
+  messages: ChatMessage[];
   isLoading?: boolean;
-  onSelectChip?: (chipText: string) => void;
+  onSelectPrompt?: (prompt: string) => void;
 }
 
 export const ChatMessages: React.FC<ChatMessagesProps> = ({
   messages,
   isLoading = false,
-  onSelectChip,
+  onSelectPrompt,
 }) => {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [activeSqlModal, setActiveSqlModal] = useState<{
+    sql: string;
+    metadata?: any;
+  } | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isLoading]);
 
+  const handleCopy = (id: string, text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
   return (
     <main
       id="messages"
-      className="flex-1 overflow-y-auto p-[22px_18px] bg-[#071a33] text-[#eaf2fb] text-[13px] select-text scrollbar-thin scrollbar-thumb-[#1b3556] scrollbar-track-transparent"
+      className="flex-1 overflow-y-auto p-[20px_16px] bg-[#071a33] text-[#eaf2fb] text-[13px] select-text scrollbar-thin scrollbar-thumb-[#1b3556] scrollbar-track-transparent space-y-4"
     >
-      {/* Date Divider */}
-      <div className="text-center text-[#7088a6] text-[10px] font-semibold tracking-wider mb-[22px] select-none">
+      {/* Date Marker */}
+      <div className="text-center text-[#7088a6] text-[10px] font-semibold tracking-wider mb-3 select-none">
         TODAY
       </div>
 
-      {/* Message stream */}
-      {messages.map((msg) => {
-        const isUser = msg.sender === 'user';
+      {/* Initial Welcome & Chips (shown when no conversation history yet) */}
+      {messages.length === 0 && (
+        <div className="space-y-3 animate-fade-in">
+          {/* Welcome Message 1 */}
+          <div className="flex gap-[9px] items-start">
+            <div className="w-[27px] h-[27px] rounded-[9px] bg-[#102b4d] text-[#7dd3fc] grid place-items-center flex-none text-[14px] font-semibold mt-0.5">
+              ✦
+            </div>
+            <div className="max-w-[85%] p-[12px_14px] rounded-[15px_15px_15px_5px] bg-[#102b4d] border border-[#1b3556] text-[#eaf2fb] text-[13px] leading-[1.55] shadow-sm">
+              Hello! 👋 Welcome to Warehouse Assistant. How can I help you today?
+            </div>
+          </div>
+
+          {/* Welcome Message 2 */}
+          <div className="flex gap-[9px] items-start">
+            <div className="w-[27px] h-[27px] rounded-[9px] bg-[#102b4d] text-[#7dd3fc] grid place-items-center flex-none text-[14px] font-semibold mt-0.5">
+              ✦
+            </div>
+            <div className="max-w-[85%] p-[12px_14px] rounded-[15px_15px_15px_5px] bg-[#102b4d] border border-[#1b3556] text-[#eaf2fb] text-[13px] leading-[1.55] shadow-sm">
+              You can ask about inventory, bin utilization, plant comparisons, or warehouse capacity.
+            </div>
+          </div>
+
+          {/* Quick Suggestion Chips */}
+          <div className="ml-[36px] flex gap-[7px] flex-wrap pt-1">
+            <button
+              type="button"
+              onClick={() => onSelectPrompt?.('Show bin utilization')}
+              className="border border-[#254566] bg-[#0d2442] text-[#b9dcff] hover:bg-[#14365f] hover:border-[#3b82f6] px-2.5 py-1.5 rounded-[18px] text-[11px] cursor-pointer transition-colors shadow-xs"
+            >
+              Show bin utilization
+            </button>
+            <button
+              type="button"
+              onClick={() => onSelectPrompt?.('Check inventory')}
+              className="border border-[#254566] bg-[#0d2442] text-[#b9dcff] hover:bg-[#14365f] hover:border-[#3b82f6] px-2.5 py-1.5 rounded-[18px] text-[11px] cursor-pointer transition-colors shadow-xs"
+            >
+              Check inventory
+            </button>
+            <button
+              type="button"
+              onClick={() => onSelectPrompt?.('Compare plants')}
+              className="border border-[#254566] bg-[#0d2442] text-[#b9dcff] hover:bg-[#14365f] hover:border-[#3b82f6] px-2.5 py-1.5 rounded-[18px] text-[11px] cursor-pointer transition-colors shadow-xs"
+            >
+              Compare plants
+            </button>
+            <button
+              type="button"
+              onClick={() => onSelectPrompt?.('Show top utilized bins for Plant 1258')}
+              className="border border-[#254566] bg-[#0d2442] text-[#b9dcff] hover:bg-[#14365f] hover:border-[#3b82f6] px-2.5 py-1.5 rounded-[18px] text-[11px] cursor-pointer transition-colors shadow-xs"
+            >
+              Top bins Plant 1258
+            </button>
+          </div>
+
+          {/* Warehouse Snapshot Card */}
+          <div
+            className="mt-3.5 mb-2 ml-[36px] p-[14px] border border-[#1f4268] rounded-[16px] bg-gradient-to-br from-[#0c2949] to-[#091f3a] shadow-[0_10px_24px_#02081744]"
+            aria-label="Warehouse snapshot"
+          >
+            <div className="flex justify-between items-center text-[#eaf2fb] text-[12px] font-bold">
+              <span>Warehouse Operations Snapshot</span>
+              <span className="text-[8px] tracking-[.08em] text-[#67e8f9] bg-[#123d5f] px-1.5 py-0.5 rounded-full font-semibold uppercase">
+                LIVE DATA
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 mt-[12px]">
+              <div className="p-[8px_6px] rounded-[10px] bg-[#071a33] border border-[#183857] text-center">
+                <b className="block text-[#7dd3fc] text-[14px] font-bold">84.2%</b>
+                <small className="block text-[#7891ad] text-[9px] mt-0.5">Utilization</small>
+              </div>
+              <div className="p-[8px_6px] rounded-[10px] bg-[#071a33] border border-[#183857] text-center">
+                <b className="block text-[#7dd3fc] text-[14px] font-bold">7,525</b>
+                <small className="block text-[#7891ad] text-[9px] mt-0.5">Occupied Bins</small>
+              </div>
+              <div className="p-[8px_6px] rounded-[10px] bg-[#071a33] border border-[#183857] text-center">
+                <b className="block text-[#7dd3fc] text-[14px] font-bold">5</b>
+                <small className="block text-[#7891ad] text-[9px] mt-0.5">Active Plants</small>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Dynamic Messages Stream */}
+      {messages.map((message) => {
+        const isUser = message.role === 'user';
 
         if (isUser) {
           return (
-            <div key={msg.id} className="flex justify-end mb-[17px] items-end">
+            <div key={message.id} className="flex justify-end mb-3 items-end">
               <div className="max-w-[85%] p-[12px_14px] rounded-[15px_15px_5px_15px] bg-[#1d4ed8] border border-[#2563eb] text-white text-[13px] leading-[1.55] shadow-sm break-words">
-                {msg.content}
+                {message.content}
               </div>
             </div>
           );
         }
 
+        // Assistant message with full response rendering
+        const rows = message.data || message.rows || [];
+        const hasTable = rows.length > 0;
+        const isSingleMetricIntent = Boolean(
+          message.output_type === 'text' ||
+          (message.output_type as string) === 'single_value' ||
+          (message.output_type as string) === 'single_line' ||
+          message.intent?.endsWith('_count') ||
+          message.intent === 'active_plants_count' ||
+          message.intent === 'occupied_bins_count' ||
+          message.intent === 'total_bins_count' ||
+          message.intent === 'empty_bins_count' ||
+          message.intent === 'unique_materials_count' ||
+          message.intent === 'total_inventory_quantity' ||
+          message.intent === 'storage_locations_count' ||
+          message.intent === 'bin_plant_lookup' ||
+          message.intent === 'bin_occupancy_status' ||
+          message.intent === 'bin_quantity_lookup' ||
+          message.intent === 'bin_materials_count' ||
+          message.intent === 'LOWEST_BIN_UTILIZATION' ||
+          message.intent === 'HIGHEST_BIN_CAPACITY' ||
+          message.intent === 'LOWEST_BIN_CAPACITY' ||
+          message.intent === 'AVERAGE_BIN_UTILIZATION' ||
+          ((message.intent === 'lowest_bin_utilization' || message.intent === 'highest_bin_utilization' || message.intent === 'HIGHEST_BIN_UTILIZATION') && rows.length <= 1)
+        );
+
+        const isPlantBinUtilDetail = message.intent === 'plant_bin_utilization_detail';
+
+        const outputType = isSingleMetricIntent ? 'text' : (message.output_type || (
+          message.chart?.type === 'line' ? 'line_chart' :
+          message.chart?.type === 'bar' ? 'bar_chart' :
+          message.chart?.type === 'pie' ? 'pie_chart' :
+          hasTable ? 'table' : 'text'
+        ));
+
+        const showChart = !isSingleMetricIntent && (outputType === 'bar_chart' || outputType === 'line_chart' || outputType === 'pie_chart' || outputType === 'chart_plus_summary') && message.chart && message.chart.data && message.chart.data.length > 0;
+        const showKpi = !isSingleMetricIntent && outputType === 'kpi' && hasTable && message.intent === 'inventory_summary';
+        const showList = !isSingleMetricIntent && outputType === 'list' && hasTable;
+        const contentHasTable = Boolean(message.content && message.content.includes('|') && message.content.includes('---'));
+
+        let effectiveTables: TableDataset[] = [];
+        if (message.tables && message.tables.length > 0) {
+          effectiveTables = message.tables;
+        } else if (message.content && message.content.includes('## Plant ') && (message.content.includes('| Bin') || message.content.includes('|Bin'))) {
+          effectiveTables = parseMultiPlantTablesFromContent(message.content);
+        }
+
+        const hasMultiTables = effectiveTables.length > 0;
+        const showTable = !isSingleMetricIntent && !contentHasTable && !hasMultiTables && (outputType === 'table' || outputType === 'ranking_table' || outputType === 'comparison_table' || outputType === 'detail_analysis' || isPlantBinUtilDetail || showChart || showKpi || showList) && hasTable;
+
+        let displayContent = message.content || '';
+        if (hasMultiTables && displayContent) {
+          displayContent = displayContent.split(/(?:^|\n)##\s+Plant\s+|(?:^|\n)\|(?:\s*Bin|\s*Plant|\s*Capacity)/)[0].trim();
+        }
+
         return (
-          <div key={msg.id} className="flex flex-col mb-[17px]">
-            {/* Bot message row */}
+          <div key={message.id} className="flex flex-col mb-4">
             <div className="flex gap-[9px] items-start">
-              <div className="w-[27px] h-[27px] rounded-[9px] bg-[#102b4d] text-[#7dd3fc] grid place-items-center flex-none text-[14px] font-semibold mt-0.5">
+              {/* Bot Avatar ✦ */}
+              <div className="w-[27px] h-[27px] rounded-[9px] bg-[#102b4d] text-[#7dd3fc] grid place-items-center flex-none text-[14px] font-semibold mt-0.5 shadow-sm">
                 ✦
               </div>
 
-              <div className="max-w-[85%] p-[12px_14px] rounded-[15px_15px_15px_5px] bg-[#102b4d] border border-[#1b3556] text-[#eaf2fb] text-[13px] leading-[1.55] shadow-sm break-words space-y-2">
-                <div className="prose prose-invert prose-sm max-w-none text-[#eaf2fb] leading-[1.55] text-[13px]">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {msg.content}
-                  </ReactMarkdown>
+              {/* Bot Response Bubble in dark navy */}
+              <div className="flex-1 max-w-[calc(100%-36px)] p-[14px] rounded-[15px_15px_15px_5px] bg-[#102b4d] border border-[#1b3556] text-[#eaf2fb] text-[13px] leading-[1.55] shadow-sm space-y-3 overflow-hidden">
+                {/* Header row: Intent, Output Type, Execution time */}
+                <div className="flex items-center justify-between border-b border-[#1b3556] pb-2 flex-wrap gap-1.5 select-none text-[11px]">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="font-semibold text-[#7dd3fc]">Warehouse Assistant</span>
+                    {message.intent && (
+                      <span className="bg-[#0b213d] text-[#93c5fd] font-mono text-[10px] px-1.5 py-0.5 rounded border border-[#1b3556]">
+                        {message.intent}
+                      </span>
+                    )}
+                    {outputType && outputType !== 'text' && (
+                      <span className="bg-[#123d5f] text-[#67e8f9] text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded border border-[#1f4268]">
+                        {outputType}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2 text-[10px] text-[#9fb3cc]">
+                    {message.executionMs !== undefined && (
+                      <span className="flex items-center gap-1 bg-[#0b213d] px-1.5 py-0.5 rounded border border-[#1b3556]">
+                        <Clock className="w-2.5 h-2.5 text-[#7dd3fc]" />
+                        <span>{message.executionMs}ms</span>
+                      </span>
+                    )}
+                    {message.rowCount !== undefined && message.rowCount > 0 && (
+                      <span className="text-[#93c5fd]">
+                        {message.rowCount} rows
+                      </span>
+                    )}
+                  </div>
                 </div>
 
-                {/* Structured data table if returned by query */}
-                {msg.rows && msg.rows.length > 0 && (
-                  <div className="mt-2.5 rounded-lg border border-[#1b3556] bg-[#091f3a] overflow-hidden">
-                    <div className="px-2.5 py-1.5 bg-[#0d2442] border-b border-[#1b3556] text-[11px] font-semibold text-[#7dd3fc] flex justify-between items-center">
-                      <span>Query Results</span>
-                      <span className="font-mono text-[10px] text-[#93c5fd]">
-                        {msg.rows.length} rows
-                      </span>
-                    </div>
-                    <div className="overflow-x-auto max-h-56">
-                      <table className="w-full text-left text-[11px] border-collapse">
-                        <thead>
-                          <tr className="bg-[#0b213d] text-[#9fb3cc] border-b border-[#1b3556]">
-                            {Object.keys(msg.rows[0]).map((colKey) => (
-                              <th key={colKey} className="py-1.5 px-2 font-medium capitalize truncate">
-                                {colKey.replace(/_/g, ' ')}
-                              </th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-[#1b3556]/60">
-                          {msg.rows.slice(0, 10).map((row, rIdx) => (
-                            <tr key={rIdx} className="hover:bg-[#102b4d]/70 transition-colors">
-                              {Object.values(row).map((val: any, cIdx) => (
-                                <td key={cIdx} className="py-1.5 px-2 text-[#dbeafe] whitespace-nowrap">
-                                  {val !== null && val !== undefined ? String(val) : '-'}
-                                </td>
-                              ))}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                {/* Markdown text content */}
+                {displayContent ? (
+                  <div className="prose prose-invert prose-sm max-w-none text-[#eaf2fb] leading-[1.55] text-[13px] font-normal">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {displayContent}
+                    </ReactMarkdown>
+                  </div>
+                ) : null}
+
+                {/* Relevant KPIs */}
+                {message.relevant_kpis && message.relevant_kpis.length > 0 && (
+                  <div className="grid grid-cols-2 gap-2 my-2">
+                    {message.relevant_kpis.map((kpi, idx) => (
+                      <div
+                        key={idx}
+                        className="bg-[#0b213d] border border-[#1b3556] rounded-xl p-2.5 shadow-xs"
+                      >
+                        <div className="text-[10px] font-semibold text-[#9fb3cc] uppercase tracking-wider mb-0.5">
+                          {kpi.label}
+                        </div>
+                        <div className="text-lg font-bold text-[#7dd3fc]">
+                          {kpi.value}
+                        </div>
+                        {kpi.subtext && (
+                          <div className="text-[9px] text-[#7088a6] mt-0.5">
+                            {kpi.subtext}
+                          </div>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 )}
+
+                {/* KPI Card */}
+                {showKpi && (
+                  <div className="pt-1">
+                    <KpiCard data={rows} metric={message.metric} />
+                  </div>
+                )}
+
+                {/* List View */}
+                {showList && (
+                  <div className="pt-1">
+                    <ListView data={rows} title={message.chart?.title} />
+                  </div>
+                )}
+
+                {/* Charts */}
+                {showChart && message.chart && (
+                  <div className="pt-1 bg-[#091f3a] rounded-xl p-2 border border-[#1b3556]">
+                    {(outputType === 'bar_chart' || message.chart.type === 'bar') && (
+                      <InventoryBarChart
+                        title={message.chart.title}
+                        data={message.chart.data}
+                        xKey={message.chart.xAxis || message.chart.x_key}
+                        yKey={message.chart.yAxis || message.chart.y_key}
+                      />
+                    )}
+                    {(outputType === 'line_chart' || message.chart.type === 'line') && (
+                      <InventoryLineChart
+                        title={message.chart.title}
+                        data={message.chart.data}
+                        xKey={message.chart.xAxis || message.chart.x_key}
+                        yKey={message.chart.yAxis || message.chart.y_key}
+                      />
+                    )}
+                    {(outputType === 'pie_chart' || message.chart.type === 'pie') && (
+                      <InventoryPieChart
+                        title={message.chart.title}
+                        data={message.chart.data}
+                        xKey={message.chart.xAxis || message.chart.x_key}
+                        yKey={message.chart.yAxis || message.chart.y_key}
+                      />
+                    )}
+                  </div>
+                )}
+
+                {/* Multi-Plant Tables with Mini Summaries */}
+                {hasMultiTables ? (
+                  <div className="pt-2 space-y-4">
+                    {effectiveTables.map((tbl, tblIdx) => (
+                      <div key={tblIdx} className="space-y-2">
+                        <div className="border-b border-[#1b3556] pb-1">
+                          <h4 className="text-xs font-bold text-[#7dd3fc]">
+                            {tbl.title || `Plant ${tbl.plant} — Detailed Bin Utilization`}
+                          </h4>
+                        </div>
+
+                        <ResultTable
+                          rows={tbl.rows}
+                          title={tbl.title}
+                          totalCount={tbl.total_count}
+                          displayedCount={tbl.displayed_count}
+                          emptyMessage={tbl.empty_message}
+                          pageSize={10}
+                          unitLabel="bins"
+                        />
+
+                        {tbl.mini_summary && (
+                          <div className="bg-[#0b213d] rounded-lg p-2.5 border border-[#1b3556] text-xs text-[#dbeafe]">
+                            <div className="font-bold text-[#7dd3fc] text-[11px] mb-1">Mini Summary</div>
+                            <ul className="space-y-0.5 text-[11px] text-[#9fb3cc]">
+                              <li>Total bins: <b className="text-white font-mono">{tbl.mini_summary.total_bins?.toLocaleString()}</b></li>
+                              <li>Utilized bins: <b className="text-white font-mono">{tbl.mini_summary.utilized_bins?.toLocaleString()}</b></li>
+                              <li>Empty bins: <b className="text-white font-mono">{tbl.mini_summary.empty_bins?.toLocaleString()}</b></li>
+                              <li>Average utilization: <b className="text-[#38bdf8] font-mono">{tbl.mini_summary.average_utilization}</b></li>
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  showTable && (
+                    <div className="pt-1">
+                      <ResultTable
+                        rows={rows}
+                        totalCount={message.total_count}
+                        displayedCount={message.displayed_count}
+                        pageSize={10}
+                      />
+                    </div>
+                  )
+                )}
+
+                {/* Follow-up Action Suggestion Chip */}
+                {message.follow_up_action && (
+                  <div className="pt-2 border-t border-[#1b3556]/80 flex flex-col gap-1.5">
+                    <span className="text-[10px] text-[#9fb3cc]">Suggested Next Step:</span>
+                    <button
+                      type="button"
+                      onClick={() => onSelectPrompt?.(message.follow_up_action!.action_prompt)}
+                      className="self-start text-[11px] text-[#b9dcff] bg-[#0d2442] hover:bg-[#14365f] border border-[#254566] hover:border-[#3b82f6] px-2.5 py-1 rounded-full flex items-center gap-1 transition-colors"
+                    >
+                      <span>{message.follow_up_action.message || message.follow_up_action.action_prompt}</span>
+                      <ArrowRight className="w-3 h-3 text-[#7dd3fc]" />
+                    </button>
+                  </div>
+                )}
+
+                {/* Warnings */}
+                {message.warnings && message.warnings.length > 0 && (
+                  <div className="text-xs text-amber-200 bg-amber-950/40 p-2 rounded-lg border border-amber-800/60">
+                    {message.warnings.map((w, i) => (
+                      <div key={i}>⚠️ {w}</div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Bottom Action Bar: Copy Answer & View SQL */}
+                <div className="flex items-center justify-between pt-2 border-t border-[#1b3556] text-[11px] text-[#7088a6]">
+                  <button
+                    onClick={() => handleCopy(message.id, message.content)}
+                    className="flex items-center gap-1 text-[#9fb3cc] hover:text-white px-2 py-0.5 rounded hover:bg-[#0b213d] transition-colors"
+                    title="Copy Answer"
+                  >
+                    {copiedId === message.id ? (
+                      <>
+                        <Check className="w-3 h-3 text-emerald-400" />
+                        <span className="text-emerald-400">Copied</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3 h-3" />
+                        <span>Copy</span>
+                      </>
+                    )}
+                  </button>
+
+                  {message.sql && (
+                    <button
+                      onClick={() =>
+                        setActiveSqlModal({
+                          sql: message.sql!,
+                          metadata: {
+                            executionMs: message.executionMs,
+                            llmMs: message.llmMs,
+                            sqlMs: message.sqlMs,
+                            rowCount: message.rowCount,
+                            intent: message.intent,
+                          },
+                        })
+                      }
+                      className="flex items-center gap-1 text-[#7dd3fc] hover:text-white px-2 py-0.5 rounded hover:bg-[#0b213d] transition-colors border border-[#1b3556]"
+                      title="View Generated SQL"
+                    >
+                      <Code className="w-3 h-3 text-[#7dd3fc]" />
+                      <span>View SQL</span>
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
-
-            {/* Quick Suggestion Chips */}
-            {msg.showChips && (
-              <div className="ml-[36px] mt-2.5 flex gap-[7px] flex-wrap">
-                <button
-                  type="button"
-                  onClick={() => onSelectChip?.('Show bin utilization')}
-                  className="border border-[#254566] bg-[#0d2442] text-[#b9dcff] hover:bg-[#14365f] hover:border-[#3b82f6] px-2.5 py-1.5 rounded-[18px] text-[11px] cursor-pointer transition-colors"
-                >
-                  Show bin utilization
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onSelectChip?.('Check inventory')}
-                  className="border border-[#254566] bg-[#0d2442] text-[#b9dcff] hover:bg-[#14365f] hover:border-[#3b82f6] px-2.5 py-1.5 rounded-[18px] text-[11px] cursor-pointer transition-colors"
-                >
-                  Check inventory
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onSelectChip?.('Compare plants')}
-                  className="border border-[#254566] bg-[#0d2442] text-[#b9dcff] hover:bg-[#14365f] hover:border-[#3b82f6] px-2.5 py-1.5 rounded-[18px] text-[11px] cursor-pointer transition-colors"
-                >
-                  Compare plants
-                </button>
-              </div>
-            )}
-
-            {/* Warehouse Snapshot Card */}
-            {msg.showSnapshot && (
-              <div
-                className="mt-3.5 mb-1 ml-[36px] p-[14px] border border-[#1f4268] rounded-[16px] bg-gradient-to-br from-[#0c2949] to-[#091f3a] shadow-[0_10px_24px_#02081744]"
-                aria-label="Warehouse analytics snapshot"
-              >
-                <div className="flex justify-between items-center text-[#eaf2fb] text-[12px] font-bold">
-                  <span>Warehouse Snapshot</span>
-                  <span className="text-[8px] tracking-[.08em] text-[#67e8f9] bg-[#123d5f] px-1.5 py-1 rounded-full font-semibold uppercase">
-                    LIVE DATA
-                  </span>
-                </div>
-                <div className="grid grid-cols-3 gap-2 mt-[13px]">
-                  <div className="p-[10px_7px] rounded-[10px] bg-[#071a33] border border-[#183857] text-center">
-                    <b className="block text-[#7dd3fc] text-[14px] font-bold">84.2%</b>
-                    <small className="block text-[#7891ad] text-[9px] mt-1">Utilization</small>
-                  </div>
-                  <div className="p-[10px_7px] rounded-[10px] bg-[#071a33] border border-[#183857] text-center">
-                    <b className="block text-[#7dd3fc] text-[14px] font-bold">7,525</b>
-                    <small className="block text-[#7891ad] text-[9px] mt-1">Occupied Bins</small>
-                  </div>
-                  <div className="p-[10px_7px] rounded-[10px] bg-[#071a33] border border-[#183857] text-center">
-                    <b className="block text-[#7dd3fc] text-[14px] font-bold">5</b>
-                    <small className="block text-[#7891ad] text-[9px] mt-1">Plants</small>
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
         );
       })}
 
       {/* Loading Indicator */}
       {isLoading && (
-        <div className="flex gap-[9px] items-start mb-[17px] animate-fade-in">
+        <div className="flex gap-[9px] items-start mb-3 animate-fade-in">
           <div className="w-[27px] h-[27px] rounded-[9px] bg-[#102b4d] text-[#7dd3fc] grid place-items-center flex-none text-[14px] font-semibold mt-0.5">
             ✦
           </div>
@@ -182,6 +532,16 @@ export const ChatMessages: React.FC<ChatMessagesProps> = ({
       )}
 
       <div ref={bottomRef} />
+
+      {/* SQL Inspector Modal */}
+      {activeSqlModal && (
+        <AdminSqlModal
+          sql={activeSqlModal.sql}
+          isOpen={Boolean(activeSqlModal)}
+          onClose={() => setActiveSqlModal(null)}
+          metadata={activeSqlModal.metadata}
+        />
+      )}
     </main>
   );
 };

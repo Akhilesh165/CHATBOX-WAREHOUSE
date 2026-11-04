@@ -3,34 +3,20 @@
 import React, { useState } from 'react';
 import { ChatbotLauncher } from './ChatbotLauncher';
 import { ChatPanel } from './ChatPanel';
-import { ChatWidgetMessage } from './ChatMessages';
+import { ChatMessage, ChatResponsePayload } from '../../types/chat';
 
 interface ChatbotWidgetProps {
   isOpen?: boolean;
   onToggleOpen?: (open: boolean) => void;
 }
 
-const INITIAL_MESSAGES: ChatWidgetMessage[] = [
-  {
-    id: 'welcome-1',
-    sender: 'assistant',
-    content: 'Hello! 👋 Welcome to Warehouse Assistant. How can I help you today?',
-  },
-  {
-    id: 'welcome-2',
-    sender: 'assistant',
-    content: 'You can ask about inventory, bin utilization, plant comparisons, or warehouse capacity.',
-    showChips: true,
-    showSnapshot: true,
-  },
-];
-
 export const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
   isOpen: controlledIsOpen,
   onToggleOpen,
 }) => {
   const [internalIsOpen, setInternalIsOpen] = useState(false);
-  const [messages, setMessages] = useState<ChatWidgetMessage[]>(INITIAL_MESSAGES);
+  const [sessionId, setSessionId] = useState<string>(() => `widget-${Date.now()}`);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
   const isControlled = controlledIsOpen !== undefined;
@@ -46,34 +32,33 @@ export const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
   };
 
   const handleReset = () => {
-    setMessages(INITIAL_MESSAGES);
+    setMessages([]);
+    setSessionId(`widget-${Date.now()}`);
   };
 
   const handleSendMessage = async (text: string) => {
     const trimmed = text.trim();
     if (!trimmed || isLoading) return;
 
-    const userMessage: ChatWidgetMessage = {
+    // User message preserving conversation stream
+    const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,
-      sender: 'user',
+      role: 'user',
       content: trimmed,
-      timestamp: new Date().toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit',
-      }),
+      timestamp: new Date(),
     };
 
     setMessages((prev) => [...prev, userMessage]);
     setIsLoading(true);
 
     try {
-      // Connect to the real live warehouse backend API
+      // Connect to the real live warehouse backend API with conversation session ID
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: trimmed,
-          conversation_id: 'widget-main',
+          conversation_id: sessionId,
           is_admin: false,
         }),
       });
@@ -83,31 +68,44 @@ export const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
         throw new Error(errData.detail || `Server error (${response.status})`);
       }
 
-      const data = await response.json();
+      const data: ChatResponsePayload = await response.json();
       const rows = data.data || data.rows || [];
 
-      const botMessage: ChatWidgetMessage = {
-        id: `bot-${Date.now()}`,
-        sender: 'assistant',
+      // Preserving all existing response metadata, charts, tables, rankings and KPIs
+      const botMessage: ChatMessage = {
+        id: `assistant-${Date.now()}`,
+        role: 'assistant',
         content: data.answer || 'Information retrieved successfully.',
-        rows: rows,
         sql: data.sql,
-        timestamp: new Date().toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit',
-        }),
+        rows: rows,
+        data: rows,
+        tables: data.tables,
+        chart: data.chart,
+        meta: data.meta,
+        rowCount: data.meta?.rowCount ?? data.row_count ?? rows.length,
+        total_count: data.meta?.total_count ?? data.total_count,
+        displayed_count: data.meta?.displayed_count ?? data.displayed_count ?? rows.length,
+        executionMs: data.meta?.executionMs ?? data.execution_ms,
+        llmMs: data.meta?.llmMs ?? data.llm_ms,
+        sqlMs: data.meta?.sqlMs ?? data.sql_ms,
+        warnings: data.warnings,
+        intent: data.intent,
+        output_type: data.output_type,
+        metric: data.metric,
+        filters: data.filters,
+        time_range: data.time_range,
+        follow_up_action: data.follow_up_action,
+        relevant_kpis: data.relevant_kpis,
+        timestamp: new Date(),
       };
 
       setMessages((prev) => [...prev, botMessage]);
     } catch (err: any) {
-      const errorMessage: ChatWidgetMessage = {
-        id: `bot-err-${Date.now()}`,
-        sender: 'assistant',
+      const errorMessage: ChatMessage = {
+        id: `assistant-err-${Date.now()}`,
+        role: 'assistant',
         content: `⚠️ ${err.message || 'Unable to connect to warehouse database. Please check your query or server connection.'}`,
-        timestamp: new Date().toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit',
-        }),
+        timestamp: new Date(),
       };
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
@@ -117,10 +115,10 @@ export const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
 
   return (
     <>
-      {/* 1. Clickable circular chatbot logo #launcher */}
+      {/* 1. Clickable circular chatbot logo #launcher fixed at bottom-right */}
       <ChatbotLauncher onClick={() => setIsOpen(true)} isOpen={isOpen} />
 
-      {/* 2. Dark navy right-side chat panel #panel */}
+      {/* 2. Dark navy right-side chat panel #panel with smooth slide animation */}
       <ChatPanel
         isOpen={isOpen}
         onClose={() => setIsOpen(false)}
