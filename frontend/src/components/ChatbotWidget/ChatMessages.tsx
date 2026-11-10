@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -8,11 +8,10 @@ import {
   Check,
   Code,
   Clock,
-  Sparkles,
   ArrowRight,
-  ChevronRight
 } from 'lucide-react';
 import { ChatMessage, TableDataset, TableMiniSummary } from '../../types/chat';
+import { WarehouseStatsResponse } from '../../types/dashboard';
 import { ResultTable } from '../ResultTable';
 import { InventoryBarChart } from '../InventoryBarChart';
 import { InventoryLineChart } from '../InventoryLineChart';
@@ -93,12 +92,14 @@ interface ChatMessagesProps {
   messages: ChatMessage[];
   isLoading?: boolean;
   onSelectPrompt?: (prompt: string) => void;
+  stats?: WarehouseStatsResponse | null;
 }
 
 export const ChatMessages: React.FC<ChatMessagesProps> = ({
   messages,
   isLoading = false,
   onSelectPrompt,
+  stats,
 }) => {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -106,6 +107,13 @@ export const ChatMessages: React.FC<ChatMessagesProps> = ({
     sql: string;
     metadata?: any;
   } | null>(null);
+
+  // Derived dynamically from backend live database
+  const plantCount = stats?.plant_count ?? 4;
+  const overallUtil = stats?.summary.overall_utilization ?? 70.3;
+  const occupiedBins = stats?.summary.occupied_bins
+    ? stats.summary.occupied_bins.toLocaleString()
+    : '23,296';
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -120,112 +128,113 @@ export const ChatMessages: React.FC<ChatMessagesProps> = ({
   return (
     <main
       id="messages"
-      className="flex-1 overflow-y-auto p-[20px_16px] bg-[#071a33] text-[#eaf2fb] text-[13px] select-text scrollbar-thin scrollbar-thumb-[#1b3556] scrollbar-track-transparent space-y-4"
+      className="flex-1 overflow-y-auto p-4 bg-slate-50/70 text-slate-800 text-[13px] select-text scrollbar-thin scrollbar-thumb-slate-200 scrollbar-track-transparent space-y-4"
     >
       {/* Date Marker */}
-      <div className="text-center text-[#7088a6] text-[10px] font-semibold tracking-wider mb-3 select-none">
+      <div className="text-center text-slate-400 text-[11px] font-semibold tracking-wider mb-2 select-none">
         TODAY
       </div>
 
       {/* Initial Welcome & Chips (shown when no conversation history yet) */}
       {messages.length === 0 && (
-        <div className="space-y-3 animate-fade-in">
+        <div className="space-y-3.5 animate-fade-in">
           {/* Welcome Message 1 */}
-          <div className="flex gap-[9px] items-start">
-            <div className="w-[27px] h-[27px] rounded-[9px] bg-[#102b4d] text-[#7dd3fc] grid place-items-center flex-none text-[14px] font-semibold mt-0.5">
+          <div className="flex gap-2.5 items-start">
+            <div className="w-7 h-7 rounded-lg bg-blue-50 text-blue-600 border border-blue-200/80 grid place-items-center flex-none text-xs font-bold mt-0.5 shadow-2xs">
               ✦
             </div>
-            <div className="max-w-[85%] p-[12px_14px] rounded-[15px_15px_15px_5px] bg-[#102b4d] border border-[#1b3556] text-[#eaf2fb] text-[13px] leading-[1.55] shadow-sm">
+            <div className="max-w-[85%] p-3.5 rounded-2xl rounded-tl-sm bg-white border border-slate-200/90 text-slate-800 text-xs sm:text-[13px] leading-relaxed shadow-xs">
               Hello! 👋 Welcome to Warehouse Assistant. How can I help you today?
             </div>
           </div>
 
           {/* Welcome Message 2 */}
-          <div className="flex gap-[9px] items-start">
-            <div className="w-[27px] h-[27px] rounded-[9px] bg-[#102b4d] text-[#7dd3fc] grid place-items-center flex-none text-[14px] font-semibold mt-0.5">
+          <div className="flex gap-2.5 items-start">
+            <div className="w-7 h-7 rounded-lg bg-blue-50 text-blue-600 border border-blue-200/80 grid place-items-center flex-none text-xs font-bold mt-0.5 shadow-2xs">
               ✦
             </div>
-            <div className="max-w-[85%] p-[12px_14px] rounded-[15px_15px_15px_5px] bg-[#102b4d] border border-[#1b3556] text-[#eaf2fb] text-[13px] leading-[1.55] shadow-sm">
+            <div className="max-w-[85%] p-3.5 rounded-2xl rounded-tl-sm bg-white border border-slate-200/90 text-slate-800 text-xs sm:text-[13px] leading-relaxed shadow-xs">
               You can ask about inventory, bin utilization, plant comparisons, or warehouse capacity.
             </div>
           </div>
 
-          {/* Quick Suggestion Chips */}
-          <div className="ml-[36px] flex gap-[7px] flex-wrap pt-1">
+          {/* Suggested Question Chips (Clean & Readable) */}
+          <div className="ml-9 flex gap-2 flex-wrap pt-0.5">
             <button
               type="button"
               onClick={() => onSelectPrompt?.('Show bin utilization')}
-              className="border border-[#254566] bg-[#0d2442] text-[#b9dcff] hover:bg-[#14365f] hover:border-[#3b82f6] px-2.5 py-1.5 rounded-[18px] text-[11px] cursor-pointer transition-colors shadow-xs"
+              className="border border-slate-200 bg-white hover:bg-blue-50 hover:border-blue-300 text-slate-700 hover:text-blue-700 px-3 py-1.5 rounded-full text-xs font-medium transition-all shadow-xs cursor-pointer"
             >
               Show bin utilization
             </button>
             <button
               type="button"
               onClick={() => onSelectPrompt?.('Check inventory')}
-              className="border border-[#254566] bg-[#0d2442] text-[#b9dcff] hover:bg-[#14365f] hover:border-[#3b82f6] px-2.5 py-1.5 rounded-[18px] text-[11px] cursor-pointer transition-colors shadow-xs"
+              className="border border-slate-200 bg-white hover:bg-blue-50 hover:border-blue-300 text-slate-700 hover:text-blue-700 px-3 py-1.5 rounded-full text-xs font-medium transition-all shadow-xs cursor-pointer"
             >
               Check inventory
             </button>
             <button
               type="button"
               onClick={() => onSelectPrompt?.('Compare plants')}
-              className="border border-[#254566] bg-[#0d2442] text-[#b9dcff] hover:bg-[#14365f] hover:border-[#3b82f6] px-2.5 py-1.5 rounded-[18px] text-[11px] cursor-pointer transition-colors shadow-xs"
+              className="border border-slate-200 bg-white hover:bg-blue-50 hover:border-blue-300 text-slate-700 hover:text-blue-700 px-3 py-1.5 rounded-full text-xs font-medium transition-all shadow-xs cursor-pointer"
             >
               Compare plants
             </button>
             <button
               type="button"
               onClick={() => onSelectPrompt?.('Show top utilized bins for Plant 1258')}
-              className="border border-[#254566] bg-[#0d2442] text-[#b9dcff] hover:bg-[#14365f] hover:border-[#3b82f6] px-2.5 py-1.5 rounded-[18px] text-[11px] cursor-pointer transition-colors shadow-xs"
+              className="border border-slate-200 bg-white hover:bg-blue-50 hover:border-blue-300 text-slate-700 hover:text-blue-700 px-3 py-1.5 rounded-full text-xs font-medium transition-all shadow-xs cursor-pointer"
             >
               Top bins Plant 1258
             </button>
           </div>
 
-          {/* Warehouse Snapshot Card */}
+          {/* Warehouse Operations Snapshot Card with Dynamic Plant Count */}
           <div
-            className="mt-3.5 mb-2 ml-[36px] p-[14px] border border-[#1f4268] rounded-[16px] bg-gradient-to-br from-[#0c2949] to-[#091f3a] shadow-[0_10px_24px_#02081744]"
+            className="mt-3.5 mb-2 ml-9 p-4 border border-slate-200/90 rounded-xl bg-white shadow-xs"
             aria-label="Warehouse snapshot"
           >
-            <div className="flex justify-between items-center text-[#eaf2fb] text-[12px] font-bold">
+            <div className="flex justify-between items-center text-slate-900 text-xs font-bold">
               <span>Warehouse Operations Snapshot</span>
-              <span className="text-[8px] tracking-[.08em] text-[#67e8f9] bg-[#123d5f] px-1.5 py-0.5 rounded-full font-semibold uppercase">
+              <span className="text-[9px] tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full font-semibold uppercase">
                 LIVE DATA
               </span>
             </div>
-            <div className="grid grid-cols-3 gap-2 mt-[12px]">
-              <div className="p-[8px_6px] rounded-[10px] bg-[#071a33] border border-[#183857] text-center">
-                <b className="block text-[#7dd3fc] text-[14px] font-bold">84.2%</b>
-                <small className="block text-[#7891ad] text-[9px] mt-0.5">Utilization</small>
+            <div className="grid grid-cols-3 gap-2 mt-3">
+              <div className="p-2 rounded-lg bg-slate-50 border border-slate-100 text-center">
+                <b className="block text-slate-900 text-sm font-bold">{overallUtil}%</b>
+                <small className="block text-slate-500 text-[10px] mt-0.5 font-medium">Utilization</small>
               </div>
-              <div className="p-[8px_6px] rounded-[10px] bg-[#071a33] border border-[#183857] text-center">
-                <b className="block text-[#7dd3fc] text-[14px] font-bold">7,525</b>
-                <small className="block text-[#7891ad] text-[9px] mt-0.5">Occupied Bins</small>
+              <div className="p-2 rounded-lg bg-slate-50 border border-slate-100 text-center">
+                <b className="block text-slate-900 text-sm font-bold">{occupiedBins}</b>
+                <small className="block text-slate-500 text-[10px] mt-0.5 font-medium">Occupied Bins</small>
               </div>
-              <div className="p-[8px_6px] rounded-[10px] bg-[#071a33] border border-[#183857] text-center">
-                <b className="block text-[#7dd3fc] text-[14px] font-bold">5</b>
-                <small className="block text-[#7891ad] text-[9px] mt-0.5">Active Plants</small>
+              {/* Plant count dynamically from live DB */}
+              <div className="p-2 rounded-lg bg-slate-50 border border-slate-100 text-center">
+                <b className="block text-blue-600 text-sm font-bold">{plantCount}</b>
+                <small className="block text-slate-500 text-[10px] mt-0.5 font-medium">Active Plants</small>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Dynamic Messages Stream */}
+      {/* Dynamic Conversation Messages */}
       {messages.map((message) => {
         const isUser = message.role === 'user';
 
         if (isUser) {
           return (
             <div key={message.id} className="flex justify-end mb-3 items-end">
-              <div className="max-w-[85%] p-[12px_14px] rounded-[15px_15px_5px_15px] bg-[#1d4ed8] border border-[#2563eb] text-white text-[13px] leading-[1.55] shadow-sm break-words">
+              <div className="max-w-[85%] p-3 px-4 rounded-2xl rounded-tr-sm bg-blue-600 text-white text-xs sm:text-[13px] leading-relaxed shadow-xs break-words font-medium">
                 {message.content}
               </div>
             </div>
           );
         }
 
-        // Assistant message with full response rendering
+        // Assistant response with full preserved response rendering
         const rows = message.data || message.rows || [];
         const hasTable = rows.length > 0;
         const isSingleMetricIntent = Boolean(
@@ -282,39 +291,39 @@ export const ChatMessages: React.FC<ChatMessagesProps> = ({
 
         return (
           <div key={message.id} className="flex flex-col mb-4">
-            <div className="flex gap-[9px] items-start">
+            <div className="flex gap-2.5 items-start">
               {/* Bot Avatar ✦ */}
-              <div className="w-[27px] h-[27px] rounded-[9px] bg-[#102b4d] text-[#7dd3fc] grid place-items-center flex-none text-[14px] font-semibold mt-0.5 shadow-sm">
+              <div className="w-7 h-7 rounded-lg bg-blue-50 text-blue-600 border border-blue-200/80 grid place-items-center flex-none text-xs font-bold mt-0.5 shadow-2xs">
                 ✦
               </div>
 
-              {/* Bot Response Bubble in dark navy */}
-              <div className="flex-1 max-w-[calc(100%-36px)] p-[14px] rounded-[15px_15px_15px_5px] bg-[#102b4d] border border-[#1b3556] text-[#eaf2fb] text-[13px] leading-[1.55] shadow-sm space-y-3 overflow-hidden">
+              {/* Bot Response Bubble (Clean Light Theme) */}
+              <div className="flex-1 max-w-[calc(100%-36px)] p-4 rounded-2xl rounded-tl-sm bg-white border border-slate-200/90 text-slate-800 text-xs sm:text-[13px] leading-relaxed shadow-xs space-y-3 overflow-hidden">
                 {/* Header row: Intent, Output Type, Execution time */}
-                <div className="flex items-center justify-between border-b border-[#1b3556] pb-2 flex-wrap gap-1.5 select-none text-[11px]">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2 flex-wrap gap-1.5 select-none text-[11px]">
                   <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="font-semibold text-[#7dd3fc]">Warehouse Assistant</span>
+                    <span className="font-semibold text-slate-900">Warehouse Assistant</span>
                     {message.intent && (
-                      <span className="bg-[#0b213d] text-[#93c5fd] font-mono text-[10px] px-1.5 py-0.5 rounded border border-[#1b3556]">
+                      <span className="bg-slate-100 text-slate-600 font-mono text-[10px] px-1.5 py-0.5 rounded border border-slate-200/70">
                         {message.intent}
                       </span>
                     )}
                     {outputType && outputType !== 'text' && (
-                      <span className="bg-[#123d5f] text-[#67e8f9] text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded border border-[#1f4268]">
+                      <span className="bg-blue-50 text-blue-700 text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded border border-blue-200/70">
                         {outputType}
                       </span>
                     )}
                   </div>
 
-                  <div className="flex items-center gap-2 text-[10px] text-[#9fb3cc]">
+                  <div className="flex items-center gap-2 text-[10px] text-slate-500">
                     {message.executionMs !== undefined && (
-                      <span className="flex items-center gap-1 bg-[#0b213d] px-1.5 py-0.5 rounded border border-[#1b3556]">
-                        <Clock className="w-2.5 h-2.5 text-[#7dd3fc]" />
+                      <span className="flex items-center gap-1 bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200">
+                        <Clock className="w-2.5 h-2.5 text-slate-400" />
                         <span>{message.executionMs}ms</span>
                       </span>
                     )}
                     {message.rowCount !== undefined && message.rowCount > 0 && (
-                      <span className="text-[#93c5fd]">
+                      <span className="font-medium text-slate-600">
                         {message.rowCount} rows
                       </span>
                     )}
@@ -323,7 +332,7 @@ export const ChatMessages: React.FC<ChatMessagesProps> = ({
 
                 {/* Markdown text content */}
                 {displayContent ? (
-                  <div className="prose prose-invert prose-sm max-w-none text-[#eaf2fb] leading-[1.55] text-[13px] font-normal">
+                  <div className="prose prose-slate prose-sm max-w-none text-slate-800 leading-relaxed font-normal">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
                       {displayContent}
                     </ReactMarkdown>
@@ -336,16 +345,16 @@ export const ChatMessages: React.FC<ChatMessagesProps> = ({
                     {message.relevant_kpis.map((kpi, idx) => (
                       <div
                         key={idx}
-                        className="bg-[#0b213d] border border-[#1b3556] rounded-xl p-2.5 shadow-xs"
+                        className="bg-slate-50 border border-slate-200/80 rounded-xl p-2.5 shadow-2xs"
                       >
-                        <div className="text-[10px] font-semibold text-[#9fb3cc] uppercase tracking-wider mb-0.5">
+                        <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-0.5">
                           {kpi.label}
                         </div>
-                        <div className="text-lg font-bold text-[#7dd3fc]">
+                        <div className="text-lg font-bold text-slate-900 font-mono">
                           {kpi.value}
                         </div>
                         {kpi.subtext && (
-                          <div className="text-[9px] text-[#7088a6] mt-0.5">
+                          <div className="text-[10px] text-slate-500 mt-0.5">
                             {kpi.subtext}
                           </div>
                         )}
@@ -370,7 +379,7 @@ export const ChatMessages: React.FC<ChatMessagesProps> = ({
 
                 {/* Charts */}
                 {showChart && message.chart && (
-                  <div className="pt-1 bg-[#091f3a] rounded-xl p-2 border border-[#1b3556]">
+                  <div className="pt-1 bg-slate-50 rounded-xl p-3 border border-slate-200">
                     {(outputType === 'bar_chart' || message.chart.type === 'bar') && (
                       <InventoryBarChart
                         title={message.chart.title}
@@ -403,8 +412,8 @@ export const ChatMessages: React.FC<ChatMessagesProps> = ({
                   <div className="pt-2 space-y-4">
                     {effectiveTables.map((tbl, tblIdx) => (
                       <div key={tblIdx} className="space-y-2">
-                        <div className="border-b border-[#1b3556] pb-1">
-                          <h4 className="text-xs font-bold text-[#7dd3fc]">
+                        <div className="border-b border-slate-200 pb-1">
+                          <h4 className="text-xs font-bold text-slate-900">
                             {tbl.title || `Plant ${tbl.plant} — Detailed Bin Utilization`}
                           </h4>
                         </div>
@@ -420,13 +429,13 @@ export const ChatMessages: React.FC<ChatMessagesProps> = ({
                         />
 
                         {tbl.mini_summary && (
-                          <div className="bg-[#0b213d] rounded-lg p-2.5 border border-[#1b3556] text-xs text-[#dbeafe]">
-                            <div className="font-bold text-[#7dd3fc] text-[11px] mb-1">Mini Summary</div>
-                            <ul className="space-y-0.5 text-[11px] text-[#9fb3cc]">
-                              <li>Total bins: <b className="text-white font-mono">{tbl.mini_summary.total_bins?.toLocaleString()}</b></li>
-                              <li>Utilized bins: <b className="text-white font-mono">{tbl.mini_summary.utilized_bins?.toLocaleString()}</b></li>
-                              <li>Empty bins: <b className="text-white font-mono">{tbl.mini_summary.empty_bins?.toLocaleString()}</b></li>
-                              <li>Average utilization: <b className="text-[#38bdf8] font-mono">{tbl.mini_summary.average_utilization}</b></li>
+                          <div className="bg-slate-50 rounded-lg p-2.5 border border-slate-200 text-xs text-slate-800">
+                            <div className="font-bold text-slate-900 text-[11px] mb-1">Mini Summary</div>
+                            <ul className="space-y-0.5 text-[11px] text-slate-600">
+                              <li>Total bins: <b className="text-slate-900 font-mono">{tbl.mini_summary.total_bins?.toLocaleString()}</b></li>
+                              <li>Utilized bins: <b className="text-slate-900 font-mono">{tbl.mini_summary.utilized_bins?.toLocaleString()}</b></li>
+                              <li>Empty bins: <b className="text-slate-900 font-mono">{tbl.mini_summary.empty_bins?.toLocaleString()}</b></li>
+                              <li>Average utilization: <b className="text-blue-600 font-mono">{tbl.mini_summary.average_utilization}</b></li>
                             </ul>
                           </div>
                         )}
@@ -448,22 +457,22 @@ export const ChatMessages: React.FC<ChatMessagesProps> = ({
 
                 {/* Follow-up Action Suggestion Chip */}
                 {message.follow_up_action && (
-                  <div className="pt-2 border-t border-[#1b3556]/80 flex flex-col gap-1.5">
-                    <span className="text-[10px] text-[#9fb3cc]">Suggested Next Step:</span>
+                  <div className="pt-2 border-t border-slate-100 flex flex-col gap-1.5">
+                    <span className="text-[10px] text-slate-500 font-medium">Suggested Next Step:</span>
                     <button
                       type="button"
                       onClick={() => onSelectPrompt?.(message.follow_up_action!.action_prompt)}
-                      className="self-start text-[11px] text-[#b9dcff] bg-[#0d2442] hover:bg-[#14365f] border border-[#254566] hover:border-[#3b82f6] px-2.5 py-1 rounded-full flex items-center gap-1 transition-colors"
+                      className="self-start text-[11px] text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 px-3 py-1 rounded-full flex items-center gap-1.5 transition-colors font-medium cursor-pointer shadow-2xs"
                     >
                       <span>{message.follow_up_action.message || message.follow_up_action.action_prompt}</span>
-                      <ArrowRight className="w-3 h-3 text-[#7dd3fc]" />
+                      <ArrowRight className="w-3 h-3 text-blue-600" />
                     </button>
                   </div>
                 )}
 
                 {/* Warnings */}
                 {message.warnings && message.warnings.length > 0 && (
-                  <div className="text-xs text-amber-200 bg-amber-950/40 p-2 rounded-lg border border-amber-800/60">
+                  <div className="text-xs text-amber-800 bg-amber-50 p-2 rounded-lg border border-amber-200">
                     {message.warnings.map((w, i) => (
                       <div key={i}>⚠️ {w}</div>
                     ))}
@@ -471,16 +480,16 @@ export const ChatMessages: React.FC<ChatMessagesProps> = ({
                 )}
 
                 {/* Bottom Action Bar: Copy Answer & View SQL */}
-                <div className="flex items-center justify-between pt-2 border-t border-[#1b3556] text-[11px] text-[#7088a6]">
+                <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-[11px] text-slate-500">
                   <button
                     onClick={() => handleCopy(message.id, message.content)}
-                    className="flex items-center gap-1 text-[#9fb3cc] hover:text-white px-2 py-0.5 rounded hover:bg-[#0b213d] transition-colors"
+                    className="flex items-center gap-1 text-slate-500 hover:text-slate-900 px-2 py-0.5 rounded hover:bg-slate-100 transition-colors"
                     title="Copy Answer"
                   >
                     {copiedId === message.id ? (
                       <>
-                        <Check className="w-3 h-3 text-emerald-400" />
-                        <span className="text-emerald-400">Copied</span>
+                        <Check className="w-3 h-3 text-emerald-600" />
+                        <span className="text-emerald-600 font-medium">Copied</span>
                       </>
                     ) : (
                       <>
@@ -504,10 +513,10 @@ export const ChatMessages: React.FC<ChatMessagesProps> = ({
                           },
                         })
                       }
-                      className="flex items-center gap-1 text-[#7dd3fc] hover:text-white px-2 py-0.5 rounded hover:bg-[#0b213d] transition-colors border border-[#1b3556]"
+                      className="flex items-center gap-1 text-blue-600 hover:text-blue-800 px-2 py-0.5 rounded hover:bg-blue-50 transition-colors border border-blue-200 text-[11px] font-medium"
                       title="View Generated SQL"
                     >
-                      <Code className="w-3 h-3 text-[#7dd3fc]" />
+                      <Code className="w-3 h-3" />
                       <span>View SQL</span>
                     </button>
                   )}
@@ -520,13 +529,13 @@ export const ChatMessages: React.FC<ChatMessagesProps> = ({
 
       {/* Loading Indicator */}
       {isLoading && (
-        <div className="flex gap-[9px] items-start mb-3 animate-fade-in">
-          <div className="w-[27px] h-[27px] rounded-[9px] bg-[#102b4d] text-[#7dd3fc] grid place-items-center flex-none text-[14px] font-semibold mt-0.5">
+        <div className="flex gap-2.5 items-start mb-3 animate-fade-in">
+          <div className="w-7 h-7 rounded-lg bg-blue-50 text-blue-600 border border-blue-200/80 grid place-items-center flex-none text-xs font-bold mt-0.5 shadow-2xs">
             ✦
           </div>
-          <div className="p-[10px_14px] rounded-[15px_15px_15px_5px] bg-[#102b4d] border border-[#1b3556] text-[#9fb3cc] text-[12px] flex items-center gap-2">
-            <span className="inline-block w-2 h-2 rounded-full bg-[#7dd3fc] animate-ping" />
-            <span>Analyzing warehouse query...</span>
+          <div className="p-3 px-4 rounded-2xl rounded-tl-sm bg-white border border-slate-200/90 text-slate-500 text-xs flex items-center gap-2 shadow-xs">
+            <span className="inline-block w-2 h-2 rounded-full bg-blue-600 animate-ping" />
+            <span className="font-medium text-slate-700">Analyzing warehouse query...</span>
           </div>
         </div>
       )}

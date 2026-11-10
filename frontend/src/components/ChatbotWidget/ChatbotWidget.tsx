@@ -4,15 +4,18 @@ import React, { useState } from 'react';
 import { ChatbotLauncher } from './ChatbotLauncher';
 import { ChatPanel } from './ChatPanel';
 import { ChatMessage, ChatResponsePayload } from '../../types/chat';
+import { WarehouseStatsResponse } from '../../types/dashboard';
 
 interface ChatbotWidgetProps {
   isOpen?: boolean;
   onToggleOpen?: (open: boolean) => void;
+  stats?: WarehouseStatsResponse | null;
 }
 
 export const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
   isOpen: controlledIsOpen,
   onToggleOpen,
+  stats,
 }) => {
   const [internalIsOpen, setInternalIsOpen] = useState(false);
   const [sessionId, setSessionId] = useState<string>(() => `widget-${Date.now()}`);
@@ -115,10 +118,10 @@ export const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
 
   return (
     <>
-      {/* 1. Clickable circular chatbot logo #launcher fixed at bottom-right */}
+      {/* 1. Clickable circular chatbot logo fixed at bottom-right */}
       <ChatbotLauncher onClick={() => setIsOpen(true)} isOpen={isOpen} />
 
-      {/* 2. Dark navy right-side chat panel #panel with smooth slide animation */}
+      {/* 2. Slide-in right-side chat panel in clean light theme */}
       <ChatPanel
         isOpen={isOpen}
         onClose={() => setIsOpen(false)}
@@ -126,6 +129,7 @@ export const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
         onSendMessage={handleSendMessage}
         onReset={handleReset}
         isLoading={isLoading}
+        stats={stats}
       />
     </>
   );

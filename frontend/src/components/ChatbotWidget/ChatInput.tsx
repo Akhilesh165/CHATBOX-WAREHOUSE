@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
+import { Send } from 'lucide-react';
 
 interface ChatInputProps {
   onSendMessage: (message: string) => void;
@@ -31,11 +32,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   };
 
   return (
-    <footer className="p-[14px_16px_16px] border-t border-[#1b3556] bg-[#071a33] flex-none">
+    <footer className="p-3.5 border-t border-slate-200/90 bg-white flex-none">
       <form
         id="form"
         onSubmit={handleSubmit}
-        className="flex gap-2 p-[7px_8px_7px_13px] border border-[#254566] rounded-[14px] bg-[#0b213d] items-center transition-all focus-within:border-[#3b82f6] focus-within:ring-2 focus-within:ring-[#2563eb33]"
+        className="flex gap-2 p-1.5 pl-3.5 border border-slate-200 rounded-xl bg-slate-50 items-center transition-all focus-within:bg-white focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-100 shadow-xs"
       >
         <input
           ref={inputRef}
@@ -43,11 +44,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Type your message..."
+          placeholder="Ask warehouse assistant (e.g. inventory, bins)..."
           autoComplete="off"
           aria-label="Type your message"
           disabled={isLoading}
-          className="flex-1 min-w-0 border-0 outline-none text-[13px] bg-transparent text-[#edf6ff] placeholder-[#7188a5] disabled:opacity-50"
+          className="flex-1 min-w-0 border-0 outline-none text-xs sm:text-[13px] bg-transparent text-slate-800 placeholder-slate-400 disabled:opacity-50"
         />
 
         <button
@@ -55,13 +56,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           id="send"
           disabled={!input.trim() || isLoading}
           aria-label="Send"
-          className="w-9 h-9 border-0 rounded-[10px] bg-[#2563eb] hover:bg-[#1d4ed8] text-white cursor-pointer text-[17px] grid place-items-center transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+          className="w-8 h-8 border-0 rounded-lg bg-blue-600 hover:bg-blue-700 text-white cursor-pointer grid place-items-center transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0 shadow-xs"
         >
-          ➤
+          <Send className="w-3.5 h-3.5" />
         </button>
       </form>
 
-      <p className="text-center text-[#7088a6] text-[10px] mt-2.5 select-none">
+      <p className="text-center text-slate-400 text-[10px] mt-2 select-none">
         Connected to Live Warehouse Database · SQL Server
       </p>
     </footer>

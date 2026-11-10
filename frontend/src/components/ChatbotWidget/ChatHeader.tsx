@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { RotateCcw } from 'lucide-react';
+import { RotateCcw, X } from 'lucide-react';
 
 interface ChatHeaderProps {
   onClose: () => void;
@@ -10,19 +10,19 @@ interface ChatHeaderProps {
 
 export const ChatHeader: React.FC<ChatHeaderProps> = ({ onClose, onReset }) => {
   return (
-    <header className="h-[76px] flex-none border-b border-[#1b3556] bg-[#071a33] flex items-center px-[18px] gap-3 text-[#f8fbff] select-none">
+    <header className="h-16 flex-none border-b border-slate-200/90 bg-white flex items-center px-4 gap-3 select-none">
       {/* ✦ Avatar */}
-      <div className="w-[42px] h-[42px] rounded-[13px] bg-[#102b4d] text-[#7dd3fc] grid place-items-center text-[22px] flex-shrink-0 font-medium">
+      <div className="w-9 h-9 rounded-lg bg-blue-50 text-blue-600 border border-blue-200/70 grid place-items-center text-sm font-bold flex-shrink-0">
         ✦
       </div>
 
       {/* Title & Online Status */}
       <div className="flex-1 min-w-0">
-        <strong className="block text-[15px] font-bold text-[#f8fbff] leading-snug">
+        <strong className="block text-sm font-bold text-slate-900 leading-tight">
           Warehouse Assistant
         </strong>
-        <div className="text-[12px] text-[#9fb3cc] mt-0.5 flex items-center">
-          <span className="inline-block w-[7px] h-[7px] bg-[#22c55e] rounded-full mr-[6px] shrink-0" />
+        <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5">
+          <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block shrink-0" />
           <span>Online · Enterprise AI</span>
         </div>
       </div>
@@ -34,21 +34,21 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ onClose, onReset }) => {
             onClick={onReset}
             title="Reset conversation"
             aria-label="Reset conversation"
-            className="w-[34px] h-[34px] rounded-[9px] text-[#a9bbd0] hover:text-white hover:bg-[#102b4d] grid place-items-center transition-colors"
+            className="w-8 h-8 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 grid place-items-center transition-colors"
           >
             <RotateCcw className="w-4 h-4" />
           </button>
         )}
 
-        {/* Close Button matching #close */}
+        {/* Close Button */}
         <button
           id="close"
           onClick={onClose}
           aria-label="Close chat"
           title="Close chat"
-          className="border-0 bg-transparent text-[#a9bbd0] hover:text-white text-[26px] cursor-pointer rounded-[9px] w-[36px] h-[36px] grid place-items-center hover:bg-[#102b4d] transition-colors leading-none"
+          className="border-0 bg-transparent text-slate-400 hover:text-slate-800 text-xl cursor-pointer rounded-lg w-8 h-8 grid place-items-center hover:bg-slate-100 transition-colors leading-none"
         >
-          ×
+          <X className="w-5 h-5" />
         </button>
       </div>
     </header>
