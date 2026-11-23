@@ -441,7 +441,13 @@ async def chat_endpoint(req: ChatRequest):
         if range_pruning_warnings:
             warnings.extend(range_pruning_warnings)
 
-    if settings.sql_max_result_rows > 0 and len(rows) >= settings.sql_max_result_rows:
+    distinct_plants = {str(r.get("Plant", "")).strip() for r in rows if r.get("Plant") and str(r.get("Plant", "")).strip()} if rows else set()
+    max_plant_rows = (
+        max((t.count for t in table_datasets), default=0) if table_datasets
+        else max((sum(1 for r in rows if str(r.get("Plant", "")).strip() == p) for p in distinct_plants), default=len(rows))
+    ) if (len(table_datasets) > 1 or len(distinct_plants) > 1) else len(rows)
+
+    if settings.sql_max_result_rows > 0 and max_plant_rows >= settings.sql_max_result_rows:
         warnings.append(
             f"Results reached the configured {settings.sql_max_result_rows}-row limit; "
             "the displayed list may be incomplete. Narrow the filters or increase "
